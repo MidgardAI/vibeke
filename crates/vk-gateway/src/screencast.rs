@@ -405,6 +405,9 @@ pub async fn frame(gw: &Gateway, device: &str, mut params: Value) -> ApiResult {
 /// `browser.session_open` parameters.
 pub async fn preview_open(gw: &Gateway, actor: &str, device: &str, params: Value) -> ApiResult {
     let _seq = gw.screencasts.seq.lock().await;
+    // A review's session must be confined (spec 20 §3.7): a server that ignores `confine` would
+    // give the reviewer an unfiltered browser on this host.
+    let confine = params.get("confine") == Some(&Value::Bool(true));
     let mut out = gw
         .server
         .call_as(actor, "browser.session_open", params)
@@ -416,6 +419,16 @@ pub async fn preview_open(gw: &Gateway, actor: &str, device: &str, params: Value
     else {
         return Err(ApiError::new("internal", "the host returned no session"));
     };
+    if confine && out.get("confined") != Some(&Value::Bool(true)) {
+        let _ = gw
+            .server
+            .call_as(ACTOR, "browser.session_close", json!({"session": handle}))
+            .await;
+        return Err(ApiError::new(
+            "unsupported",
+            "this host's Vibeke server cannot confine a review browser; update it",
+        ));
+    }
     let steps = async {
         attach_locked(gw, actor, device, &handle).await?;
         gw.screencasts.set_opened(&handle, device);

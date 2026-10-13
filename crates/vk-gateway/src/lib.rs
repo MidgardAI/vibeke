@@ -17,6 +17,7 @@ pub mod peer_client;
 pub mod peers;
 pub mod push;
 pub mod relay_client;
+pub mod review;
 pub mod screencast;
 pub mod server;
 pub mod session;
@@ -74,6 +75,8 @@ pub struct Gateway {
     pub logins: Arc<account::Logins>,
     /// Devices watching agent browser sessions (`browser.attach_screencast`).
     pub screencasts: screencast::Screencasts,
+    /// The account server's attestation keys (spec 20 §2.3).
+    pub attest_keys: pair::AttestKeyCache,
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +126,12 @@ impl Gateway {
         let keys = state.host_keys()?;
         let devices = {
             let lock = state.lock()?;
-            state.prune_expired_devices(&lock)?.0
+            let devices = state.prune_expired_devices(&lock)?.0;
+            // A crash between a share device's write and its invitation's (spec 20 §2.4).
+            for pid in state.reconcile_redemptions(&lock)? {
+                tracing::info!(pid = %pid, "restored a share redemption after a restart");
+            }
+            devices
         };
         let host_name = cfg.host_name.clone().unwrap_or_else(hostname);
         let status = state::StatusWriter::new(state.dir.clone());
@@ -149,6 +157,7 @@ impl Gateway {
             relay_ctl: Mutex::new(None),
             logins: Arc::default(),
             screencasts: screencast::Screencasts::default(),
+            attest_keys: pair::AttestKeyCache::default(),
         }))
     }
 
@@ -240,6 +249,8 @@ impl Gateway {
         all.retain(|d| !removed.contains(&d.id));
         self.state.save_devices(&all)?;
         *self.devices.write().unwrap() = all;
+        // Their redemptions stay as tombstones: the uses are not refunded (spec 20 §2.4).
+        self.state.tombstone_redemptions(&_lock, &removed)?;
         for r in &removed {
             self.state
                 .audit(&json!({"ts": state::now_s(), "event": "device.revoked", "device": r}));
@@ -270,6 +281,14 @@ impl Gateway {
                 device = device_id,
                 "relay offline; its ticket lapses on expiry"
             );
+        }
+    }
+
+    /// Tell the relay to stop admitting an invitation's `pid:` ticket (a revoked share link).
+    pub fn revoke_pid_ticket(&self, pid: &str) {
+        let sub = format!("pid:{pid}");
+        if let Some(tx) = self.relay_ctl.lock().unwrap().as_ref() {
+            let _ = tx.send(vk_e2e::relay::Ctrl::Revoke { sub });
         }
     }
 

@@ -14,8 +14,13 @@ use tokio_tungstenite::tungstenite::Message;
 use vk_e2e::{PairingLink, Session, b64, keys};
 
 use crate::Gateway;
+use crate::api::ApiError;
 use crate::session::{Ws, spawn_writer};
-use crate::state::{Device, GitUser, Pairing, PairingStatus, PeerInfo, Scope, StateDir, now_s};
+use crate::state::{
+    Device, GitUser, GithubId, Pairing, PairingStatus, PeerInfo, Redemption, Scope, ShareSpec,
+    StateDir, now_s,
+};
+use vk_account::attest::{self, AttestClaims, AttestError, AttestKey};
 
 /// Pairing handshakes per pairing id per minute (spec 16 §4.3).
 pub const PER_PAIRING_PER_MIN: usize = 10;
@@ -173,6 +178,34 @@ pub async fn claim(
         out.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32003, "message": "this is a handoff invitation; open it on one of your hosts", "data": {"kind": "forbidden"}}})).await;
         return;
     }
+    // Watch and review shares: devices come from redemptions, idempotent per device key, with a
+    // GitHub attestation when the share asks for one (spec 20 §2.3–§2.4).
+    if pairing.redeemable() {
+        let attest = p.get("attest").and_then(|v| v.as_str());
+        let r = redeem_claim(&gw, &pairing, &remote, &name, &platform, attest).await;
+        match r {
+            Ok((device, new)) => {
+                let fingerprint = keys::fingerprint(&remote);
+                out.send(json!({"jsonrpc": "2.0", "id": id, "result": {"status": "pending", "fingerprint": fingerprint}})).await;
+                if new {
+                    gw.state.audit(&json!({"ts": now_s(), "event": "device.paired", "device": device.id, "name": name, "fingerprint": fingerprint, "kind": device.kind,
+                                           "invitation": pairing.pid, "github": device.github.as_ref().map(|g| g.id)}));
+                }
+                let (ticket, ticket_exp) = device_ticket(&gw.keys, &device.id, device.expires_at);
+                out.notify("pair.done", json!({"device_id": device.id, "host_name": gw.host_name, "host_id": gw.keys.host_id(), "scope": device.scope, "kind": device.kind,
+                                               "ticket": ticket, "ticket_exp": ticket_exp, "github": device.github,
+                                               "review": device.review.as_ref().map(|r| json!({"preview": r.preview, "sid": r.sid}))})).await;
+            }
+            Err(e) => {
+                gw.state.audit(&json!({"ts": now_s(), "event": "share.refused", "invitation": pairing.pid, "reason": e.kind}));
+                out.send(json!({"jsonrpc": "2.0", "id": id, "error": refusal_json(&e)}))
+                    .await;
+            }
+        }
+        drop(out);
+        let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+        return;
+    }
     let fingerprint = keys::fingerprint(&remote);
 
     // Reserve atomically under the registry lock: still pending and unexpired, else refuse.
@@ -284,6 +317,9 @@ pub async fn claim(
         limit: current.share.as_ref().and_then(|sh| sh.limit.clone()),
         peer,
         supports_clear: false,
+        github: None,
+        invitation: None,
+        review: None,
     };
     let consumed = confirmed
         && (|| -> anyhow::Result<bool> {
@@ -365,6 +401,23 @@ pub fn create_with(
     ttl: Duration,
     share: Option<crate::state::ShareSpec>,
 ) -> Result<(Pairing, PairingLink)> {
+    create_invitation(state, relay, host_name, scope, no_confirm, ttl, share, 1)
+}
+
+/// [`create_with`] for an invitation `uses` devices may redeem (spec 20 §2.4). The link carries
+/// the share's `access`, `uses` and, for a review, `notes`, `preview` and `sid`.
+#[allow(clippy::too_many_arguments)]
+pub fn create_invitation(
+    state: &StateDir,
+    relay: &str,
+    host_name: &str,
+    scope: Scope,
+    no_confirm: bool,
+    ttl: Duration,
+    share: Option<crate::state::ShareSpec>,
+    uses: u32,
+) -> Result<(Pairing, PairingLink)> {
+    let uses = uses.clamp(1, MAX_USES);
     let keys = state.host_keys()?;
     let pid = b64::encode(keys::random_bytes::<9>());
     let psk = b64::encode(keys::random_bytes::<32>());
@@ -381,11 +434,23 @@ pub fn create_with(
         confirmed_claim: None,
         share: share.clone(),
         created_at: now_s(),
+        uses,
+        redemptions: Vec::new(),
     };
     state.save_pairing(&pairing)?;
     let share_json = share.map(|sh| {
-        serde_json::json!({"kind": sh.kind, "scope": scope.as_str(), "until": sh.until,
-                           "label": sh.label, "limit": sh.limit})
+        let mut j = serde_json::json!({"kind": sh.kind, "scope": scope.as_str(), "until": sh.until,
+                                       "label": sh.label, "limit": sh.limit});
+        if sh.redeemable() {
+            j["access"] = json!(sh.access.as_deref().unwrap_or("link"));
+            j["uses"] = json!(uses);
+        }
+        if let Some(r) = &sh.review {
+            j["notes"] = json!(r.notes);
+            j["preview"] = json!({"id": r.preview, "label": r.label});
+            j["sid"] = json!(r.sid);
+        }
+        j
     });
     // Admits the claim on relays that require tickets (spec 16 §6.6); harmless elsewhere.
     let tk = vk_e2e::relay::sign_ticket(&keys, &format!("pid:{pid}"), exp);
@@ -447,9 +512,314 @@ pub fn device_kind_for(
             };
             ("peer".into(), Some(info))
         }
+        // A review device is a share device with `review` set (spec 20 §3.2).
+        Some("review") => ("share".into(), None),
         Some(k) => (k.to_string(), None),
         None => ("device".into(), None),
     }
+}
+
+/// Most devices one invitation may make (spec 20 §2.2).
+pub const MAX_USES: u32 = 100;
+/// How long the account server's attestation keys are cached.
+pub const KEYS_TTL: Duration = Duration::from_secs(3600);
+/// Least time between key fetches caused by an unknown `kid`.
+pub const REFETCH_MIN: Duration = Duration::from_secs(60);
+
+/// A definitive or transient refusal of a `pair.claim`, with the kind the app acts on
+/// (spec 20 §2.4: it keeps the invitation key unless the refusal is definitive).
+pub fn refuse(kind: &str, message: impl Into<String>) -> ApiError {
+    ApiError::new(kind, message)
+}
+
+/// The JSON-RPC error of a refused claim (code -32003 like every pairing refusal).
+pub fn refusal_json(e: &ApiError) -> Value {
+    json!({"code": -32003, "message": e.message, "data": {"kind": e.kind, "details": e.details}})
+}
+
+/// The account server's attestation keys (spec 20 §2.3): cached for [`KEYS_TTL`], fetched again
+/// at most once per [`REFETCH_MIN`] when a token names an unknown key.
+#[derive(Default)]
+pub struct AttestKeyCache {
+    st: tokio::sync::Mutex<KeyState>,
+}
+
+#[derive(Default)]
+struct KeyState {
+    server: String,
+    keys: Vec<AttestKey>,
+    fetched: Option<Instant>,
+    /// The last fetch, of any cause; an unknown `kid` refetches only when it is old enough.
+    last_fetch: Option<Instant>,
+}
+
+impl AttestKeyCache {
+    /// The keys for `server`, fetched with `fetch` when the cache is cold or older than
+    /// [`KEYS_TTL`], or when `unknown_kid` and the last fetch is older than [`REFETCH_MIN`]. A
+    /// failed refetch keeps the cached keys; a failed first fetch is an error.
+    pub async fn keys<F, Fut>(
+        &self,
+        server: &str,
+        unknown_kid: bool,
+        now: Instant,
+        fetch: F,
+    ) -> Result<Vec<AttestKey>, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = vk_account::Result<Vec<AttestKey>>>,
+    {
+        let mut st = self.st.lock().await;
+        let fresh = st.server == server
+            && st
+                .fetched
+                .is_some_and(|t| now.saturating_duration_since(t) < KEYS_TTL);
+        let refetch = unknown_kid
+            && st
+                .last_fetch
+                .is_none_or(|t| now.saturating_duration_since(t) >= REFETCH_MIN);
+        if fresh && !refetch {
+            return Ok(st.keys.clone());
+        }
+        st.last_fetch = Some(now);
+        match fetch().await {
+            Ok(k) => {
+                st.server = server.to_string();
+                st.keys = k;
+                st.fetched = Some(now);
+                Ok(st.keys.clone())
+            }
+            Err(_) if fresh => Ok(st.keys.clone()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Check the claims of a verified attestation against this invitation (spec 20 §2.3): `aud` is
+/// this host's relay id, `nonce` binds the pid and the claiming device's static key, and the
+/// GitHub id is on the share's list (or the list is `["*"]`).
+pub fn check_claims(
+    claims: &AttestClaims,
+    host_id: &str,
+    pid: &str,
+    remote: &[u8; 32],
+    share: &ShareSpec,
+) -> Result<GithubId, ApiError> {
+    if claims.aud != host_id {
+        return Err(refuse(
+            "attest_invalid",
+            "the GitHub sign-in was made for another host",
+        ));
+    }
+    if claims.nonce != attest::nonce(pid, remote) {
+        return Err(refuse(
+            "attest_invalid",
+            "the GitHub sign-in was made for another link or device",
+        ));
+    }
+    if !(share.github_any || share.github.iter().any(|g| g.id == claims.gh_id)) {
+        let mut e = refuse(
+            "github_not_allowed",
+            "this link is for other GitHub accounts",
+        );
+        e.details =
+            json!({"allowed": share.github.iter().map(|g| g.login.clone()).collect::<Vec<_>>()});
+        return Err(e);
+    }
+    Ok(GithubId {
+        id: claims.gh_id,
+        login: sanitize_label(&claims.login, 39),
+    })
+}
+
+/// Verify the attestation a claim carries for a `github` share: signature by a published key,
+/// times, then [`check_claims`]. No attestation is `upgrade_required` (an older app); the claim
+/// never falls back to an unauthenticated one.
+pub async fn check_attest(
+    gw: &Gateway,
+    pairing: &Pairing,
+    share: &ShareSpec,
+    remote: &[u8; 32],
+    token: Option<&str>,
+) -> Result<GithubId, ApiError> {
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        return Err(refuse(
+            "upgrade_required",
+            "This link needs a newer Vibeke app",
+        ));
+    };
+    let server = crate::account::account_server(&gw.cfg);
+    let client = vk_account::Client::new(&server)
+        .map_err(|e| refuse("unavailable", format!("account server: {e}")))?;
+    let keys = gw
+        .attest_keys
+        .keys(&server, false, Instant::now(), || client.attest_keys())
+        .await
+        .map_err(|e| refuse("unavailable", format!("account server keys: {e}")))?;
+    let claims = match attest::verify(token, &keys, now_s()) {
+        Err(AttestError::UnknownKid(_)) => {
+            let keys = gw
+                .attest_keys
+                .keys(&server, true, Instant::now(), || client.attest_keys())
+                .await
+                .map_err(|e| refuse("unavailable", format!("account server keys: {e}")))?;
+            attest::verify(token, &keys, now_s())
+        }
+        r => r,
+    }
+    .map_err(|e| refuse("attest_invalid", e.to_string()))?;
+    check_claims(&claims, &gw.keys.host_id(), &pairing.pid, remote, share)
+}
+
+/// A claim on a watch or review share: an earlier redemption by the same device key gets its
+/// device back without a new attestation; otherwise a `github` share needs a valid one first.
+async fn redeem_claim(
+    gw: &Arc<Gateway>,
+    pairing: &Pairing,
+    remote: &[u8; 32],
+    name: &str,
+    platform: &str,
+    attest: Option<&str>,
+) -> Result<(Device, bool), ApiError> {
+    let current = gw
+        .state
+        .pairing(&pairing.pid)
+        .ok()
+        .flatten()
+        .ok_or_else(|| refuse("revoked", "this link was revoked"))?;
+    let share = current
+        .share
+        .clone()
+        .ok_or_else(|| refuse("forbidden", "pairing is not available"))?;
+    let known = current.redemption_by(&b64::encode(remote)).is_some();
+    let github = if share.github_access() && !known {
+        Some(check_attest(gw, &current, &share, remote, attest).await?)
+    } else {
+        None
+    };
+    let (gw2, pid, remote, name, platform) = (
+        gw.clone(),
+        pairing.pid.clone(),
+        *remote,
+        name.to_string(),
+        platform.to_string(),
+    );
+    // The registry lock is a blocking flock.
+    tokio::task::spawn_blocking(move || redeem(&gw2, &pid, &remote, &name, &platform, github))
+        .await
+        .map_err(|_| refuse("unavailable", "the claim was interrupted"))?
+}
+
+/// Redeem invitation `pid` for device key `remote` under the registry lock (spec 20 §2.4):
+///
+/// 1. An existing redemption by this key returns its device again (no second device). A
+///    redemption whose device was revoked stays refused.
+/// 2. Otherwise the use count is checked, the device is created, the redemption recorded and
+///    the pairing written, in that order (see `StateDir::reconcile_redemptions`).
+///
+/// Returns the device and whether it is new.
+pub fn redeem(
+    gw: &Gateway,
+    pid: &str,
+    remote: &[u8; 32],
+    name: &str,
+    platform: &str,
+    github: Option<GithubId>,
+) -> Result<(Device, bool), ApiError> {
+    let internal = |e: anyhow::Error| crate::api::internal(e);
+    let lock = gw.state.lock().map_err(internal)?;
+    let Some(mut p) = gw.state.pairing(pid).ok().flatten() else {
+        return Err(refuse("revoked", "this link was revoked"));
+    };
+    let share = match &p.share {
+        Some(sh) if p.redeemable() => sh.clone(),
+        _ => return Err(refuse("forbidden", "pairing is not available")),
+    };
+    if p.exp <= now_s() {
+        return Err(refuse("expired", "this link expired"));
+    }
+    let key = b64::encode(remote);
+    let devices = gw.state.devices().map_err(internal)?;
+    if let Some(r) = p.redemption_by(&key) {
+        if r.revoked {
+            return Err(refuse("revoked", "this device was removed from the share"));
+        }
+        return devices
+            .iter()
+            .find(|d| d.id == r.device_id && !d.expired())
+            .cloned()
+            .map(|d| (d, false))
+            .ok_or_else(|| refuse("revoked", "this device was removed from the share"));
+    }
+    if let Some(d) = devices.iter().find(|d| d.public == key) {
+        // Written before a crash cut off the pairing write: record its redemption now.
+        if d.invitation.as_deref() != Some(pid) || d.expired() {
+            return Err(refuse(
+                "forbidden",
+                "this device key is already paired with this host",
+            ));
+        }
+        p.redemptions.push(Redemption {
+            device_static: key,
+            device_id: d.id.clone(),
+            at: d.paired_at,
+            revoked: false,
+        });
+        if p.exhausted() {
+            p.status = PairingStatus::Done {
+                device_id: d.id.clone(),
+            };
+        }
+        gw.state.save_pairing(&p).map_err(internal)?;
+        return Ok((d.clone(), false));
+    }
+    if p.exhausted() || p.status != PairingStatus::Pending {
+        return Err(refuse("used", "this link has been used"));
+    }
+    if share.github_access() && github.is_none() {
+        return Err(refuse(
+            "upgrade_required",
+            "This link needs a newer Vibeke app",
+        ));
+    }
+    let (kind, _) = device_kind_for(Some(&share), None);
+    let device = Device {
+        id: ulid::Ulid::generate().to_string().to_lowercase(),
+        name: match &github {
+            Some(g) => format!("@{}", g.login),
+            None => name.to_string(),
+        },
+        platform: platform.to_string(),
+        public: key.clone(),
+        scope: p.scope,
+        paired_at: now_s(),
+        vapid_private: None,
+        push: Vec::new(),
+        prefs: Default::default(),
+        push_failures: 0,
+        kind,
+        expires_at: share.device_expiry(),
+        limit: share.limit.clone(),
+        peer: None,
+        supports_clear: false,
+        github,
+        invitation: Some(pid.to_string()),
+        review: share.review.clone(),
+    };
+    gw.add_device_locked(&lock, device.clone())
+        .map_err(internal)?;
+    p.redemptions.push(Redemption {
+        device_static: key,
+        device_id: device.id.clone(),
+        at: device.paired_at,
+        revoked: false,
+    });
+    if p.exhausted() {
+        p.status = PairingStatus::Done {
+            device_id: device.id.clone(),
+        };
+    }
+    gw.state.save_pairing(&p).map_err(internal)?;
+    Ok((device, true))
 }
 
 pub fn render_qr(text: &str) -> String {
@@ -546,6 +916,10 @@ pub async fn wait_and_confirm(state: &StateDir, pid: &str, exp: u64) -> Result<(
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
+
+#[cfg(test)]
+#[path = "pair_share_tests.rs"]
+mod share_tests;
 
 #[cfg(test)]
 mod tests {

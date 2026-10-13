@@ -248,6 +248,9 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         | "browser.annotate" | "browser.annotation_pick" | "browser.annotation_add"
         | "browser.annotation_update" | "browser.annotation_remove"
         | "browser.annotations_clear" | "browser.annotations_send" => Full,
+        // Held review notes (spec 20 §3.3): only the owner's own devices (Full, no limit; the
+        // `browser.` prefix is host-wide) release or discard them.
+        "browser.annotations_release" | "browser.annotations_discard" => Full,
         _ => return None,
     })
 }
@@ -473,6 +476,14 @@ pub struct Allowed {
 
 impl Allowed {
     pub fn of(d: &Device) -> Option<Allowed> {
+        // A review device never reaches the normal methods (review.rs); should one ever get
+        // here, its limit matches nothing.
+        if d.is_review() {
+            return Some(Allowed {
+                workspace: None,
+                pane: Some(String::new()),
+            });
+        }
         d.limit.as_ref().map(|l| Allowed {
             workspace: l.workspace.clone(),
             pane: l.pane.clone(),
@@ -1707,6 +1718,14 @@ impl Call<'_> {
                 self.server(method, pick(&p, &["draft", "agent", "copy_only"]))
                     .await
             }
+            "browser.annotations_release" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft", "agent"])).await
+            }
+            "browser.annotations_discard" => {
+                req(&p, "draft")?;
+                self.server(method, pick(&p, &["draft"])).await
+            }
             "browser.take_over" | "browser.release" => {
                 let session = req(&p, "session")?;
                 self.still_authorized()?;
@@ -1928,7 +1947,7 @@ impl Call<'_> {
             "devices.list" => devices_list_as(self.gw, self.device),
             "devices.revoke" => devices_revoke_as(self.gw, self.device, &p).await,
             "stt.transcribe" => crate::stt::transcribe(self.gw, &p).await,
-            "share.create" => self.share_create(&p),
+            "share.create" => self.share_create(&p).await,
             m if m.starts_with("peer.") || m == "share.list" || m == "share.revoke" => {
                 crate::peers::dispatch(self.gw, self.device, m, &p).await
             }
@@ -2064,12 +2083,167 @@ pub async fn devices_revoke_as(gw: &Arc<Gateway>, device: &Device, p: &Value) ->
 }
 
 /// `share.create` for the server bridge (`gateway.call`): the same code as the app API.
-pub fn share_create_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
-    Call { gw, device }.share_create(p)
+pub async fn share_create_as(gw: &Arc<Gateway>, device: &Device, p: &Value) -> ApiResult {
+    Call { gw, device }.share_create(p).await
+}
+
+/// Default and largest number of devices a GitHub share makes (spec 20 §2.2).
+pub const GITHUB_USES: u32 = 20;
+
+/// 16 random base32 characters (`a-z2-7`): a review's content origin label (spec 20 §3.5).
+pub fn new_sid() -> String {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let bytes = vk_e2e::keys::random_bytes::<10>();
+    let mut bits: u64 = 0;
+    let mut n = 0;
+    let mut out = String::with_capacity(16);
+    for b in bytes {
+        bits = (bits << 8) | b as u64;
+        n += 8;
+        while n >= 5 {
+            n -= 5;
+            out.push(ALPHABET[((bits >> n) & 31) as usize] as char);
+        }
+    }
+    out
+}
+
+/// An account error while creating a GitHub share. It never turns into a `link` share.
+fn account_error(e: vk_account::Error, login: Option<&str>) -> ApiError {
+    match e {
+        vk_account::Error::UnknownUser => {
+            let mut err = ApiError::new(
+                "unknown_user",
+                format!("GitHub has no user {}", login.unwrap_or("with that login")),
+            );
+            err.details = json!({"login": login});
+            err
+        }
+        vk_account::Error::LoginRequired | vk_account::Error::Unauthorized => ApiError::new(
+            "account_required",
+            "this host is not signed in to its account server (run: vibeke login)",
+        ),
+        e => ApiError::unavailable(format!("account server: {e}")),
+    }
+}
+
+/// The GitHub side of a share: what it parsed from `github` and who created it.
+struct GithubAllow {
+    ids: Vec<crate::state::GithubId>,
+    any: bool,
+    owner: Option<String>,
 }
 
 impl Call<'_> {
-    fn share_create(&self, p: &Value) -> ApiResult {
+    /// `github: [login] | ["*"]` resolved to ids through the account server (spec 20 §2.2).
+    /// Fails closed: no list, an empty list, no account server, a host that is not signed in
+    /// or an unknown login is an error, never a `link` share.
+    async fn resolve_github(&self, p: &Value) -> Result<GithubAllow, ApiError> {
+        let list = match p.get("github") {
+            None | Some(Value::Null) => {
+                return Err(ApiError::invalid(
+                    "access github needs a list of GitHub accounts: set [sharing] github or pass --github",
+                ));
+            }
+            Some(Value::Array(a)) => a,
+            Some(_) => return Err(ApiError::invalid("github is a list of GitHub logins")),
+        };
+        let logins = list
+            .iter()
+            .map(|v| v.as_str().map(str::trim))
+            .collect::<Option<Vec<&str>>>()
+            .ok_or_else(|| ApiError::invalid("github is a list of GitHub logins"))?;
+        if logins.is_empty() {
+            return Err(ApiError::invalid(
+                "the github list is empty: name at least one account, or [\"*\"] for any",
+            ));
+        }
+        if logins.len() > 100 {
+            return Err(ApiError::invalid("at most 100 GitHub accounts per share"));
+        }
+        let any = logins == ["*"];
+        if !any && logins.contains(&"*") {
+            return Err(ApiError::invalid("\"*\" (any GitHub account) stands alone"));
+        }
+        let server = crate::account::account_server(&self.gw.cfg);
+        let acct = crate::account::account(&server, &self.gw.state.dir)
+            .map_err(|e| ApiError::unavailable(format!("account server: {e:#}")))?;
+        let a2 = acct.clone();
+        let cred = tokio::task::spawn_blocking(move || a2.credential())
+            .await
+            .map_err(|_| ApiError::unavailable("reading the account credential failed"))?
+            .map_err(|e| account_error(e, None))?;
+        let Some(cred) = cred else {
+            return Err(account_error(vk_account::Error::LoginRequired, None));
+        };
+        let mut ids: Vec<crate::state::GithubId> = Vec::new();
+        if !any {
+            for login in logins {
+                let u = acct
+                    .github_user(login)
+                    .await
+                    .map_err(|e| account_error(e, Some(login)))?;
+                if !ids.iter().any(|g| g.id == u.id) {
+                    ids.push(crate::state::GithubId {
+                        id: u.id,
+                        login: u.login,
+                    });
+                }
+            }
+        }
+        Ok(GithubAllow {
+            ids,
+            any,
+            owner: Some(cred.login),
+        })
+    }
+
+    /// The preview a review share opens, resolved on the server: `(review, url)`.
+    async fn resolve_preview(
+        &self,
+        preview: &str,
+    ) -> Result<(crate::state::Review, Value), ApiError> {
+        let r = self
+            .gw
+            .server
+            .call("preview.get", json!({"preview": preview}))
+            .await?;
+        let pv = r.get("preview").cloned().unwrap_or(Value::Null);
+        let id = s(&pv, "id")
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ApiError::new("not_found", format!("no preview {preview}")))?
+            .to_string();
+        let pane = s(&pv, "pane").map(str::to_string);
+        let workspace = match &pane {
+            Some(pane) => self
+                .gw
+                .server
+                .call("pane.get", json!({"pane": pane}))
+                .await
+                .ok()
+                .and_then(|r| {
+                    r.pointer("/pane/workspace")
+                        .and_then(|w| w.as_str())
+                        .map(str::to_string)
+                }),
+            None => None,
+        };
+        Ok((
+            crate::state::Review {
+                preview: id,
+                sid: new_sid(),
+                notes: String::new(),
+                handle: s(&pv, "handle").map(str::to_string),
+                label: s(&pv, "label").map(str::to_string),
+                pane,
+                workspace,
+                owner: None,
+            },
+            pv.get("url").cloned().unwrap_or(Value::Null),
+        ))
+    }
+
+    async fn share_create(&self, p: &Value) -> ApiResult {
         let kind = s(p, "kind").unwrap_or("share");
         let (scope, default_ttl) = match kind {
             "share" => (
@@ -2082,30 +2256,114 @@ impl Call<'_> {
                 },
                 2 * 3600,
             ),
+            // A review reaches one preview through its own allow-list (review.rs).
+            "review" => (Scope::View, 24 * 3600),
             "handoff" => (Scope::Full, 24 * 3600),
-            _ => return Err(ApiError::invalid("kind is share or handoff")),
+            _ => return Err(ApiError::invalid("kind is share, review or handoff")),
         };
+        let access = match (kind, s(p, "access")) {
+            (_, Some(a)) if a != "link" && a != "github" => {
+                return Err(ApiError::invalid("access is link or github"));
+            }
+            ("review", None) => {
+                return Err(ApiError::invalid(
+                    "a review share needs access: link or github",
+                ));
+            }
+            ("handoff", Some("github")) => {
+                return Err(ApiError::invalid(
+                    "a handoff invitation is opened by a host: use access link",
+                ));
+            }
+            (_, a) => a.unwrap_or("link"),
+        };
+        let github_access = access == "github";
+        let uses = match p.get("uses") {
+            None | Some(Value::Null) if github_access => GITHUB_USES,
+            None | Some(Value::Null) => 1,
+            Some(v) => {
+                v.as_u64()
+                    .filter(|n| (1..=crate::pair::MAX_USES as u64).contains(n))
+                    .ok_or_else(|| ApiError::invalid("uses is 1 to 100"))? as u32
+            }
+        };
+        if !github_access && uses != 1 {
+            return Err(ApiError::invalid(
+                "a link share opens once; use access github for more uses",
+            ));
+        }
+        let notes = match (kind, s(p, "notes")) {
+            ("review", None) if github_access => "direct",
+            ("review", None) => "held",
+            ("review", Some(n @ ("direct" | "held"))) => n,
+            ("review", Some(_)) => return Err(ApiError::invalid("notes is direct or held")),
+            (_, Some(_)) => return Err(ApiError::invalid("notes is for review shares")),
+            (_, None) => "",
+        };
+        let preview = s(p, "preview").filter(|v| !v.is_empty());
+        if kind != "review" && preview.is_some() {
+            return Err(ApiError::invalid("preview is for review shares"));
+        }
         let ttl_s = p
             .get("ttl_s")
             .and_then(|v| v.as_u64())
             .unwrap_or(default_ttl)
             .clamp(60, 7 * 24 * 3600);
-        let limit = match (s(p, "workspace"), s(p, "pane")) {
-            (None, None) if kind == "share" => {
+        let limit = match (kind, s(p, "workspace"), s(p, "pane")) {
+            ("review", None, None) => None,
+            ("review", _, _) => {
+                return Err(ApiError::invalid(
+                    "a review shares one preview, not a pane or workspace",
+                ));
+            }
+            ("share", None, None) => {
                 return Err(ApiError::invalid("share a workspace or a pane"));
             }
-            (None, None) => None,
-            (w, pane) => Some(crate::state::Limit {
+            (_, None, None) => None,
+            (_, w, pane) => Some(crate::state::Limit {
                 workspace: w.map(str::to_string),
                 pane: pane.map(str::to_string),
+                preview: None,
             }),
         };
+        // Everything that can refuse runs before the invitation is written.
         let relay = self
             .gw
             .cfg
             .relay
             .clone()
             .ok_or_else(|| ApiError::unavailable("no relay configured"))?;
+        let app = self.gw.cfg.app_url.clone().ok_or_else(|| {
+            ApiError::unavailable(
+                "no app origin configured on this host (vibeke-gateway run --app-url …)",
+            )
+        })?;
+        let (review, preview_url) = match (kind, preview) {
+            ("review", None) => return Err(ApiError::invalid("preview is required")),
+            ("review", Some(pv)) => {
+                let (r, url) = self.resolve_preview(pv).await?;
+                (Some(r), url)
+            }
+            _ => (None, Value::Null),
+        };
+        let allow = if github_access {
+            Some(self.resolve_github(p).await?)
+        } else {
+            None
+        };
+        let review = review.map(|mut r| {
+            r.notes = notes.to_string();
+            r.owner = allow.as_ref().and_then(|a| a.owner.clone());
+            r
+        });
+        let limit = match &review {
+            Some(r) => Some(crate::state::Limit {
+                workspace: None,
+                pane: None,
+                preview: Some(r.preview.clone()),
+            }),
+            None => limit,
+        };
         let until = now_s() + ttl_s;
         let label = s(p, "label").or(s(p, "name")).map(str::to_string);
         let spec = crate::state::ShareSpec {
@@ -2115,26 +2373,47 @@ impl Call<'_> {
             limit,
             label,
             owner: None,
+            access: github_access.then(|| "github".to_string()),
+            github: allow.as_ref().map(|a| a.ids.clone()).unwrap_or_default(),
+            github_any: allow.as_ref().is_some_and(|a| a.any),
+            review: review.clone(),
         };
-        let (pairing, link) = crate::pair::create_with(
+        // A GitHub link stays open as long as the share; a plain link for 15 minutes.
+        let open = if github_access {
+            Duration::from_secs(ttl_s)
+        } else {
+            Duration::from_secs(15 * 60)
+        };
+        let (pairing, link) = crate::pair::create_invitation(
             &self.gw.state,
             &relay,
             &self.gw.host_name,
             scope,
             true,
-            Duration::from_secs(15 * 60),
+            open,
             Some(spec),
+            uses,
         )
         .map_err(internal)?;
-        let app = self.gw.cfg.app_url.clone().ok_or_else(|| {
-            ApiError::unavailable(
-                "no app origin configured on this host (vibeke-gateway run --app-url …)",
-            )
-        })?;
-        self.gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": self.device.id, "kind": kind, "pid": pairing.pid}));
-        Ok(
-            json!({"link": link.to_url(&app), "pid": pairing.pid, "open_by": pairing.exp, "expires_at": until, "expires_after_s": ttl_s}),
-        )
+        self.gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": self.device.id, "kind": kind, "pid": pairing.pid,
+                                    "access": access, "uses": uses}));
+        let url = if review.is_some() {
+            link.to_review_url(&app)
+        } else {
+            link.to_url(&app)
+        };
+        let mut out = json!({"link": url, "pid": pairing.pid, "open_by": pairing.exp, "expires_at": until,
+                             "expires_after_s": ttl_s, "access": access, "uses": uses});
+        if let Some(a) = &allow {
+            out["github"] = if a.any { json!("*") } else { json!(a.ids) };
+        }
+        if let Some(r) = &review {
+            out["preview"] =
+                json!({"id": r.preview, "handle": r.handle, "label": r.label, "url": preview_url});
+            out["sid"] = json!(r.sid);
+            out["notes"] = json!(r.notes);
+        }
+        Ok(out)
     }
 }
 
@@ -2577,6 +2856,10 @@ mod share_tests {
 }
 
 #[cfg(test)]
+#[path = "api_share_tests.rs"]
+mod share_tests;
+
+#[cfg(test)]
 mod workspace_tests {
     //! Workspace-view passthroughs: scope table, share-limit denials and result filtering against
     //! a fake server.
@@ -2735,6 +3018,9 @@ mod workspace_tests {
             limit,
             peer: None,
             supports_clear: false,
+            github: None,
+            invitation: None,
+            review: None,
         }
     }
 
@@ -2886,6 +3172,7 @@ mod workspace_tests {
                 Limit {
                     workspace: None,
                     pane: Some("p1".into()),
+                    preview: None,
                 },
             ),
             (
@@ -2893,6 +3180,7 @@ mod workspace_tests {
                 Limit {
                     workspace: Some("w1".into()),
                     pane: None,
+                    preview: None,
                 },
             ),
         ] {
@@ -3083,6 +3371,7 @@ mod workspace_tests {
             Some(Limit {
                 workspace: None,
                 pane: Some("p1".into()),
+                preview: None,
             }),
         );
         gw.add_device(share.clone()).unwrap();
@@ -3131,6 +3420,7 @@ mod workspace_tests {
             Some(Limit {
                 workspace: Some("w1".into()),
                 pane: None,
+                preview: None,
             }),
         );
         gw.add_device(share.clone()).unwrap();
@@ -3225,6 +3515,7 @@ mod workspace_tests {
             Some(Limit {
                 workspace: None,
                 pane: Some("p1".into()),
+                preview: None,
             }),
         );
         gw.add_device(pane_share.clone()).unwrap();
@@ -3442,6 +3733,7 @@ mod workspace_tests {
             Some(Limit {
                 workspace: workspace.map(str::to_string),
                 pane: pane.map(str::to_string),
+                preview: None,
             }),
         )
     }

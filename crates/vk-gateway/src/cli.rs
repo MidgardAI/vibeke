@@ -481,6 +481,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                         Some(crate::state::Limit {
                             workspace: None,
                             pane: Some(id),
+                            preview: None,
                         })
                     }
                     (Some(w), None) => {
@@ -493,6 +494,7 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                         Some(crate::state::Limit {
                             workspace: Some(id),
                             pane: None,
+                            preview: None,
                         })
                     }
                     (None, None) => bail!("share --workspace W or --pane P (or --handoff)"),
@@ -509,6 +511,10 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 limit,
                 label,
                 owner: None,
+                access: None,
+                github: Vec::new(),
+                github_any: false,
+                review: None,
             };
             let (_, link) = pair::create_with(
                 &state,
@@ -1203,6 +1209,9 @@ mod tests {
             limit,
             peer: None,
             supports_clear: false,
+            github: None,
+            invitation: None,
+            review: None,
         }
     }
 
@@ -1382,6 +1391,7 @@ mod tests {
                     Some(Limit {
                         workspace: Some("w1".into()),
                         pane: None,
+                        preview: None,
                     }),
                 ),
             ],
@@ -1422,6 +1432,8 @@ mod tests {
                 owner: None,
             }),
             created_at: now,
+            uses: 1,
+            redemptions: Vec::new(),
         }];
         let mut peer = device("p1", "peer", None, None);
         peer.peer = Some(PeerInfo {

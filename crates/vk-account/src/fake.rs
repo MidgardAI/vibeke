@@ -1,6 +1,7 @@
 //! An in-process stand-in for the account control plane (spec 16 §6.6), for tests here and in
 //! other crates (feature `fake-server`). Tokens are predictable: the n-th issued pair is
-//! `a<n>` / `r<n>`, host tokens are `h<n>`.
+//! `a<n>` / `r<n>`, host tokens are `h<n>`. Attestations (spec 20 §2.3) are signed with
+//! [`ATTEST_SEED`] unless a test changes `attest_seeds`.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -12,6 +13,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
+
+/// The attestation signing seed the fake server publishes by default.
+pub const ATTEST_SEED: [u8; 32] = [42; 32];
 
 #[derive(Debug)]
 pub struct FakeState {
@@ -35,6 +39,12 @@ pub struct FakeState {
     pub host_token_calls: u32,
     pub host_tokens: Vec<String>,
     pub logouts: u32,
+    /// Attestation keys published at `/v1/keys` (signing seeds).
+    pub attest_seeds: Vec<[u8; 32]>,
+    pub keys_calls: u32,
+    /// GitHub users `/v1/github/users/{login}` knows (matched without case).
+    pub github_users: Vec<(u64, String)>,
+    pub github_calls: u32,
 }
 
 impl Default for FakeState {
@@ -56,6 +66,10 @@ impl Default for FakeState {
             host_token_calls: 0,
             host_tokens: Vec::new(),
             logouts: 0,
+            attest_seeds: vec![ATTEST_SEED],
+            keys_calls: 0,
+            github_users: vec![(583231, "octocat".into()), (2, "alice".into())],
+            github_calls: 0,
         }
     }
 }
@@ -91,6 +105,8 @@ impl FakeServer {
             .route("/v1/hosts/{id}/token", post(host_token))
             .route("/v1/me", get(me))
             .route("/v1/logout", post(logout))
+            .route("/v1/keys", get(keys))
+            .route("/v1/github/users/{login}", get(github_user))
             .with_state(state.clone());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         FakeServer {
@@ -232,4 +248,38 @@ async fn logout(State(st): State<Shared>, b: String) -> Response {
         st.access = None;
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn keys(State(st): State<Shared>) -> Response {
+    let mut st = st.lock().unwrap();
+    st.keys_calls += 1;
+    let list: Vec<Value> = st
+        .attest_seeds
+        .iter()
+        .map(|seed| {
+            let key = crate::attest::public_of(seed);
+            json!({"kid": crate::attest::kid_of(&key), "alg": "ed25519", "pub": vk_e2e::b64::encode(key)})
+        })
+        .collect();
+    axum::Json(json!({"attest": list})).into_response()
+}
+
+async fn github_user(
+    State(st): State<Shared>,
+    Path(login): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let mut st = st.lock().unwrap();
+    st.github_calls += 1;
+    if bearer(&headers).is_none() || bearer(&headers) != st.access {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    match st
+        .github_users
+        .iter()
+        .find(|(_, l)| l.eq_ignore_ascii_case(&login))
+    {
+        Some((id, l)) => axum::Json(json!({"id": id, "login": l})).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown_user"),
+    }
 }

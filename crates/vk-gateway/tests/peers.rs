@@ -105,6 +105,9 @@ async fn gateway(root: &Path, name: &str, relay: SocketAddr) -> (Arc<Gateway>, D
         limit: None,
         peer: None,
         supports_clear: false,
+        github: None,
+        invitation: None,
+        review: None,
     };
     gw.add_device(owner.clone()).unwrap();
     tokio::spawn(vk_gateway::run(gw.clone()));
