@@ -580,6 +580,103 @@ mod tests {
             .unwrap()
     }
 
+    /// A segment has a persisted prefix and a buffered suffix, then rotates before flushing.
+    fn buffered_rotation(dir: &Path) -> (Store, Archive) {
+        let s = Store::open_in_memory().unwrap();
+        let mut a = Archive::new(dir);
+        a.append(
+            "p",
+            &[ArchivedRow {
+                n: 0,
+                t: "needle prefix".into(),
+                w: false,
+            }],
+        )
+        .unwrap();
+        a.flush().unwrap();
+        a.append(
+            "p",
+            &[ArchivedRow {
+                n: 1,
+                t: "x".repeat(1 << 20),
+                w: false,
+            }],
+        )
+        .unwrap();
+        a.append(
+            "p",
+            &[ArchivedRow {
+                n: 2,
+                t: "needle next".into(),
+                w: false,
+            }],
+        )
+        .unwrap();
+        s.fts_insert(&[("p".into(), 0, 1, "needle prefix".into())])
+            .unwrap();
+        s.fts_register_panes(&[(
+            "p".into(),
+            "w".into(),
+            "t".into(),
+            "p".into(),
+            "pane".into(),
+        )])
+        .unwrap();
+        (s, a)
+    }
+
+    #[test]
+    fn failed_flush_keeps_rotated_buffers_out_of_retention() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = buffered_rotation(d.path());
+        let batches = a.prepare_flush();
+        let path = a.segment_infos("p")[0].path.clone();
+        // An unopenable segment gives a deterministic I/O failure even when tests run as
+        // root. Keep its real bytes outside the archive until the storage problem is fixed.
+        let saved = d.path().join("saved-prefix");
+        std::fs::rename(&path, &saved).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(a.flush().is_err());
+        for selection in [Select::OlderThan(i64::MAX), Select::OverBytes(1)] {
+            let report = s
+                .purge_archive(&mut a, Some(&["p".into()]), selection, false)
+                .unwrap();
+            assert_eq!(report, PurgeReport::default());
+            assert_eq!(fts_count(&s, "p"), 1);
+            assert!(s.archive_pane("p").unwrap().is_some());
+            assert!(path.is_dir(), "retention must preserve buffered segments");
+        }
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&saved, &path).unwrap();
+        for batch in batches {
+            a.apply_flush(batch.compress().unwrap()).unwrap();
+        }
+        let rows = a.read("p", 0, 3).unwrap();
+        assert_eq!(rows.iter().map(|r| r.n).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(rows[0].t, "needle prefix");
+    }
+
+    #[test]
+    fn forget_all_discards_rotated_buffers_and_in_flight_compression() {
+        let d = tempfile::tempdir().unwrap();
+        let (s, mut a) = buffered_rotation(d.path());
+        let batches = a.prepare_flush();
+        let report = s
+            .purge_archive(&mut a, Some(&["p".into()]), Select::All, false)
+            .unwrap();
+        assert_eq!(report.fts_rows, 1);
+        assert_eq!(a.buffered_bytes(), 0);
+        assert!(!a.is_open("p"));
+        for batch in batches {
+            a.apply_flush(batch.compress().unwrap()).unwrap();
+        }
+        a.flush().unwrap();
+        assert!(a.read("p", 0, 3).unwrap().is_empty());
+        assert!(a.segment_infos("p").is_empty());
+        assert_eq!(fts_count(&s, "p"), 0);
+        assert!(s.archive_pane("p").unwrap().is_none());
+    }
+
     #[test]
     fn retention_deletes_matching_fts_rows() {
         let d = tempfile::tempdir().unwrap();

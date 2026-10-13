@@ -334,9 +334,13 @@ impl Archive {
         v
     }
 
-    /// Is a segment of this pane currently open for writing?
+    /// Does this pane have an open segment or a rotated segment still waiting to be written?
     pub fn is_open(&self, pane: &str) -> bool {
         self.open.contains_key(pane)
+            || self
+                .pending
+                .get(pane)
+                .is_some_and(|segs| segs.iter().any(|s| !s.buf.is_empty()))
     }
 
     /// Discard the pane's open (buffered) segment state; its file is removed by the caller.
@@ -425,8 +429,8 @@ impl Archive {
         Ok(())
     }
 
-    /// Segments of `pane` (oldest first) chosen by `sel`. Retention selections never include
-    /// the segment currently being written; [`Select::All`] does.
+    /// Segments of `pane` (oldest first) chosen by `sel`. Retention selections exclude the
+    /// current segment and rotated segments with buffered rows; [`Select::All`] includes them.
     pub fn select(&self, pane: &str, sel: Select) -> Vec<SegInfo> {
         let segs = self.segments(pane);
         let starts: Vec<u64> = segs.iter().map(|p| seg_start(p)).collect();
@@ -448,18 +452,24 @@ impl Archive {
                 }
             })
             .collect();
-        let is_open = |s: &SegInfo| self.open.get(pane).is_some_and(|o| o.path == s.path);
+        let is_writing = |s: &SegInfo| {
+            self.open.get(pane).is_some_and(|o| o.path == s.path)
+                || self
+                    .pending
+                    .get(pane)
+                    .is_some_and(|segs| segs.iter().any(|p| p.path == s.path && !p.buf.is_empty()))
+        };
         match sel {
             Select::All => infos,
             Select::OlderThan(ms) => infos
                 .into_iter()
-                .filter(|s| !is_open(s) && s.mtime_ms < ms)
+                .filter(|s| !is_writing(s) && s.mtime_ms < ms)
                 .collect(),
             Select::OverBytes(max) => {
                 let mut total: u64 = infos.iter().map(|s| s.bytes).sum();
                 let mut out = Vec::new();
                 for s in infos {
-                    if total <= max || is_open(&s) {
+                    if total <= max || is_writing(&s) {
                         break;
                     }
                     total -= s.bytes;
