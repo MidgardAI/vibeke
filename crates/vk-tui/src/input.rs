@@ -32,6 +32,8 @@ pub enum Input {
     Key(KeyEvent),
     /// Host reply; never forwarded as pane input.
     Appearance(crate::appearance::Detected),
+    /// The DA1 sentinel completes a host appearance query inside the reader.
+    AppearanceComplete,
 }
 
 /// Bytes kept while waiting for the rest of a sequence (a longer one is dropped).
@@ -112,6 +114,8 @@ pub struct Decoder {
     /// Bytes consumed so far; the reader restarts its timer when this moves.
     consumed: u64,
     capture_appearance: bool,
+    /// The initial ESC already passed its ordinary key deadline before an introducer arrived.
+    query_escape_expired: bool,
 }
 
 enum Step {
@@ -485,6 +489,21 @@ impl Decoder {
         }
     }
 
+    /// Query replies may need a longer ESC wait, but an ordinary letter arriving after
+    /// the normal deadline is still a separate key, not an Alt combination.
+    #[cfg(any(not(target_arch = "wasm32"), test))]
+    fn feed_after_wait(&mut self, bytes: &[u8], waited: Duration, querying: bool) -> Vec<Input> {
+        if querying && self.buf == [ESC] && waited >= ESC_WAIT && !bytes.is_empty() {
+            self.query_escape_expired = true;
+            if !matches!(bytes.first(), Some(b'[' | b']')) {
+                let mut out = self.flush();
+                out.extend(self.feed(bytes));
+                return out;
+            }
+        }
+        self.feed(bytes)
+    }
+
     /// Bytes consumed so far (moves whenever a sequence completes or is given up on).
     pub fn consumed(&self) -> u64 {
         self.consumed
@@ -541,11 +560,18 @@ impl Decoder {
             }
             match parse(&self.buf[i..], self.policy) {
                 Step::Done(n, ins) => {
-                    if self.capture_appearance
-                        && ins.is_empty()
-                        && let Some(det) = crate::appearance::parse_reports(&self.buf[i..i + n])
-                    {
-                        out.push(Input::Appearance(det));
+                    if self.capture_appearance && ins.is_empty() {
+                        let reply = &self.buf[i..i + n];
+                        if let Some(det) = crate::appearance::parse_reports(reply) {
+                            out.push(Input::Appearance(det));
+                        } else if reply.starts_with(b"\x1b[?")
+                            && reply.ends_with(b"c")
+                            && reply[3..reply.len() - 1]
+                                .iter()
+                                .all(|b| b.is_ascii_digit() || *b == b';')
+                        {
+                            out.push(Input::AppearanceComplete);
+                        }
                     }
                     out.extend(ins);
                     i += n.max(1);
@@ -559,6 +585,9 @@ impl Decoder {
         }
         let i = i.min(self.buf.len());
         self.consumed += i as u64;
+        if i > 0 {
+            self.query_escape_expired = false;
+        }
         self.buf.drain(..i);
         if self.buf.len() > PENDING_MAX && self.paste.is_none() {
             self.consumed += self.buf.len() as u64;
@@ -581,6 +610,7 @@ impl Decoder {
             return vec![];
         }
         let b = std::mem::take(&mut self.buf);
+        let query_escape_expired = std::mem::take(&mut self.query_escape_expired);
         self.consumed += b.len() as u64;
         match self.tail.take() {
             // Not a mouse report's tail after all: typed input.
@@ -596,6 +626,11 @@ impl Decoder {
             self.buf = b;
             self.held = true;
             return vec![];
+        }
+        if query_escape_expired && matches!(b.as_slice(), [ESC, b'[' | b']']) {
+            let mut out = vec![named(NamedKey::Escape, Mods::empty(), KeyKind::Press)];
+            out.extend(self.feed(&b[1..]));
+            return out;
         }
         match b.as_slice() {
             [ESC] => {
@@ -1115,7 +1150,11 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
                 }
                 break;
             }
-            dec.feed(&b[..k as usize])
+            dec.feed_after_wait(
+                &b[..k as usize],
+                since.elapsed(),
+                probe.deadline.is_some() || query_prefix,
+            )
         } else {
             vec![]
         };
@@ -1124,12 +1163,13 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             since = Instant::now();
             query_prefix = false;
         }
-        // The query's own timeout must neither restart the sequence timer nor turn an
-        // already buffered reply ESC into a key under the ordinary short timeout.
-        query_prefix = (query_prefix || probe.deadline.is_some()) && dec.wait().is_some();
         for i in ins {
             let i = match i {
                 Input::Appearance(det) => match probe.report(det, Instant::now()) {
+                    Some(det) => Input::Appearance(det),
+                    None => continue,
+                },
+                Input::AppearanceComplete => match probe.finish() {
                     Some(det) => Input::Appearance(det),
                     None => continue,
                 },
@@ -1139,6 +1179,9 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
                 return;
             }
         }
+        // A DA1 sentinel above closes the query before arming any following key prefix.
+        // Expiry alone must not shorten the wait of an already buffered reply.
+        query_prefix = (query_prefix || probe.deadline.is_some()) && dec.wait().is_some();
     }
     if stop_r >= 0 {
         // SAFETY: closing our pipe's read end.
@@ -1705,5 +1748,88 @@ mod appearance_tests {
         assert!(
             matches!(dec.flush().as_slice(), [Input::Key(k)] if k.key == Key::Named(NamedKey::Escape))
         );
+    }
+
+    #[test]
+    fn real_escape_then_letter_during_query_stays_two_keys() {
+        let mut dec = Decoder::new();
+        dec.capture_appearance = true;
+        dec.feed(b"\x1b");
+        let got = dec.feed_after_wait(b"x", Duration::from_millis(80), true);
+        assert!(matches!(got.as_slice(), [Input::Key(escape), Input::Key(x)]
+            if escape.key == Key::Named(NamedKey::Escape)
+                && x.key == Key::Char('x') && x.mods == Mods::empty()));
+        dec.feed(b"\x1b");
+        let got = dec.feed_after_wait(b"x", Duration::from_millis(20), true);
+        assert!(matches!(got.as_slice(), [Input::Key(x)]
+            if x.key == Key::Char('x') && x.mods == Mods::ALT));
+        dec.feed(b"\x1b");
+        assert!(
+            dec.feed_after_wait(b"]", Duration::from_millis(80), true)
+                .is_empty()
+        );
+        assert!(
+            matches!(dec.flush().as_slice(), [Input::Key(escape), Input::Key(bracket)]
+            if escape.key == Key::Named(NamedKey::Escape)
+                && bracket.key == Key::Char(']') && bracket.mods == Mods::empty())
+        );
+    }
+
+    #[test]
+    fn delayed_reply_introducers_and_paste_are_not_escape_keys() {
+        for reply in [&b"\x1b]11;rgb:0/0/0\x07"[..], b"\x1b[?997;1n"] {
+            let mut dec = Decoder::new();
+            dec.capture_appearance = true;
+            dec.feed(&reply[..1]);
+            assert!(
+                dec.feed_after_wait(&reply[1..2], Duration::from_millis(80), true)
+                    .is_empty()
+            );
+            let got = dec.feed_after_wait(&reply[2..], Duration::from_millis(100), true);
+            assert!(matches!(got.as_slice(), [Input::Appearance(_)]));
+        }
+        let mut dec = Decoder::new();
+        dec.capture_appearance = true;
+        dec.feed(b"\x1b");
+        let got = dec.feed_after_wait(b"\x1b[200~hello\x1b[201~", Duration::from_millis(80), true);
+        assert!(
+            matches!(got.as_slice(), [Input::Key(escape), Input::Event(Event::Paste(s))]
+            if escape.key == Key::Named(NamedKey::Escape) && s == "hello")
+        );
+        dec.feed(b"\x1b");
+        assert_eq!(
+            dec.feed_after_wait(
+                b"[200~split paste\x1b[201~",
+                Duration::from_millis(80),
+                true
+            ),
+            [Input::Event(Event::Paste("split paste".into()))]
+        );
+    }
+
+    #[test]
+    fn fragmented_da1_sentinel_completes_query_and_restores_short_escape_wait() {
+        let mut dec = Decoder::new();
+        dec.capture_appearance = true;
+        let mut probe = crate::appearance::Probe::default();
+        let now = crate::time::Instant::now();
+        probe.begin(now);
+        let got = dec.feed(b"\x1b]11;rgb:0/0/0\x07");
+        let [Input::Appearance(det)] = got.as_slice() else {
+            panic!("{got:?}")
+        };
+        assert!(probe.report(*det, now).is_none());
+        dec.feed(b"\x1b");
+        let got = dec.feed_after_wait(b"[?62;4c\x1b", Duration::from_millis(80), true);
+        assert_eq!(got, [Input::AppearanceComplete]);
+        assert_eq!(probe.finish(), Some(*det));
+        assert!(probe.deadline.is_none());
+        assert_eq!(dec.query_wait(probe.deadline.is_some()), Some(ESC_WAIT));
+        // A complete late scheme report remains authoritative after the sentinel.
+        let late = crate::appearance::Detected {
+            dark: false,
+            source: crate::appearance::Source::Csi996,
+        };
+        assert_eq!(probe.report(late, now + Duration::from_secs(1)), Some(late));
     }
 }

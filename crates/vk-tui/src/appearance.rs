@@ -189,10 +189,14 @@ impl Probe {
         }
     }
 
+    pub fn finish(&mut self) -> Option<Detected> {
+        self.deadline = None;
+        self.background.take()
+    }
+
     pub fn finish_due(&mut self, now: Instant) -> Option<Detected> {
         if self.deadline.is_some_and(|d| now >= d) {
-            self.deadline = None;
-            self.background.take()
+            self.finish()
         } else {
             None
         }

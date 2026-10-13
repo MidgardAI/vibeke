@@ -1969,6 +1969,7 @@ impl App {
         match i {
             crate::input::Input::Event(ev) => self.on_event(ev),
             crate::input::Input::Appearance(det) => crate::appearance::on_detect(self, Some(det)),
+            crate::input::Input::AppearanceComplete => {}
             crate::input::Input::Key(k) => {
                 self.dirty = true;
                 crate::gateway::on_input(self);
