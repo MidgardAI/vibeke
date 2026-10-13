@@ -204,6 +204,11 @@ pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
     if ended_recently(run, &task.id, now_ms(), Some(task.since_ms)) {
         return;
     }
+    // A newer task with the id: the old end no longer applies to reports of it.
+    ENDED
+        .lock()
+        .unwrap()
+        .remove(&(run.to_string(), task.id.clone()));
     store(server, run, |r| {
         // A reported set may have listed it first, without the tool call that started it.
         if let Some(i) = r.bg_tasks.iter().position(|t| t.id == task.id) {
