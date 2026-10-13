@@ -29,6 +29,29 @@ use vk_proto::render::Style;
 pub const HUMAN_NOTE: &str = "Your judgment decides this human criterion on this revision only — it is not a check result and does not accept the task.";
 pub const SELECT_NOTE: &str = "Only the ticked files are captured (on top of HEAD); checks on that subject verify the selection alone, and accepting it does not review the rest of the checkout.";
 
+/// The verdicts of a human review, in the order ←/→ cycle them: (wire value, label).
+pub const VERDICTS: [(&str, &str); 3] = [
+    ("supported", "supports it"),
+    ("failed", "does not meet it"),
+    ("withdrawn", "withdraw"),
+];
+
+/// The verdict choice as one line, the current option in brackets.
+fn verdict_choice(choice: usize) -> String {
+    let parts: Vec<String> = VERDICTS
+        .iter()
+        .enumerate()
+        .map(|(i, (_, label))| {
+            if i == choice {
+                format!("[{label}]")
+            } else {
+                format!(" {label} ")
+            }
+        })
+        .collect();
+    format!("Verdict ‹ {} ›", parts.join(" "))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HumanPhase {
     Pick,
@@ -48,6 +71,8 @@ pub struct HumanForm {
     pub note: String,
     /// The verdict `note` was written for: choosing another verdict starts a new note.
     pub note_verdict: String,
+    /// The chosen verdict: an index into [`VERDICTS`].
+    pub choice: usize,
     pub phase: HumanPhase,
     pub error: Option<String>,
 }
@@ -154,6 +179,7 @@ pub fn main_key(app: &mut App, ev: KeyEvent) {
                     subject,
                     note: String::new(),
                     note_verdict: String::new(),
+                    choice: 0,
                     phase: HumanPhase::Pick,
                     error: None,
                 }),
@@ -218,20 +244,22 @@ pub fn sub_key(app: &mut App, s: Sub, ev: KeyEvent) {
                     f.sel = f.sel.saturating_sub(1);
                     set_sub(app, Sub::Human(f));
                 }
+                Key::Named(NamedKey::Left | NamedKey::Right) => {
+                    let by = crate::formkeys::step(crate::formkeys::nav(&ev, false)).unwrap_or(1);
+                    f.choice = crate::formkeys::wrap(f.choice, by, VERDICTS.len());
+                    set_sub(app, Sub::Human(f));
+                }
                 Key::Char(c @ ('y' | 'n' | 'w')) => {
-                    let verdict = match c {
-                        'y' => "supported",
-                        'n' => "failed",
-                        _ => "withdrawn",
+                    f.choice = match c {
+                        'y' => 0,
+                        'n' => 1,
+                        _ => 2,
                     };
-                    if f.note_verdict != verdict {
-                        f.note.clear();
-                        f.note_verdict = verdict.into();
-                    }
-                    f.phase = HumanPhase::Note {
-                        verdict: verdict.into(),
-                    };
-                    f.error = None;
+                    start_note(&mut f);
+                    set_sub(app, Sub::Human(f));
+                }
+                Key::Named(NamedKey::Enter) => {
+                    start_note(&mut f);
                     set_sub(app, Sub::Human(f));
                 }
                 _ => set_sub(app, Sub::Human(f)),
@@ -239,6 +267,16 @@ pub fn sub_key(app: &mut App, s: Sub, ev: KeyEvent) {
             HumanPhase::Note { verdict } => match ev.key {
                 _ if esc => {
                     f.phase = HumanPhase::Pick;
+                    set_sub(app, Sub::Human(f));
+                }
+                // ←/→ change the verdict; the note typed so far stays.
+                Key::Named(NamedKey::Left | NamedKey::Right) => {
+                    let by = crate::formkeys::step(crate::formkeys::nav(&ev, true)).unwrap_or(1);
+                    f.choice = crate::formkeys::wrap(f.choice, by, VERDICTS.len());
+                    let v = VERDICTS[f.choice].0.to_string();
+                    f.note_verdict = v.clone();
+                    f.phase = HumanPhase::Note { verdict: v };
+                    f.error = None;
                     set_sub(app, Sub::Human(f));
                 }
                 Key::Named(NamedKey::Enter) => {
@@ -301,6 +339,19 @@ pub fn sub_key(app: &mut App, s: Sub, ev: KeyEvent) {
             _ => set_sub(app, Sub::Patch(pk)),
         },
     }
+}
+
+/// Open the note for the chosen verdict; choosing another verdict than the last starts a new note.
+fn start_note(f: &mut HumanForm) {
+    let verdict = VERDICTS[f.choice.min(VERDICTS.len() - 1)].0;
+    if f.note_verdict != verdict {
+        f.note.clear();
+        f.note_verdict = verdict.into();
+    }
+    f.phase = HumanPhase::Note {
+        verdict: verdict.into(),
+    };
+    f.error = None;
 }
 
 fn submit_human(app: &mut App, mut f: HumanForm, verdict: &str) {
@@ -636,13 +687,16 @@ pub fn draw_sub(app: &App, g: &mut Grid, s: &Sub, r: SRect, mut y: u16) {
                     sel(i == f.sel),
                 ));
             }
+            if !matches!(f.phase, HumanPhase::Saving) {
+                lines.push((String::new(), t.text()));
+                lines.push((verdict_choice(f.choice), sel(true)));
+            }
             match &f.phase {
                 HumanPhase::Pick => (
                     "Human review",
-                    "j/k criterion · y supports it · n does not meet it · w withdraw · esc close",
+                    "↑/↓ criterion · ←/→ verdict · y supports · n does not meet · w withdraw · enter next",
                 ),
                 HumanPhase::Note { verdict } => {
-                    lines.push((String::new(), t.text()));
                     lines.push((
                         format!(
                             "{} — note{}: {}",
@@ -660,7 +714,10 @@ pub fn draw_sub(app: &App, g: &mut Grid, s: &Sub, r: SRect, mut y: u16) {
                         ),
                         t.bold(t.fg),
                     ));
-                    ("Human review", "type a note · enter record · esc back")
+                    (
+                        "Human review",
+                        "←/→ verdict · type a note · enter record · esc back",
+                    )
                 }
                 HumanPhase::Saving => {
                     lines.push(("Recording…".into(), t.s(t.yellow)));

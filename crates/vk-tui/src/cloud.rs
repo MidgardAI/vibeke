@@ -714,6 +714,8 @@ pub struct Flow {
     pub box_sel: Option<String>,
     pub peers: Vec<Peer>,
     pub interrupt: bool,
+    /// The focused row of the confirm step: 0 the interrupt toggle, 1 Send, 2 Back.
+    pub confirm_focus: usize,
     pub stage: Stage,
     /// A list is being read.
     pub loading: bool,
@@ -830,6 +832,7 @@ fn open(app: &mut App, mi: usize, kind: Kind, src: Source, label: String) {
         box_sel: None,
         peers: Vec::new(),
         interrupt: false,
+        confirm_focus: 0,
         stage: match kind {
             Kind::Send => Stage::PickProvider { sel: 0 },
             Kind::BringBack => Stage::PickTarget { sel: 0 },
@@ -1070,6 +1073,18 @@ fn moved(sel: &mut usize, n: usize, up: bool, down: bool) {
     }
 }
 
+/// Back from the confirm step to the sandbox or provider list.
+fn confirm_back(f: &mut Flow) -> Act {
+    f.error = None;
+    f.confirm_focus = 0;
+    f.stage = if f.boxes.is_empty() {
+        Stage::PickProvider { sel: 0 }
+    } else {
+        Stage::PickBox { sel: 0 }
+    };
+    Act::None
+}
+
 /// The flow's key handling without the app: changes the flow and says what else to do.
 pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
     let esc = matches!(ev.key, Key::Named(NamedKey::Escape));
@@ -1121,24 +1136,31 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
             }
         }
         Stage::Confirm => {
-            if esc {
-                f.error = None;
-                f.stage = if f.boxes.is_empty() {
-                    Stage::PickProvider { sel: 0 }
-                } else {
-                    Stage::PickBox { sel: 0 }
-                };
-                return Act::None;
+            use crate::formkeys::{Nav, nav, wrap};
+            let n = nav(ev, false);
+            if n == Nav::Back || (n == Nav::Activate && f.confirm_focus == 2) {
+                return confirm_back(f);
             }
             if f.busy.is_some() {
                 return Act::None;
             }
-            let toggle = matches!(ev.key, Key::Named(NamedKey::Space))
-                || (plain && matches!(ev.key, Key::Char('i' | ' ')));
-            if toggle {
-                f.interrupt = !f.interrupt;
-            } else if enter {
-                return Act::StartMove;
+            match n {
+                Nav::Next | Nav::Prev => {
+                    let by = if n == Nav::Next { 1 } else { -1 };
+                    f.confirm_focus = wrap(f.confirm_focus, by, 3);
+                }
+                Nav::Inc | Nav::Dec | Nav::Toggle => match f.confirm_focus {
+                    0 => f.interrupt = !f.interrupt,
+                    // On the buttons ←/→ switch between them; space presses the focused one.
+                    1 if n == Nav::Toggle => return Act::StartMove,
+                    2 if n == Nav::Toggle => return confirm_back(f),
+                    focus => f.confirm_focus = if focus == 1 { 2 } else { 1 },
+                },
+                Nav::Activate => return Act::StartMove,
+                Nav::Other if plain && matches!(ev.key, Key::Char('i')) => {
+                    f.interrupt = !f.interrupt;
+                }
+                _ => {}
             }
         }
         Stage::PickTarget { sel } => {
@@ -1713,17 +1735,30 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             a.line("", t.text());
             a.line(
                 &format!(
-                    "{} Interrupt agent if busy  (i toggles)",
+                    "{} {} Interrupt agent if busy  (i toggles)",
+                    mark(f.confirm_focus == 0),
                     if f.interrupt { "[x]" } else { "[ ]" }
                 ),
-                t.text(),
+                row(f.confirm_focus == 0),
+            );
+            a.line("", t.text());
+            a.line(
+                &format!(
+                    "{}[Send]  {}[Back]",
+                    mark(f.confirm_focus == 1),
+                    mark(f.confirm_focus == 2)
+                ),
+                row(f.confirm_focus > 0),
             );
             a.line("", t.text());
             if let Some(b) = &f.busy {
                 a.line(&format!("⏳ {b}"), t.s(t.yellow));
             }
             error_lines(&mut a, app, f);
-            a.footer("enter send · i interrupt · esc back", t.dim());
+            a.footer(
+                &format!("{} · i interrupt", crate::formkeys::FORM_HINT),
+                t.dim(),
+            );
         }
         Stage::PickTarget { sel } => {
             a.line(&format!("Bring {} back to:", f.label), t.bold(t.fg));

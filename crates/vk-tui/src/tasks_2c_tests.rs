@@ -250,3 +250,36 @@ fn link_run_step_lists_verified_runs_and_tracks_the_chosen_one() {
     let (_, p) = only(&commands(&mut rxs[0]), "task.sources");
     assert_eq!(p["run"], "r2");
 }
+
+#[test]
+fn human_review_verdict_is_a_choice_that_arrows_cycle() {
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], package());
+    app.on_key(ch('H'));
+    let choice = |app: &App| {
+        let TaskSub::Lane2c(Sub::Human(f)) = sub(app) else {
+            panic!("human review form expected");
+        };
+        f.choice
+    };
+    assert_eq!(choice(&app), 0);
+    assert!(screen(&app).contains("[supports it]"));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(choice(&app), 1);
+    assert!(screen(&app).contains("[does not meet it]"));
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("[withdraw]"));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(choice(&app), 0);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(choice(&app), 2);
+    // Enter moves on to the note for the chosen verdict; ←/→ still change it there.
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(choice(&app), 1);
+    typ(&mut app, "Loses the query string");
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "task.review.human_review");
+    assert_eq!(p["verdict"], "failed");
+    assert_eq!(p["note"], "Loses the query string");
+}

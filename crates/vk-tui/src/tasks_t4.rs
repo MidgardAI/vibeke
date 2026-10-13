@@ -128,6 +128,24 @@ pub struct Picker {
     pub blocks: bool,
     /// true: this task waits for the chosen one; false: the chosen one waits for this task.
     pub waits_for: bool,
+    /// Which part of the picker has the keys.
+    pub focus: PickFocus,
+}
+
+/// The parts of the dependency picker that tab and shift+tab move between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickFocus {
+    /// The filter: letters are typed into it.
+    #[default]
+    Filter,
+    /// The kind (`blocks` or `related`): ←/→ and space change it.
+    Kind,
+    /// The candidate list.
+    List,
+}
+
+impl PickFocus {
+    const ALL: [PickFocus; 3] = [PickFocus::Filter, PickFocus::Kind, PickFocus::List];
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -608,6 +626,13 @@ fn notes_key(app: &mut App, mut n: NotesView, ev: KeyEvent) {
                     }
                 }
             }
+            // ←/→ choose the classification; the reason is typed alongside.
+            Key::Named(NamedKey::Left | NamedKey::Right) => {
+                let by = crate::formkeys::step(crate::formkeys::nav(&ev, true)).unwrap_or(1);
+                let at = CLASSES.iter().position(|c| *c == class).unwrap_or(0);
+                let class = CLASSES[crate::formkeys::wrap(at, by, CLASSES.len())];
+                n.reason = Some((class.into(), reason));
+            }
             _ => {
                 edit(&mut reason, &ev);
                 n.reason = Some((class, reason));
@@ -618,6 +643,20 @@ fn notes_key(app: &mut App, mut n: NotesView, ev: KeyEvent) {
     }
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') => return,
+        // Enter or an arrow opens the classification choice (← starts from the last option).
+        Key::Named(NamedKey::Enter | NamedKey::Left | NamedKey::Right) => {
+            if notes.get(n.sel).is_none() {
+                n.error = Some("No note selected".into());
+            } else {
+                let class = if ev.key == Key::Named(NamedKey::Left) {
+                    CLASSES[CLASSES.len() - 1]
+                } else {
+                    CLASSES[0]
+                };
+                n.error = None;
+                n.reason = Some((class.into(), String::new()));
+            }
+        }
         Key::Char('j') | Key::Named(NamedKey::Down) => {
             n.sel = (n.sel + 1).min(notes.len().saturating_sub(1))
         }
@@ -638,6 +677,24 @@ fn notes_key(app: &mut App, mut n: NotesView, ev: KeyEvent) {
         _ => {}
     }
     set_sub(app, T4Sub::Notes(n));
+}
+
+/// The classifications of a review note, in the order ←/→ cycle them.
+const CLASSES: [&str; 3] = ["blocking", "not_blocking", "dismissed"];
+
+/// The classification choice as one line, the current option in brackets.
+fn class_choice(current: &str) -> String {
+    let parts: Vec<String> = CLASSES
+        .iter()
+        .map(|c| {
+            if *c == current {
+                format!("[{}]", classification_label(c))
+            } else {
+                format!(" {} ", classification_label(c))
+            }
+        })
+        .collect();
+    format!("Mark as ‹ {} ›", parts.join(" "))
 }
 
 fn deps_key(app: &mut App, mut d: DepsView, ev: KeyEvent) {
@@ -668,16 +725,39 @@ fn deps_key(app: &mut App, mut d: DepsView, ev: KeyEvent) {
         let cands = candidates(app, &v, &p.filter);
         match ev.key {
             Key::Named(NamedKey::Escape) => {}
-            Key::Named(NamedKey::Tab) => {
-                p.blocks = !p.blocks;
-                d.picker = Some(p);
-            }
             Key::Named(NamedKey::Down) => {
                 p.sel = (p.sel + 1).min(cands.len().saturating_sub(1));
                 d.picker = Some(p);
             }
             Key::Named(NamedKey::Up) => {
                 p.sel = p.sel.saturating_sub(1);
+                d.picker = Some(p);
+            }
+            _ if p.focus == PickFocus::Kind
+                && matches!(
+                    crate::formkeys::nav(&ev, false),
+                    crate::formkeys::Nav::Inc
+                        | crate::formkeys::Nav::Dec
+                        | crate::formkeys::Nav::Toggle
+                ) =>
+            {
+                p.blocks = !p.blocks;
+                d.picker = Some(p);
+            }
+            // Tab and shift+tab walk filter, kind and list.
+            Key::Named(NamedKey::Tab) => {
+                let by = crate::formkeys::tab_step(&ev).unwrap_or(1);
+                let at = PickFocus::ALL
+                    .iter()
+                    .position(|f| *f == p.focus)
+                    .unwrap_or(0);
+                p.focus = PickFocus::ALL[crate::formkeys::wrap(at, by, PickFocus::ALL.len())];
+                d.picker = Some(p);
+            }
+            // The kind has no text: other keys are ignored there.
+            _ if p.focus == PickFocus::Kind
+                && !matches!(ev.key, Key::Named(NamedKey::Enter | NamedKey::Escape)) =>
+            {
                 d.picker = Some(p);
             }
             Key::Named(NamedKey::Enter) => match cands.get(p.sel) {
@@ -729,6 +809,7 @@ fn deps_key(app: &mut App, mut d: DepsView, ev: KeyEvent) {
                 sel: 0,
                 blocks: true,
                 waits_for: c == 'a',
+                focus: PickFocus::Filter,
             });
         }
         Key::Char('x') => match rows.get(d.sel) {
@@ -1390,10 +1471,10 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
             }
             if let Some((class, reason)) = &n.reason {
                 lines.push((String::new(), t.text()));
+                lines.push((class_choice(class), sel(true)));
                 lines.push((
                     format!(
-                        "Mark {} — reason{}: {reason}▏",
-                        classification_label(class),
+                        "reason{}: {reason}▏",
                         if class == "dismissed" {
                             " (required)"
                         } else {
@@ -1410,9 +1491,9 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
                 lines.push((e.clone(), t.s(t.red)));
             }
             let footer = if n.reason.is_some() {
-                "type a reason · enter confirm · esc back".to_string()
+                "←/→ choose · type a reason · enter confirm · esc back".to_string()
             } else {
-                "j/k move · b blocking · n not blocking · x dismiss (reason required) · esc back"
+                "↑/↓ move · ←/→ classify · b blocking · n not blocking · x dismiss (reason required)"
                     .to_string()
             };
             ("Review notes", footer)
@@ -1441,14 +1522,31 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
                 lines.push((String::new(), t.text()));
                 lines.push((
                     format!(
-                        "{} · kind ‹ {} › · filter: {}▏",
+                        "{} · kind {} · {}filter: {}{}",
                         if p.waits_for {
                             "This task waits for…"
                         } else {
                             "…waits for this task"
                         },
-                        if p.blocks { "blocks" } else { "related" },
-                        p.filter
+                        {
+                            let kind = if p.blocks { "blocks" } else { "related" };
+                            if p.focus == PickFocus::Kind {
+                                format!("[‹ {kind} ›]")
+                            } else {
+                                format!("‹ {kind} ›")
+                            }
+                        },
+                        if p.focus == PickFocus::Filter {
+                            "›"
+                        } else {
+                            ""
+                        },
+                        p.filter,
+                        if p.focus == PickFocus::Filter {
+                            "▏"
+                        } else {
+                            ""
+                        },
                     ),
                     t.bold(t.fg),
                 ));
@@ -1478,7 +1576,7 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
                 wrap_push(&mut lines, e, "", w, t.bold(t.red));
             }
             let footer = if d.picker.is_some() {
-                "type to filter · ↑↓ choose · tab blocks/related · enter confirm link · esc back"
+                "tab filter/kind/list · ←/→ kind · ↑/↓ choose · enter confirm link · esc back"
             } else {
                 "j/k move · a this task waits for… · A …waits for this task · x remove · esc back"
             };

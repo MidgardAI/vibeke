@@ -1214,6 +1214,50 @@ impl Accept {
         self.focus = rows[j as usize];
     }
 
+    /// ←/→ on the focused row: the previous or next repository option on a radio row, a flip on
+    /// a toggle, the neighbouring button on the button row.
+    fn change(&mut self, by: i32) {
+        use crate::formkeys::wrap;
+        match self.focus {
+            Row::Repo(_) | Row::Browse | Row::CloneTo => {
+                let mut options: Vec<(Row, RepoSel)> = (0..self.repos.len())
+                    .map(|i| (Row::Repo(i), RepoSel::Suggested(i)))
+                    .collect();
+                if self.browse_path.is_some() {
+                    options.push((Row::Browse, RepoSel::Browse));
+                }
+                if self.origin().is_some() {
+                    options.push((Row::CloneTo, RepoSel::CloneTo));
+                }
+                if options.is_empty() {
+                    return;
+                }
+                // From a row that is not an option (Browse… with no path yet) start at the
+                // option before or after it.
+                let all = self.rows();
+                let at = all.iter().position(|r| *r == self.focus).unwrap_or(0);
+                let mut j = at as i32;
+                for _ in 0..all.len() {
+                    j = wrap(j as usize, by, all.len()) as i32;
+                    if let Some((row, sel)) = options.iter().find(|(r, _)| *r == all[j as usize]) {
+                        self.focus = *row;
+                        self.set_repo(*sel);
+                        return;
+                    }
+                }
+            }
+            Row::Resume => self.resume = !self.resume,
+            Row::TrustMise => self.trust_mise = !self.trust_mise,
+            Row::TrustDirenv => self.trust_direnv = !self.trust_direnv,
+            Row::Accept | Row::Decline | Row::Later => {
+                let buttons = [Row::Accept, Row::Decline, Row::Later];
+                let at = buttons.iter().position(|r| *r == self.focus).unwrap_or(0);
+                self.focus = buttons[wrap(at, by, buttons.len())];
+            }
+            Row::Worktree | Row::Branch => {}
+        }
+    }
+
     fn open_picker(&mut self, what: PickFor) {
         let initial = match what {
             PickFor::Browse => self.browse_path.clone().or_else(|| {
@@ -1484,25 +1528,15 @@ fn overlay_key(a: &mut Accept, ev: &KeyEvent) -> Act {
             _ => Act::None,
         };
     }
-    let button = matches!(a.focus, Row::Accept | Row::Decline | Row::Later);
     match &ev.key {
         _ if esc => return Act::Close,
         Key::Named(NamedKey::Tab) if ev.mods.shift() => a.move_focus(-1, true),
         Key::Named(NamedKey::Tab) => a.move_focus(1, true),
         Key::Named(NamedKey::Up) => a.move_focus(-1, false),
         Key::Named(NamedKey::Down) => a.move_focus(1, false),
-        Key::Named(NamedKey::Left) if button => {
-            a.focus = match a.focus {
-                Row::Later => Row::Decline,
-                _ => Row::Accept,
-            }
-        }
-        Key::Named(NamedKey::Right) if button => {
-            a.focus = match a.focus {
-                Row::Accept => Row::Decline,
-                _ => Row::Later,
-            }
-        }
+        // ←/→ (and h/l) change the focused row: another repository, a toggle, or the next button.
+        Key::Named(NamedKey::Left | NamedKey::Right) => a.change(step_of(ev)),
+        Key::Char('h' | 'l') if plain && a.focus != Row::Branch => a.change(step_of(ev)),
         // The branch is typed in place.
         Key::Named(NamedKey::Backspace) if a.focus == Row::Branch => {
             a.branch.pop();
@@ -1519,6 +1553,11 @@ fn overlay_key(a: &mut Accept, ev: &KeyEvent) -> Act {
         _ => {}
     }
     Act::None
+}
+
+/// `+1` for → and `l`, `-1` for ← and `h`.
+fn step_of(ev: &KeyEvent) -> i32 {
+    crate::formkeys::step(crate::formkeys::nav(ev, false)).unwrap_or(1)
 }
 
 /// `enter` (or `space`, which chooses without opening a picker) on the focused row.
@@ -1810,8 +1849,10 @@ pub fn draw_accept(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             }
         }
         lines.push((
-            "↑↓/tab move · space choose · enter open/toggle · a accept · d decline · esc later"
-                .into(),
+            format!(
+                "{} · a accept · d decline · esc later",
+                crate::formkeys::FORM_HINT.replace(" · esc back", "")
+            ),
             t.dim(),
         ));
     } else if let Some(e) = &a.error {
@@ -2526,6 +2567,8 @@ pub struct SendForm {
     /// The chosen destination: the summary step.
     pub chosen: Option<Dest>,
     pub interrupt: bool,
+    /// The focused row of the summary step.
+    pub focus: SendFocus,
     /// `handoff.send` (or the pairing before it) in flight.
     pub busy: bool,
     /// Auto-pairing step in progress, as the summary shows it.
@@ -2535,6 +2578,19 @@ pub struct SendForm {
     /// The `handoff.send` in flight for this form.
     pub send_op: Option<u64>,
     pub error: Option<String>,
+}
+
+/// Focus stops of the send summary, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SendFocus {
+    #[default]
+    Interrupt,
+    Send,
+    Back,
+}
+
+impl SendFocus {
+    pub const ALL: [SendFocus; 3] = [SendFocus::Interrupt, SendFocus::Send, SendFocus::Back];
 }
 
 /// One auto-pairing run for a send, frozen when it starts: a reply that arrives after Esc (or
@@ -2622,6 +2678,7 @@ pub fn open_send(app: &mut App) {
         sel: 0,
         chosen: None,
         interrupt: false,
+        focus: SendFocus::Interrupt,
         busy: false,
         pairing: None,
         pair_op: None,
@@ -2884,17 +2941,58 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
         return;
     }
     if f.chosen.is_some() {
+        use crate::formkeys::{Nav, nav, wrap};
         let plain = !ev.mods.ctrl() && !ev.mods.alt();
-        match ev.key {
-            _ if esc => {
+        let n = nav(&ev, false);
+        let mut submit = false;
+        match n {
+            Nav::Back => {
                 f.chosen = None;
                 f.error = None;
+                f.focus = SendFocus::Interrupt;
             }
-            Key::Char('i') if plain => f.interrupt = !f.interrupt,
-            Key::Named(NamedKey::Space) => f.interrupt = !f.interrupt,
-            Key::Char(' ') if plain => f.interrupt = !f.interrupt,
-            Key::Named(NamedKey::Enter) => submit_send(app),
-            _ => {}
+            Nav::Next | Nav::Prev => {
+                let rows = SendFocus::ALL;
+                let at = rows.iter().position(|r| *r == f.focus).unwrap_or(0);
+                let by = if n == Nav::Next { 1 } else { -1 };
+                f.focus = rows[wrap(at, by, rows.len())];
+            }
+            Nav::Inc | Nav::Dec | Nav::Toggle => match f.focus {
+                SendFocus::Interrupt => f.interrupt = !f.interrupt,
+                // On the buttons ←/→ switch between them; space presses the focused one.
+                SendFocus::Send | SendFocus::Back if n == Nav::Toggle => {
+                    if f.focus == SendFocus::Send {
+                        submit = true;
+                    } else {
+                        f.chosen = None;
+                        f.error = None;
+                        f.focus = SendFocus::Interrupt;
+                    }
+                }
+                SendFocus::Send | SendFocus::Back => {
+                    f.focus = if f.focus == SendFocus::Send {
+                        SendFocus::Back
+                    } else {
+                        SendFocus::Send
+                    };
+                }
+            },
+            Nav::Activate => match f.focus {
+                SendFocus::Back => {
+                    f.chosen = None;
+                    f.error = None;
+                    f.focus = SendFocus::Interrupt;
+                }
+                _ => submit = true,
+            },
+            Nav::Other => {
+                if matches!(ev.key, Key::Char('i')) && plain {
+                    f.interrupt = !f.interrupt;
+                }
+            }
+        }
+        if submit {
+            submit_send(app);
         }
         app.dirty = true;
         return;
@@ -2984,12 +3082,22 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
             t.dim(),
         );
         b.line("", t.text());
+        let on = |r: SendFocus| f.focus == r;
+        let focus_st = Style {
+            attrs: attr::BOLD,
+            ..t.sel(t.fg)
+        };
         b.line(
             &format!(
-                "{} Interrupt agent if busy  (i toggles)",
+                "{} {} Interrupt agent if busy  (i toggles)",
+                if on(SendFocus::Interrupt) { "›" } else { " " },
                 if f.interrupt { "[x]" } else { "[ ]" }
             ),
-            t.text(),
+            if on(SendFocus::Interrupt) {
+                focus_st
+            } else {
+                t.text()
+            },
         );
         b.line("", t.text());
         if let Some(p) = &f.pairing {
@@ -2999,7 +3107,29 @@ pub fn draw_send(app: &App, g: &mut Grid) -> Option<(u16, u16)> {
         } else if let Some(e) = &f.error {
             b.line(&format!("✗ {e}"), t.s(t.red));
         }
-        b.line("[enter] hand off  [esc] back", t.dim());
+        let btn = |r: SendFocus, label: &str| {
+            if on(r) {
+                format!("›[{label}]")
+            } else {
+                format!(" [{label}]")
+            }
+        };
+        b.line(
+            &format!(
+                "{}  {}",
+                btn(SendFocus::Send, "Hand off"),
+                btn(SendFocus::Back, "Back")
+            ),
+            if on(SendFocus::Send) || on(SendFocus::Back) {
+                focus_st
+            } else {
+                t.text()
+            },
+        );
+        b.line(
+            &format!("{} · i interrupt", crate::formkeys::FORM_HINT),
+            t.dim(),
+        );
         return None;
     }
     let (x, y, w, rows) = list_frame(

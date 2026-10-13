@@ -173,6 +173,14 @@ last message and whether the conversation resumes. Then choose:
   completes, arrows walk the folders, git repositories are marked), the branch is typed in place.
 - **Resume agent**, **Trust mise config** and **Trust direnv config**.
 
+Use `up`, `down`, `tab` and `shift+tab` to move between the rows. On a repository row, `left` and
+`right` choose the previous or next repository. On a toggle, `left`, `right` and `space` switch it
+on or off. On the buttons, `left` and `right` move between **Accept**, **Decline** and **Later**.
+
+When you send a pane, the last step shows an **Interrupt agent if busy** toggle and the
+**Hand off** and **Back** buttons. Move between them with `tab`, `shift+tab`, `up` and `down`.
+Switch the toggle with `left`, `right`, `space` or `i`.
+
 `a` (or **Accept**) imports it. The overlay shows the progress (cloning, importing, starting the
 agent) and then focuses the new pane. If the import fails, the reason stays on screen so you can
 choose again; a clone whose remotes don't match the sender's origin is listed with its remotes.

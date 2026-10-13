@@ -1367,3 +1367,127 @@ fn a_failed_link_job_shows_the_reason() {
     assert!(l.error.as_deref().unwrap().contains("vibeke login"));
     assert!(screen(&app).contains("✗ this host is not signed in"));
 }
+
+fn accept_state(app: &App) -> &Accept {
+    app.ux.handoff.accept.as_ref().unwrap()
+}
+
+#[test]
+fn arrows_pick_the_repository_and_flip_the_toggles() {
+    let (mut app, _rxs) = opened(&["/home/u/code/vibeke", "/home/u/code/other"]);
+    // Up from Accept to the first repository row.
+    let to_top = app.ux.handoff.accept.as_ref().unwrap().rows().len();
+    press(&mut app, NamedKey::Up, to_top);
+    assert_eq!(focus(&app), Row::Repo(0));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), Row::Repo(1));
+    assert_eq!(accept_state(&app).repo, RepoSel::Suggested(1));
+    // Browse… has no path yet, so → skips it and lands on "Clone to" (the origin is known).
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), Row::CloneTo);
+    assert_eq!(accept_state(&app).repo, RepoSel::CloneTo);
+    // And wraps around to the first repository.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), Row::Repo(0));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(focus(&app), Row::CloneTo);
+    assert_eq!(accept_state(&app).repo, RepoSel::CloneTo);
+    // The toggles: ←, → and space all flip.
+    for (row, get) in [
+        (Row::Resume, (|a: &Accept| a.resume) as fn(&Accept) -> bool),
+        (Row::TrustMise, |a: &Accept| a.trust_mise),
+        (Row::TrustDirenv, |a: &Accept| a.trust_direnv),
+    ] {
+        app.ux.handoff.accept.as_mut().unwrap().focus = row;
+        let before = get(accept_state(&app));
+        app.on_key(named(NamedKey::Right));
+        assert_eq!(get(accept_state(&app)), !before, "{row:?} →");
+        app.on_key(named(NamedKey::Left));
+        assert_eq!(get(accept_state(&app)), before, "{row:?} ←");
+        app.on_key(named(NamedKey::Space));
+        assert_eq!(get(accept_state(&app)), !before, "{row:?} space");
+        assert_eq!(focus(&app), row, "the focus stays");
+    }
+}
+
+#[test]
+fn arrows_on_the_button_row_move_between_the_buttons() {
+    let (mut app, _rxs) = opened(&["/home/u/code/vibeke"]);
+    assert_eq!(focus(&app), Row::Accept);
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), Row::Decline);
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), Row::Later);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(focus(&app), Row::Decline);
+    // Nothing else changed.
+    let a = accept_state(&app);
+    assert!(a.resume && !a.trust_mise);
+    assert!(screen(&app).contains("←/→ change · ↑/↓ or tab move · enter confirm"));
+}
+
+/// The send flow up to the summary step for the peer "laptop".
+fn send_summary() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("handoff_send", None);
+    let cmds = commands(&mut rxs[0]);
+    let (req, _) = only(&cmds, "handoff.peers");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"peers": [{"id": "pr2", "name": "laptop", "owner": "self"}]}),
+    );
+    app.on_key(named(NamedKey::Enter));
+    assert!(app.ux.handoff.send.as_ref().unwrap().chosen.is_some());
+    (app, rxs)
+}
+
+fn send_focus(app: &App) -> SendFocus {
+    app.ux.handoff.send.as_ref().unwrap().focus
+}
+
+#[test]
+fn the_send_summary_has_focusable_rows() {
+    let (mut app, mut rxs) = send_summary();
+    assert_eq!(send_focus(&app), SendFocus::Interrupt);
+    for key in [NamedKey::Left, NamedKey::Right, NamedKey::Space] {
+        let before = app.ux.handoff.send.as_ref().unwrap().interrupt;
+        app.on_key(named(key));
+        assert_eq!(app.ux.handoff.send.as_ref().unwrap().interrupt, !before);
+    }
+    app.on_key(ch('i'));
+    assert!(!app.ux.handoff.send.as_ref().unwrap().interrupt);
+    // Tab and the down arrow walk the rows; shift+tab and up walk back.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(send_focus(&app), SendFocus::Send);
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(send_focus(&app), SendFocus::Back);
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(send_focus(&app), SendFocus::Send);
+    // On the buttons ←/→ switch buttons and leave the toggle alone.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(send_focus(&app), SendFocus::Back);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(send_focus(&app), SendFocus::Send);
+    assert!(!app.ux.handoff.send.as_ref().unwrap().interrupt);
+    assert!(screen(&app).contains("←/→ change"));
+    // Enter on Hand off sends; on Back it returns to the host list.
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Enter));
+    assert!(app.ux.handoff.send.as_ref().unwrap().chosen.is_none());
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn enter_on_hand_off_sends_with_the_toggle_as_set() {
+    let (mut app, mut rxs) = send_summary();
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(send_focus(&app), SendFocus::Send);
+    app.on_key(named(NamedKey::Enter));
+    let cmds = commands(&mut rxs[0]);
+    let (_, p) = only(&cmds, "handoff.send");
+    assert_eq!(p, json!({"pane": "p1", "peer": "pr2", "interrupt": true}));
+}

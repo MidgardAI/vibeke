@@ -544,7 +544,9 @@ fn dependencies_add_cycle_and_remove() {
     // Reverse direction + related kind.
     app.on_key(ch('A'));
     app.on_key(named(NamedKey::Tab));
-    assert!(screen(&app).contains("…waits for this task · kind ‹ related ›"));
+    assert_eq!(picker_focus(&app), PickFocus::Kind);
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("…waits for this task · kind [‹ related ›]"));
     app.on_key(named(NamedKey::Enter));
     let (req, p) = only(&commands(&mut rxs[0]), "task.dependency.add");
     assert_eq!(p["task"], "t2");
@@ -732,4 +734,109 @@ fn inbox_rows_show_blocks_n_linked_tasks_and_estimates() {
     v2["explanation"] = json!("Review available · blocks 2 linked tasks");
     let it2 = crate::inbox::parse_item(0, &v2).unwrap();
     assert_eq!(crate::inbox::blocks_suffix(&it2), "");
+}
+
+fn picker_focus(app: &App) -> PickFocus {
+    let Some(v) = &app.task_view else {
+        panic!("no task view");
+    };
+    let TaskSub::T4(T4Sub::Deps(d)) = &v.sub else {
+        panic!("not the dependencies view");
+    };
+    d.picker.as_ref().expect("the picker is open").focus
+}
+
+fn picker_blocks(app: &App) -> bool {
+    let Some(v) = &app.task_view else {
+        panic!("no task view");
+    };
+    let TaskSub::T4(T4Sub::Deps(d)) = &v.sub else {
+        panic!("not the dependencies view");
+    };
+    d.picker.as_ref().expect("the picker is open").blocks
+}
+
+#[test]
+fn the_dependency_kind_is_a_field_of_the_picker() {
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], t4_package());
+    app.on_key(ch('d'));
+    let (req, _) = only(&commands(&mut rxs[0]), "task.dependency.list");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"task": "t1", "dependencies": {"depends_on": [], "dependents": [],
+                                              "blocks_open_tasks": 0}}),
+    );
+    app.on_key(ch('a'));
+    assert_eq!(picker_focus(&app), PickFocus::Filter);
+    // While the filter has the keys, ←/→ leave the kind alone.
+    app.on_key(named(NamedKey::Right));
+    assert!(picker_blocks(&app));
+    // tab: kind, then list, then back to the filter; shift+tab goes the other way.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(picker_focus(&app), PickFocus::Kind);
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(picker_focus(&app), PickFocus::List);
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(picker_focus(&app), PickFocus::Filter);
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Tab),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    assert_eq!(picker_focus(&app), PickFocus::List);
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Tab),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    assert_eq!(picker_focus(&app), PickFocus::Kind);
+    // →, ← and space change the kind; letters are not typed into the filter here.
+    app.on_key(named(NamedKey::Right));
+    assert!(!picker_blocks(&app));
+    app.on_key(named(NamedKey::Left));
+    assert!(picker_blocks(&app));
+    app.on_key(named(NamedKey::Space));
+    assert!(!picker_blocks(&app));
+    app.on_key(ch('z'));
+    assert!(screen(&app).contains("kind [‹ related ›]"));
+    // ↓ still moves in the list from the kind field.
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(picker_focus(&app), PickFocus::Kind);
+    // Back on the filter, letters filter again.
+    app.on_key(named(NamedKey::Tab));
+    app.on_key(named(NamedKey::Tab));
+    typ(&mut app, "sso");
+    assert!(screen(&app).contains("filter: sso"));
+}
+
+#[test]
+fn notes_classification_is_a_choice_that_arrows_cycle() {
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], t4_package());
+    app.on_key(ch('N'));
+    let (req, _) = only(&commands(&mut rxs[0]), "task.review.notes");
+    let pkg = t4_package();
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"task": "t1", "notes": pkg["review_notes"], "reviewer_runs": pkg["reviewer_runs"]}),
+    );
+    // → opens the choice at "blocking", with the choice highlighted in brackets.
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("[blocking]"));
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("[not blocking]"));
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("[dismissed]"));
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("[blocking]"));
+    app.on_key(named(NamedKey::Left));
+    assert!(screen(&app).contains("[dismissed]"));
+    app.on_key(named(NamedKey::Left));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "task.review.note.classify");
+    assert_eq!(p["classification"], "not_blocking");
+    assert_eq!(p["note"], "n1");
 }

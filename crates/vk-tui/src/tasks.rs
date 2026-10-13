@@ -408,15 +408,15 @@ impl TrackForm {
             return FormOutcome::Stay;
         }
         match (self.field, ev.key) {
-            (TrackField::Source, Key::Named(NamedKey::Down)) => {
-                if self.sel_turn + 1 < self.turns.len() {
-                    self.sel_turn += 1;
-                    self.retitle();
-                }
-            }
-            (TrackField::Source, Key::Named(NamedKey::Up)) => {
-                if self.sel_turn > 0 {
-                    self.sel_turn -= 1;
+            // ←/→ choose the previous or next turn; ↑/↓ and tab leave the field like any other.
+            (TrackField::Source, Key::Named(NamedKey::Right | NamedKey::Left)) => {
+                let by = if ev.key == Key::Named(NamedKey::Right) {
+                    1
+                } else {
+                    -1
+                };
+                if !self.turns.is_empty() {
+                    self.sel_turn = crate::formkeys::wrap(self.sel_turn, by, self.turns.len());
                     self.retitle();
                 }
             }
@@ -449,6 +449,10 @@ impl TrackForm {
                 self.field = TrackField::Criterion(i + 1);
             }
             (TrackField::Criterion(i), _) if ctrl(ev, 'r') => {
+                self.criteria[i].required = !self.criteria[i].required
+            }
+            // The text has no cursor, so ←/→ are free to flip the required flag.
+            (TrackField::Criterion(i), Key::Named(NamedKey::Left | NamedKey::Right)) => {
                 self.criteria[i].required = !self.criteria[i].required
             }
             (TrackField::Criterion(i), _) if ctrl(ev, 'd') => self.remove_criterion(i),
@@ -3238,7 +3242,7 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         let turn = &f.turns[f.sel_turn];
         b.line(
             &format!(
-                "From your selected request (turn {}, {}/{}; ↑/↓ another turn):",
+                "From your selected request (turn {}, {}/{}; ←/→ another turn):",
                 turn.n,
                 f.sel_turn + 1,
                 f.turns.len()
@@ -3276,7 +3280,7 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         }
     }
     b.line(
-        "Criteria   optional (enter adds another, ctrl+r required/optional, ctrl+d removes)",
+        "Criteria   optional (enter adds another, ←/→ or ctrl+r required/optional, ctrl+d removes)",
         t.dim(),
     );
     for (i, c) in f.criteria.iter().enumerate() {
@@ -3329,7 +3333,7 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         t.dim(),
     );
     b.line(
-        "tab/↑↓ move · ←/→ stop point · ctrl+s track · ctrl+g Suggest task details · esc cancel",
+        "tab/↑↓ move · ←/→ change (turn, required, stop point) · ctrl+s track · ctrl+g Suggest · esc cancel",
         t.dim(),
     );
 }
@@ -3402,11 +3406,11 @@ mod tests {
         assert_eq!(f.turns[f.sel_turn].n, 2);
         assert_eq!(f.title, "Fix the login redirect.");
         assert_eq!(STOP_AT[f.stop].1, "Not specified");
-        // ↓ picks the older turn and retitles while the title is untouched.
-        f.key(&key(Key::Named(NamedKey::Down)));
+        // → picks the older turn and retitles while the title is untouched.
+        f.key(&key(Key::Named(NamedKey::Right)));
         assert_eq!(f.turns[f.sel_turn].n, 1);
         assert_eq!(f.title, "Old request");
-        f.key(&key(Key::Named(NamedKey::Up)));
+        f.key(&key(Key::Named(NamedKey::Left)));
         assert_eq!(f.title, "Fix the login redirect.");
         // Edit the title: later turn changes no longer overwrite it.
         f.key(&key(Key::Named(NamedKey::Tab)));
@@ -3458,6 +3462,43 @@ mod tests {
             f.key(&key(Key::Named(NamedKey::Escape))),
             FormOutcome::Cancel
         );
+    }
+
+    #[test]
+    fn source_field_uses_arrows_for_turns_and_up_down_to_leave() {
+        let mut f = TrackForm::new(1, 0, "r1", "p1", "key-1".into());
+        f.load_sources(&sources());
+        assert_eq!(f.field, TrackField::Source);
+        // ←/→ wrap around the turns.
+        f.key(&key(Key::Named(NamedKey::Left)));
+        assert_eq!(f.turns[f.sel_turn].n, 1);
+        f.key(&key(Key::Named(NamedKey::Right)));
+        assert_eq!(f.turns[f.sel_turn].n, 2);
+        // ↓ leaves the field and keeps the turn; ↑ comes back.
+        f.key(&key(Key::Named(NamedKey::Down)));
+        assert_eq!(f.field, TrackField::Title);
+        assert_eq!(f.turns[f.sel_turn].n, 2);
+        f.key(&key(Key::Named(NamedKey::Up)));
+        assert_eq!(f.field, TrackField::Source);
+        f.key(&key(Key::Named(NamedKey::Tab)));
+        assert_eq!(f.field, TrackField::Title);
+    }
+
+    #[test]
+    fn required_flag_flips_with_arrows_as_well_as_ctrl_r() {
+        let mut f = TrackForm::new(1, 0, "r1", "p1", "key-1".into());
+        f.load_sources(&sources());
+        f.criteria.push(TrackItem::typed("Preserve SSO"));
+        f.field = TrackField::Criterion(0);
+        let was = f.criteria[0].required;
+        f.key(&key(Key::Named(NamedKey::Right)));
+        assert_eq!(f.criteria[0].required, !was);
+        f.key(&key(Key::Named(NamedKey::Left)));
+        assert_eq!(f.criteria[0].required, was);
+        f.key(&KeyEvent::new(Key::Char('r'), Mods::CTRL));
+        assert_eq!(f.criteria[0].required, !was);
+        // The text is untouched by the arrows.
+        assert_eq!(f.criteria[0].text, "Preserve SSO");
     }
 
     #[test]

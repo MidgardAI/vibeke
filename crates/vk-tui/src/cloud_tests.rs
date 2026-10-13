@@ -481,3 +481,48 @@ fn file_retry_tracks_the_attempt_and_is_cleared_by_new_input() {
     assert!(a.retry.is_none());
     assert!(auth_request(&mut a, &AuthOut::SaveFile).is_none());
 }
+
+#[test]
+fn the_confirm_step_has_focusable_rows() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    app.action("cloud_send", None);
+    commands(&mut rxs[0]);
+    {
+        let f = app.ux.cloud.flow.as_mut().unwrap();
+        f.loading = false;
+        f.stage = Stage::Confirm;
+    }
+    let focus = |app: &App| app.ux.cloud.flow.as_ref().unwrap().confirm_focus;
+    let interrupt = |app: &App| app.ux.cloud.flow.as_ref().unwrap().interrupt;
+    assert_eq!(focus(&app), 0);
+    // ←, → and space flip the toggle; so does the letter.
+    for k in [NamedKey::Left, NamedKey::Right, NamedKey::Space] {
+        let before = interrupt(&app);
+        app.on_key(named(k));
+        assert_eq!(interrupt(&app), !before);
+    }
+    app.on_key(ch('i'));
+    assert!(!interrupt(&app));
+    // Tab and ↓ move on, ↑ and shift+tab back; ←/→ on the buttons leave the toggle alone.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(focus(&app), 1);
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(focus(&app), 2);
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(focus(&app), 1);
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(focus(&app), 2);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(focus(&app), 1);
+    assert!(!interrupt(&app));
+    assert!(screen(&app).contains("←/→ change · ↑/↓ or tab move"));
+    // Enter on Send starts the move; on Back it leaves the step.
+    let f = app.ux.cloud.flow.as_mut().unwrap();
+    assert_eq!(on_key(f, &named(NamedKey::Enter)), Act::StartMove);
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Enter));
+    let f = app.ux.cloud.flow.as_ref().unwrap();
+    assert!(matches!(f.stage, Stage::PickProvider { .. }));
+    assert_eq!(f.confirm_focus, 0);
+}
