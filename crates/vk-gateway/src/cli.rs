@@ -676,7 +676,10 @@ pub async fn run_as<I: IntoIterator<Item = String>>(prog: &'static str, args: I)
                 cfg.relay.as_deref().unwrap_or("(not set)")
             );
             if cfg.relay.is_some() && cfg.relay_token.is_none() {
-                println!("account      {}", crate::account::account_server(&cfg));
+                println!(
+                    "account      {}",
+                    crate::account::resolve_account_server(&cfg, &keys.host_id()).await
+                );
             }
             println!(
                 "app url      {}",

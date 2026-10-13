@@ -36,12 +36,21 @@ fn parse(args: &[String], allow_browser_flag: bool) -> Result<Opts, String> {
     Ok(o)
 }
 
-/// Server: `--server`, else the gateway's `account_url`, else its relay's origin, else the
-/// hosted relay.
-fn resolve(state: &StateDir, flag: Option<String>) -> anyhow::Result<String> {
+/// Server: `--server`, else the gateway's `account_url`, else the account server its relay
+/// names, else the hosted one (an open relay names none).
+async fn resolve(state: &StateDir, flag: Option<String>) -> anyhow::Result<String> {
     let server = match flag {
         Some(s) => s,
-        None => vk_gateway::account::account_server(&state.config()?),
+        None => {
+            let host = state
+                .dir
+                .join("host.json")
+                .exists()
+                .then(|| state.host_keys().map(|k| k.host_id()))
+                .transpose()?
+                .unwrap_or_default();
+            vk_gateway::account::resolve_account_server(&state.config()?, &host).await
+        }
     };
     Ok(vk_account::server_origin(&server)?)
 }
@@ -68,7 +77,7 @@ pub async fn run(cmd: &str, args: &[String]) -> i32 {
 
 async fn run_inner(cmd: &str, opts: Opts) -> anyhow::Result<i32> {
     let state = StateDir::open(default_dir())?;
-    let server = resolve(&state, opts.server)?;
+    let server = resolve(&state, opts.server).await?;
     let acct = vk_gateway::account::account(&server, &state.dir)?;
     match cmd {
         "login" => {

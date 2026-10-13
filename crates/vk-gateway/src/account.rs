@@ -48,21 +48,65 @@ pub async fn relay_auth(relay: &str, host_id: &str) -> Result<RelayAuth> {
         anyhow::ensure!(r.status().is_success(), "GET {url}: HTTP {}", r.status());
         serde_json::from_slice(&r.bytes().await?).context("relay status")?
     };
-    Ok(RelayAuth {
+    let auth = RelayAuth {
         tickets: v.get("auth").and_then(|a| a.as_str()) == Some("tickets"),
         account_url: v
             .get("account_url")
             .and_then(|a| a.as_str())
             .map(str::to_string),
-    })
+    };
+    remember_relay(relay, auth.account_url.clone());
+    Ok(auth)
 }
 
-/// The control plane for `cfg`: `account_url`, else the relay's origin, else the hosted relay.
+/// What each relay's `/v1/status` said about its account server, keyed by relay origin:
+/// `Some(url)` when it names one, `None` when it names none (an open relay).
+static RELAY_ACCOUNTS: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, Option<String>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn remember_relay(relay: &str, account_url: Option<String>) {
+    if let Ok(origin) = relay_origin(relay) {
+        RELAY_ACCOUNTS.lock().unwrap().insert(origin, account_url);
+    }
+}
+
+/// The account server the relay named, if its status was read in this process.
+fn named_by_relay(cfg: &Config) -> Option<String> {
+    let origin = relay_origin(cfg.relay.as_deref()?).ok()?;
+    RELAY_ACCOUNTS
+        .lock()
+        .unwrap()
+        .get(&origin)
+        .cloned()
+        .flatten()
+}
+
+/// The control plane for `cfg`: `account_url`, else the account server its relay names in
+/// `/v1/status` (once read, see [`resolve_account_server`]), else the hosted one
+/// (`cloud.vibeke.dev`). An open relay such as `relay.vibeke.dev` names none, and its own origin
+/// is never an account server.
 pub fn account_server(cfg: &Config) -> String {
     cfg.account_url
         .clone()
-        .or_else(|| cfg.relay.as_deref().and_then(|r| relay_origin(r).ok()))
+        .or_else(|| named_by_relay(cfg))
         .unwrap_or_else(|| vk_account::DEFAULT_SERVER.to_string())
+}
+
+/// [`account_server`] after asking the relay once in this process (needed where nothing has
+/// read its status yet, such as `vibeke login`). An unreachable relay counts as naming none.
+pub async fn resolve_account_server(cfg: &Config, host_id: &str) -> String {
+    if cfg.account_url.is_none()
+        && cfg.relay_token.is_none()
+        && let Some(relay) = cfg.relay.as_deref()
+        && relay_origin(relay)
+            .ok()
+            .is_some_and(|o| !RELAY_ACCOUNTS.lock().unwrap().contains_key(&o))
+        && relay_auth(relay, host_id).await.is_err()
+    {
+        remember_relay(relay, None);
+    }
+    account_server(cfg)
 }
 
 /// Credential storage for a gateway state dir: the OS keychain, falling back to
@@ -398,7 +442,14 @@ mod tests {
     fn servers_and_prompt() {
         let mut cfg = Config::default();
         assert_eq!(account_server(&cfg), "https://cloud.vibeke.dev");
+        // A relay whose status was not read, or that names no account server (an open relay):
+        // the hosted account server, never the relay's own origin.
         cfg.relay = Some("wss://relay.example/".into());
+        assert_eq!(account_server(&cfg), "https://cloud.vibeke.dev");
+        remember_relay("wss://relay.example/", None);
+        assert_eq!(account_server(&cfg), "https://cloud.vibeke.dev");
+        // A relay that names one: that one.
+        remember_relay("wss://relay.example/", Some("https://relay.example".into()));
         assert_eq!(account_server(&cfg), "https://relay.example");
         cfg.account_url = Some("https://accounts.example".into());
         assert_eq!(account_server(&cfg), "https://accounts.example");

@@ -499,6 +499,9 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
     }
     // Bundles from before a restart have no entry any more.
     handoff::sweep(&gw);
+    // Which account server the relay names (an open relay names none): read once now, so the
+    // account methods that pick a server without waiting use the right one.
+    account::resolve_account_server(&gw.cfg, &gw.keys.host_id()).await;
     // Open the local socket first: a desktop app can then tell "server down" (calls answer
     // `unavailable`) from "gateway down" (nothing listening).
     if gw.cfg.local_socket {
