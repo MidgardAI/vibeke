@@ -73,9 +73,22 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub enum Reply {
-    Draft { draft: String },
-    Release { draft: String },
-    Discard { draft: String },
+    Draft {
+        draft: String,
+    },
+    Release {
+        draft: String,
+    },
+    Discard {
+        draft: String,
+    },
+    /// `preview.list` after connecting: each preview's drafts are read next.
+    SyncPreviews,
+    /// `browser.annotations {preview}` of one preview after connecting.
+    Sync {
+        preview: String,
+        handle: String,
+    },
 }
 
 fn pend(r: Reply) -> Pending {
@@ -489,6 +502,80 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
             Err(e) => settle_error(app, mi, &draft, e),
         },
+        Reply::SyncPreviews => {
+            let Ok(x) = res else { return };
+            for p in x["previews"].as_array().into_iter().flatten() {
+                let Some(id) = p["id"].as_str() else { continue };
+                let handle = p["handle"].as_str().unwrap_or(id).to_string();
+                app.command_on(
+                    mi,
+                    "browser.annotations",
+                    json!({"preview": id}),
+                    pend(Reply::Sync {
+                        preview: id.to_string(),
+                        handle,
+                    }),
+                );
+            }
+        }
+        Reply::Sync { preview, handle } => {
+            let Ok(x) = res else { return };
+            on_synced(app, mi, &preview, &handle, &x);
+        }
+    }
+}
+
+/// After (re)connecting: events are not replayed, so read the held drafts of every preview
+/// (notes sent while this client was away), and drop items that are no longer held.
+pub fn on_connected(app: &mut App, mi: usize) {
+    if app.machines.get(mi).is_some_and(|m| m.connected()) {
+        app.command_on(mi, "preview.list", json!({}), pend(Reply::SyncPreviews));
+    }
+}
+
+/// The drafts of one preview, read after connecting: held ones become items (quietly), and
+/// items of this preview that are no longer held go.
+pub fn on_synced(app: &mut App, mi: usize, preview: &str, handle: &str, x: &Value) {
+    let drafts = x["drafts"].as_array().cloned().unwrap_or_default();
+    let held: Vec<&Value> = drafts
+        .iter()
+        .filter(|d| d["state"].as_str() == Some("held"))
+        .collect();
+    let mut changed = false;
+    let before = app.ux.held.items.len();
+    app.ux.held.items.retain(|h| {
+        h.mi != mi
+            || !(h.preview == preview || h.preview == handle)
+            || held
+                .iter()
+                .any(|d| d["id"].as_str() == Some(h.draft.as_str()))
+    });
+    changed |= app.ux.held.items.len() != before;
+    for d in held {
+        let Some(id) = d["id"].as_str() else { continue };
+        if app
+            .ux
+            .held
+            .items
+            .iter()
+            .any(|h| h.mi == mi && h.draft == id)
+        {
+            continue;
+        }
+        let count = d["notes"].as_array().map_or(0, |n| n.len()) as u64;
+        app.ux.held.items.push(Held {
+            mi,
+            draft: id.to_string(),
+            preview: sanitize(handle, 40),
+            author: author_text(&d["author"]),
+            count,
+            at_ms: d["updated_at_ms"].as_i64().unwrap_or_else(now_ms),
+        });
+        changed = true;
+    }
+    if changed {
+        crate::inbox::invalidate(app);
+        app.dirty = true;
     }
 }
 

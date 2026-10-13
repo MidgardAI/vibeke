@@ -115,6 +115,7 @@ pub fn on_connected(app: &mut App, mi: usize) {
     crate::elevate::on_connected(app, mi);
     crate::handoff::on_connected(app, mi);
     crate::cloud::on_connected(app, mi);
+    crate::held_notes::on_connected(app, mi);
 }
 
 /// Palette / key actions owned by 2B modules.

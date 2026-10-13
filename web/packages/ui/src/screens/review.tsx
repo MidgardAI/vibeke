@@ -118,7 +118,8 @@ export function ReviewScreen({ d }: { d: string | null }) {
       </Centered>
     );
   }
-  if (join.k === 'ready') return <Reviewer record={join.record} />;
+  // One controller per invitation: a different review remounts it (preview, jar, connection).
+  if (join.k === 'ready') return <Reviewer key={reviewKey(join.record.host_id, join.record.pid)} record={join.record} />;
   if (join.k === 'loading') {
     return (
       <Centered>

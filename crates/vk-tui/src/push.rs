@@ -23,6 +23,8 @@ pub const TYPES: &[&str] = &[
     "client.devices_changed",
     "interaction.*",
     "browser.session_*",
+    // Held review notes (spec 20 §3.3).
+    "browser.annotations_*",
     "browser.taken_over",
     "browser.released",
     "screenshot.*",

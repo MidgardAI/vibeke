@@ -102,6 +102,8 @@ export class ReviewController {
   private tunnelLink: RpcLink | null = null;
   private limiter = new Limiter(MAX_STREAMS);
   private fetches = new Map<string, TunnelConn>();
+  /** Fetches the worker cancelled before their stream was open: never sent. */
+  private aborted = new Set<string>();
   private sockets = new Map<number, WsState>();
   private annotating = false;
   private bootTimer: ReturnType<typeof setTimeout> | null = null;
@@ -203,7 +205,14 @@ export class ReviewController {
       const m = parseWorkerMessage(ev.data, this.o.contentOrigin);
       if (!m) return;
       if (m.t === 'fetch') void this.fetch(m, sink, port);
-      else this.fetches.get(fetchKey(port, m.id))?.close();
+      else {
+        const key = fetchKey(port, m.id);
+        const c = this.fetches.get(key);
+        if (c) c.close();
+        // Remembered until that fetch takes its slot (bounded: a late cancel of a finished
+        // fetch must not grow this without end).
+        else if (this.aborted.size < 1024) this.aborted.add(key);
+      }
     };
     port.start();
   }
@@ -237,6 +246,12 @@ export class ReviewController {
   private async fetch(m: FetchMsg, sink: Sink, port: MessagePort): Promise<void> {
     const key = fetchKey(port, m.id);
     const release = await this.limiter.take();
+    // Cancelled while it waited for a slot: never sent.
+    if (this.aborted.delete(key)) {
+      release();
+      sink.post({ t: 'fetch.error', id: m.id, message: 'aborted' });
+      return;
+    }
     let conn: TunnelConn | null = null;
     let finished = false;
     const fail = (message: string) => {
@@ -251,6 +266,14 @@ export class ReviewController {
       const headers = forwardRequestHeaders(m.headers, { target: this.o.authority, contentOrigin: this.o.contentOrigin, cookie: this.o.jar.header(pathname, now) });
       const bytes = writeRequest({ method: m.method, target, headers }, m.body ? new Uint8Array(m.body) : null);
       conn = await this.openStream();
+      // Cancelled while the stream opened: close it before writing anything.
+      if (this.aborted.delete(key)) {
+        finished = true;
+        conn.close();
+        release();
+        sink.post({ t: 'fetch.error', id: m.id, message: 'aborted' });
+        return;
+      }
       this.fetches.set(key, conn);
       const parser = new ResponseParser(m.method);
       let body: BodyOut | null = null;
@@ -373,9 +396,13 @@ export class ReviewController {
 
   private async wsOpen(m: WsOpenMsg): Promise<void> {
     if (this.sockets.has(m.id)) return;
-    const release = await this.limiter.take();
-    const state: WsState = { conn: null, open: false, closed: false, release };
+    // Registered before waiting for a slot, so a navigation meanwhile marks it closed and a newer
+    // page's socket with the same id is never taken over by this one.
+    const state: WsState = { conn: null, open: false, closed: false, release: () => {} };
     this.sockets.set(m.id, state);
+    const release = await this.limiter.take();
+    if (state.closed) return release();
+    state.release = release;
     // Callbacks of this socket only, never of a newer page's socket with the same id.
     const gone = (code: number, reason: string, clean = false) => {
       if (this.sockets.get(m.id) === state) this.wsGone(m.id, code, reason, clean);

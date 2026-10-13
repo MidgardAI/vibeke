@@ -143,3 +143,41 @@ fn a_draft_settled_elsewhere_is_dropped() {
     );
     assert!(app.ux.held.items.is_empty());
 }
+
+#[test]
+fn connecting_restores_held_drafts_and_drops_settled_ones() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    // A held draft the client saw before; it was settled while the client was away.
+    on_held(&mut app, 0, &held_event());
+    assert_eq!(app.ux.held.items.len(), 1);
+    on_connected(&mut app, 0);
+    let (req, _) = only(&commands(&mut rxs[0]), "preview.list");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"previews": [{"id": "pv-4", "handle": "v4"}]}),
+    );
+    let (req, p) = only(&commands(&mut rxs[0]), "browser.annotations");
+    assert_eq!(p, json!({"preview": "pv-4"}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"drafts": [
+            {"id": "D1", "state": "delivered", "notes": [{"n": 1}]},
+            {"id": "D9", "state": "held", "notes": [{"n": 1}, {"n": 2}],
+             "author": {"kind": "github", "id": "7", "label": "bob"}},
+        ]}),
+    );
+    let items: Vec<_> = app
+        .ux
+        .held
+        .items
+        .iter()
+        .map(|h| (h.draft.clone(), h.count))
+        .collect();
+    assert_eq!(items, vec![("D9".to_string(), 2)]);
+    assert_eq!(app.ux.held.items[0].author, "@bob");
+}
