@@ -308,6 +308,10 @@ pub const METHODS: &[(&str, bool)] = &[
 /// (`docs/api/methods.json`).
 pub const PANE_FORBIDDEN: &[&str] = &[
     "interaction.answer",
+    // Spec 20 §3.3: only the owner (a local client or an owner device) releases or discards a
+    // held review draft.
+    "browser.annotations_release",
+    "browser.annotations_discard",
     "interaction.cancel",
     "server.stop",
     "server.reload_config",
@@ -798,7 +802,8 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             "session": server.opts.session,
             "machine": server.opts.machine,
             "capabilities": if ctx.pane_scope.is_some() { json!(["pane"]) } else { json!(["*"]) },
-            "features": ["render.v1", "events.v1", "render.scoped_share"],
+            // `browser_confine`: `browser.session_open {confine}` is honoured (spec 20 §3.7).
+            "features": ["render.v1", "events.v1", "render.scoped_share", "browser_confine"],
             "client_id": ctx.client_id,
         })),
         "client.list" => {
