@@ -6,7 +6,8 @@
 //!   stream-json `background_tasks_changed`, Codex `thread/backgroundTerminals/list`;
 //! - start and end records from the transcript ([`started`], [`ended`]);
 //! - child processes of the harness that outlive its turn ([`set_processes`]), for harnesses
-//!   with neither.
+//!   with neither. When the harness reports tool calls ([`observe_tool`]), only process groups
+//!   that a shell tool call started, and that outlive the call, count.
 //!
 //! A reported set wins over transcript records it already covers: a start older than
 //! `bg_level_ms` is history (the tailer replays whole files after a restart). Ends always apply.
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use vk_proto::model::{AgentRun, BgTask, Execution, StateSource};
 
-use super::update_run;
+use super::{nested, update_run};
 use crate::Server;
 use crate::core::Tx;
 use vk_store::now_ms;
@@ -240,7 +241,7 @@ pub fn set_processes(server: &Arc<Server>, run: &str, procs: Vec<BgTask>) {
             .collect();
         for mut p in procs {
             if let Some(old) = r.bg_tasks.iter().find(|o| o.id == p.id) {
-                p.since_ms = old.since_ms;
+                p.since_ms = p.since_ms.min(old.since_ms);
             }
             next.push(p);
         }
@@ -252,6 +253,7 @@ pub fn set_processes(server: &Arc<Server>, run: &str, procs: Vec<BgTask>) {
 /// went with it, or are no longer its work).
 pub fn clear(server: &Arc<Server>, run: &str) {
     let now = now_ms();
+    forget_tools(run);
     store(server, run, |_| Some((vec![], now)));
 }
 
@@ -313,6 +315,139 @@ pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 /// A process younger than this is not counted yet (hook shims, short tool commands).
 const MIN_AGE_MS: i64 = 3_000;
+/// Process groups started this soon after the harness process are its own startup work (MCP
+/// servers, language servers, extension watchers), unless a tool call claims them.
+const STARTUP_MS: i64 = 5_000;
+/// Shell tool calls remembered per run, besides those that still own a counted process group.
+const TOOL_KEEP: usize = 64;
+
+/// A shell-like tool call of a run, as the process scan matches it against process groups.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolCall {
+    /// The harness's call id (`tool_use_id`), when it sent one.
+    pub id: Option<String>,
+    /// The command the call runs; `None` when the harness truncated or withheld its input.
+    pub command: Option<String>,
+    pub started_ms: i64,
+    pub ended_ms: Option<i64>,
+}
+
+/// Tool calls the scan knows of for one run. `seen` is set by any tool start, so a run whose
+/// harness reports tool calls counts no process group that none of them started.
+#[derive(Default)]
+struct RunTools {
+    seen: bool,
+    calls: Vec<ToolCall>,
+}
+
+/// Run id → its recent shell tool calls. In memory only: after a server restart a run falls back
+/// to the plain heuristic until its next tool call.
+static TOOLS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, RunTools>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn forget_tools(run: &str) {
+    TOOLS.lock().unwrap().remove(run);
+}
+
+/// The run's shell tool calls, or `None` when its harness has reported no tool call yet.
+fn tools_of(run: &str) -> Option<Vec<ToolCall>> {
+    let m = TOOLS.lock().unwrap();
+    let t = m.get(run)?;
+    t.seen.then(|| t.calls.clone())
+}
+
+/// Tool names that run shell commands, across harnesses (after hook mapping: pi/omp `bash`
+/// arrives as `Bash`).
+fn is_shell_tool(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "bash"
+            | "shell"
+            | "sh"
+            | "exec"
+            | "exec_command"
+            | "shell_command"
+            | "local_shell"
+            | "run_shell_command"
+            | "terminal"
+            | "run_terminal_cmd"
+    )
+}
+
+/// The command in a tool's input: `command` (a string, or an argv array) or `cmd`.
+fn command_input(input: &Value) -> Option<String> {
+    let v = input.get("command").or_else(|| input.get("cmd"))?;
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(a) => {
+            let parts: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+            (!parts.is_empty()).then(|| parts.join(" "))
+        }
+        _ => None,
+    }
+    .filter(|s| !s.trim().is_empty())
+}
+
+/// Remember shell tool calls of harnesses the process scan watches (`PreToolUse`, ended by
+/// `PostToolUse`/`PostToolUseFailure`; pi/omp `ToolStarted`/`ToolEnded` arrive mapped to them).
+pub fn observe_tool(run: &AgentRun, event: &str, p: &Value) {
+    if reports_own(&run.harness) {
+        return;
+    }
+    let now = now_ms();
+    let id = p
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    match event {
+        "PreToolUse" => {
+            let tool = p.get("tool_name").and_then(Value::as_str).unwrap_or("");
+            let command = p.get("tool_input").and_then(command_input);
+            let mut m = TOOLS.lock().unwrap();
+            let t = m.entry(run.id.clone()).or_default();
+            t.seen = true;
+            if command.is_none() && !is_shell_tool(tool) {
+                return;
+            }
+            if id.is_some() && t.calls.iter().any(|c| c.id == id) {
+                return;
+            }
+            t.calls.push(ToolCall {
+                id,
+                command,
+                started_ms: now,
+                ended_ms: None,
+            });
+            // Drop the oldest calls first, but keep those that own a counted process group.
+            while t.calls.len() > TOOL_KEEP {
+                let owns = |c: &ToolCall| {
+                    c.id.is_some()
+                        && run
+                            .bg_tasks
+                            .iter()
+                            .any(|b| b.source == StateSource::Process && b.tool_use_id == c.id)
+                };
+                let Some(i) = t.calls.iter().position(|c| !owns(c)) else {
+                    break;
+                };
+                t.calls.remove(i);
+            }
+        }
+        "PostToolUse" | "PostToolUseFailure" => {
+            let Some(id) = id else { return };
+            let mut m = TOOLS.lock().unwrap();
+            if let Some(c) = m.get_mut(&run.id).and_then(|t| {
+                t.calls
+                    .iter_mut()
+                    .find(|c| c.id.as_deref() == Some(id.as_str()))
+            }) {
+                c.ended_ms.get_or_insert(now);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Harnesses that report their own background work (hooks, transcripts, protocols): the
 /// process scan leaves them alone.
@@ -332,35 +467,113 @@ fn is_shell(argv: &[String]) -> bool {
     matches!(base, "sh" | "bash" | "zsh" | "dash" | "fish" | "ksh")
 }
 
+/// The `-c` script of a shell command line.
+fn script_of(argv: &[String]) -> Option<&str> {
+    if !is_shell(argv) {
+        return None;
+    }
+    let i = argv
+        .iter()
+        .position(|a| a.starts_with('-') && !a.starts_with("--") && a.ends_with('c'))?;
+    argv.get(i + 1).map(String::as_str)
+}
+
 /// What a shell runs: the `-c` script, else the whole command line.
 fn command_of(argv: &[String]) -> String {
-    if is_shell(argv)
-        && let Some(i) = argv
-            .iter()
-            .position(|a| a.starts_with('-') && a.ends_with('c'))
-        && let Some(script) = argv.get(i + 1)
-    {
-        return script.clone();
+    script_of(argv).map_or_else(|| argv.join(" "), str::to_string)
+}
+
+/// A command with quotes and backslashes removed and whitespace collapsed, so a harness that
+/// quotes the command into a wrapper (`eval '…'`) still matches it.
+fn norm_command(s: &str) -> String {
+    let unquoted: String = s
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
+    unquoted.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether a shell's `-c` script runs a tool call's command: one contains the other. The script
+/// may hold only part of the command when it is at least half as long (a harness that strips a
+/// prefix); a short script such as `bash` never matches a long command.
+fn commands_match(script: &str, command: &str) -> bool {
+    let (s, c) = (norm_command(script), norm_command(command));
+    if s.is_empty() || c.is_empty() {
+        return false;
     }
-    argv.join(" ")
+    s.contains(&c) || (c.contains(&s) && s.len() * 2 >= c.len())
+}
+
+/// What one process scan knows besides the process tree.
+pub struct Scan<'a> {
+    /// The harness process.
+    pub root: u32,
+    pub now: i64,
+    /// When the harness process started (Unix ms), when the platform can tell.
+    pub harness_started_ms: Option<i64>,
+    /// The run's shell tool calls, or `None` when its harness reports no tool calls.
+    pub calls: Option<&'a [ToolCall]>,
+    /// The run is idle: a tool call without an end is not running any more.
+    pub idle: bool,
+}
+
+/// The tool call that started a process group whose leader started at `start` and runs
+/// `script`: it started at most [`SKEW_MS`] after the call started and before the call ended
+/// (plus [`SKEW_MS`]), and runs the call's command. A call whose command is unknown matches on
+/// time alone. The call must have ended, or the run be idle; before that the group is its
+/// foreground work. The latest matching call wins, and a command match beats a time-only one.
+fn claiming_call<'c>(
+    calls: &'c [ToolCall],
+    start: i64,
+    script: Option<&str>,
+    s: &Scan,
+) -> Option<&'c ToolCall> {
+    let in_time = |c: &&ToolCall| {
+        start >= c.started_ms - SKEW_MS
+            && start <= c.ended_ms.unwrap_or(s.now) + SKEW_MS
+            && (c.ended_ms.is_some() || s.idle)
+    };
+    let by_command = calls
+        .iter()
+        .filter(in_time)
+        .filter(|c| {
+            c.command
+                .as_deref()
+                .zip(script)
+                .is_some_and(|(cmd, sc)| commands_match(sc, cmd))
+        })
+        .max_by_key(|c| c.started_ms);
+    by_command.or_else(|| {
+        calls
+            .iter()
+            .filter(in_time)
+            .filter(|c| c.command.is_none())
+            .max_by_key(|c| c.started_ms)
+    })
 }
 
 /// Background work of one harness process: process groups under it, other than its own, led by
 /// a shell (how harnesses run tool commands; MCP servers and language servers are started
 /// directly), alive for at least [`MIN_AGE_MS`]. One task per process group.
+///
+/// `started_ms` gives a process's start time (Unix ms): its real start when the platform can
+/// tell, else when the scan first saw it. A group whose leader started before the harness
+/// process is never its work.
+///
+/// When the harness reports tool calls (`calls` is `Some`), a group counts only when one of
+/// them started it ([`claiming_call`]); the task carries that call's id and command. Without
+/// tool calls every shell-led group counts, except those started within [`STARTUP_MS`] of the
+/// harness process (its MCP servers and language servers behind `sh -c` wrappers).
 pub fn scan_tree(
-    root: u32,
+    s: &Scan,
     tree: &[vk_hold::procinfo::ProcInfo],
-    now: i64,
-    age_ms: impl Fn(u32) -> Option<i64>,
+    started_ms: impl Fn(&vk_hold::procinfo::ProcInfo) -> Option<i64>,
 ) -> Vec<BgTask> {
-    let own = tree.iter().find(|p| p.pid == root).map(|p| p.pgid);
+    let own = tree.iter().find(|p| p.pid == s.root).map(|p| p.pgid);
     let mut out: Vec<BgTask> = Vec::new();
     for p in tree {
-        if p.pid == root
-            || Some(p.pgid) == own
-            || out.iter().any(|t| t.id == format!("pid:{}", p.pgid))
-        {
+        let id = format!("pid:{}", p.pgid);
+        if p.pid == s.root || Some(p.pgid) == own || out.iter().any(|t| t.id == id) {
             continue;
         }
         // The group's leader when it is in the tree, else the first member seen.
@@ -368,45 +581,76 @@ pub fn scan_tree(
         if !is_shell(&lead.argv) || vk_preview::is_harness_process(&lead.argv) {
             continue;
         }
-        if age_ms(lead.pid).is_none_or(|a| a < MIN_AGE_MS) {
+        let Some(start) = started_ms(lead) else {
+            continue;
+        };
+        if s.now - start < MIN_AGE_MS {
             continue;
         }
+        if s.harness_started_ms.is_some_and(|t0| start < t0 - SKEW_MS) {
+            continue;
+        }
+        let (tool_use_id, text) = match s.calls {
+            Some(calls) => {
+                let Some(c) = claiming_call(calls, start, script_of(&lead.argv), s) else {
+                    continue;
+                };
+                (
+                    c.id.clone(),
+                    c.command.clone().unwrap_or_else(|| command_of(&lead.argv)),
+                )
+            }
+            None => {
+                if s.harness_started_ms
+                    .is_some_and(|t0| start <= t0 + STARTUP_MS)
+                {
+                    continue;
+                }
+                (None, command_of(&lead.argv))
+            }
+        };
         out.push(BgTask {
-            id: format!("pid:{}", p.pgid),
+            id,
             kind: "shell".into(),
-            label: label(&command_of(&lead.argv)),
-            since_ms: now - age_ms(lead.pid).unwrap_or(0),
+            label: label(&text),
+            since_ms: start,
             source: StateSource::Process,
-            tool_use_id: None,
+            tool_use_id,
         });
     }
     out
 }
 
-/// Every [`SCAN_EVERY`]: child process groups of idle harnesses that report nothing themselves.
-/// While a run works its children may be foreground tool calls, so the set only shrinks then.
+/// Every [`SCAN_EVERY`]: child process groups of harnesses that report nothing themselves.
+/// Without tool calls to match, a run's children may be foreground tool calls while it works,
+/// so the set only shrinks then.
 pub fn start(server: &Arc<Server>) {
     let srv = server.clone();
     tokio::spawn(async move {
         let mut seen: std::collections::HashMap<(u32, u64), i64> = Default::default();
         loop {
             tokio::time::sleep(SCAN_EVERY).await;
-            let runs: Vec<(AgentRun, u32)> = srv
-                .with_core(|c| {
-                    c.model
-                        .runs
-                        .iter()
-                        .filter(|r| r.ended_at_ms.is_none() && !reports_own(&r.harness))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
+            let live: Vec<AgentRun> = srv.with_core(|c| {
+                c.model
+                    .runs
+                    .iter()
+                    .filter(|r| r.ended_at_ms.is_none() && !reports_own(&r.harness))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            // Tool calls of ended or replaced runs are no longer needed.
+            TOOLS
+                .lock()
+                .unwrap()
+                .retain(|id, _| live.iter().any(|r| &r.id == id));
+            let runs: Vec<(AgentRun, nested::Proc)> = live
                 .into_iter()
                 .filter_map(|r| {
                     let (h, p) = srv.agents.harness_proc(&r.pane)?;
-                    (h == r.harness).then_some((r, p.pid))
+                    (h == r.harness).then_some((r, p))
                 })
                 .collect();
-            let roots: Vec<u32> = runs.iter().map(|(_, pid)| *pid).collect();
+            let roots: Vec<u32> = runs.iter().map(|(_, p)| p.pid).collect();
             let trees = tokio::task::spawn_blocking(move || {
                 roots
                     .into_iter()
@@ -416,30 +660,41 @@ pub fn start(server: &Arc<Server>) {
             .await
             .unwrap_or_default();
             let now = now_ms();
-            // First sighting of each process (pid, start) stands in for its age.
+            // First sighting of each process (pid, start) stands in for its start time where
+            // the platform cannot convert `start`.
             let alive: std::collections::HashSet<(u32, u64)> =
                 trees.iter().flatten().map(|p| (p.pid, p.start)).collect();
             seen.retain(|k, _| alive.contains(k));
             for k in &alive {
                 seen.entry(*k).or_insert(now);
             }
-            for ((run, root), tree) in runs.into_iter().zip(trees) {
-                let age = |pid: u32| {
-                    tree.iter()
-                        .find(|p| p.pid == pid)
-                        .and_then(|p| seen.get(&(p.pid, p.start)))
-                        .map(|t| now - t)
+            for ((run, harness), tree) in runs.into_iter().zip(trees) {
+                let started = |p: &vk_hold::procinfo::ProcInfo| {
+                    vk_hold::procinfo::start_unix_ms(p.start)
+                        .or_else(|| seen.get(&(p.pid, p.start)).copied())
                 };
-                let mut found = scan_tree(root, &tree, now, age);
-                if run.execution.value != Execution::Idle {
+                let calls = tools_of(&run.id);
+                let idle = run.execution.value == Execution::Idle;
+                let scan = Scan {
+                    root: harness.pid,
+                    now,
+                    harness_started_ms: vk_hold::procinfo::start_unix_ms(harness.start),
+                    calls: calls.as_deref(),
+                    idle,
+                };
+                let mut found = scan_tree(&scan, &tree, started);
+                if calls.is_none() && !idle {
                     found.retain(|t| run.bg_tasks.iter().any(|o| o.id == t.id));
                 }
-                let had: Vec<&BgTask> = run
+                let key = |t: &BgTask| (t.id.clone(), t.tool_use_id.clone());
+                let had: std::collections::HashSet<_> = run
                     .bg_tasks
                     .iter()
                     .filter(|t| t.source == StateSource::Process)
+                    .map(key)
                     .collect();
-                if had.len() != found.len() || had.iter().zip(&found).any(|(a, b)| a.id != b.id) {
+                let now_set: std::collections::HashSet<_> = found.iter().map(key).collect();
+                if had != now_set {
                     set_processes(&srv, &run.id, found);
                 }
             }
@@ -482,8 +737,32 @@ mod tests {
         }
     }
 
+    /// Process start times (Unix ms) by pid, for `scan_tree`.
+    fn starts(m: &[(u32, i64)]) -> impl Fn(&vk_hold::procinfo::ProcInfo) -> Option<i64> + '_ {
+        move |p| m.iter().find(|(pid, _)| *pid == p.pid).map(|(_, t)| *t)
+    }
+
+    fn scan(now: i64, calls: Option<&[ToolCall]>, idle: bool) -> Scan<'_> {
+        Scan {
+            root: 100,
+            now,
+            harness_started_ms: Some(10_000),
+            calls,
+            idle,
+        }
+    }
+
+    fn call(id: &str, command: &str, started_ms: i64, ended_ms: Option<i64>) -> ToolCall {
+        ToolCall {
+            id: Some(id.into()),
+            command: Some(command.into()),
+            started_ms,
+            ended_ms,
+        }
+    }
+
     #[test]
-    fn scan_counts_shell_groups_outside_the_harness_group() {
+    fn scan_without_tool_calls_counts_shell_groups_after_startup() {
         let tree = vec![
             proc(100, 1, 100, &["gemini"]),
             // An MCP server, started directly in the harness group.
@@ -495,14 +774,100 @@ mod tests {
             proc(104, 103, 103, &["node", "vite"]),
             // Too young to count.
             proc(105, 100, 105, &["sh", "-c", "sleep 1"]),
+            // An MCP server behind an `sh -c` wrapper, started with the harness.
+            proc(106, 100, 106, &["sh", "-c", "npx some-mcp-server"]),
+            // Older than the harness process: not its work.
+            proc(107, 100, 107, &["sh", "-c", "tail -f log"]),
         ];
-        let t = scan_tree(100, &tree, 10_000, |pid| {
-            Some(if pid == 105 { 500 } else { 8_000 })
-        });
+        let m = [
+            (100, 10_000),
+            (101, 10_500),
+            (102, 10_500),
+            (103, 30_000),
+            (104, 30_100),
+            (105, 37_500),
+            (106, 11_000),
+            (107, 2_000),
+        ];
+        let t = scan_tree(&scan(38_000, None, true), &tree, starts(&m));
         assert_eq!(ids(&t), ["pid:103"]);
         assert_eq!(t[0].label, "npm run dev");
-        assert_eq!(t[0].since_ms, 2_000);
+        // The age is the process's real start, not the scan's first sighting.
+        assert_eq!(t[0].since_ms, 30_000);
         assert_eq!(t[0].source, StateSource::Process);
+        assert_eq!(t[0].tool_use_id, None);
+    }
+
+    #[test]
+    fn scan_with_tool_calls_counts_only_groups_a_tool_call_started() {
+        let tree = vec![
+            proc(100, 1, 100, &["pi"]),
+            // An MCP server behind `sh -c`, started at harness startup.
+            proc(101, 100, 101, &["sh", "-c", "npx some-mcp-server"]),
+            // The user's `!cmd` shell while the agent was idle: no tool call started it.
+            proc(102, 100, 102, &["/bin/bash", "-c", "python -m http.server"]),
+            // `npm run dev &` from a bash tool call, alive after the call ended.
+            proc(103, 100, 103, &["/bin/bash", "-c", "npm  run dev &"]),
+            proc(104, 103, 103, &["node", "vite"]),
+        ];
+        let m = [
+            (100, 10_000),
+            (101, 10_800),
+            (102, 50_000),
+            (103, 30_200),
+            (104, 30_300),
+        ];
+        let calls = [
+            call("call_ls", "ls", 20_000, Some(20_100)),
+            call("call_dev", "npm run dev &", 30_000, Some(31_000)),
+        ];
+        let t = scan_tree(&scan(60_000, Some(&calls), true), &tree, starts(&m));
+        assert_eq!(ids(&t), ["pid:103"]);
+        assert_eq!(t[0].tool_use_id.as_deref(), Some("call_dev"));
+        assert_eq!(t[0].label, "npm run dev &");
+        assert_eq!(t[0].since_ms, 30_200);
+    }
+
+    #[test]
+    fn scan_counts_a_tool_started_group_while_working_once_its_call_ended() {
+        let tree = vec![
+            proc(100, 1, 100, &["omp"]),
+            proc(103, 100, 103, &["bash", "-c", "cargo watch -x test"]),
+        ];
+        let m = [(100, 10_000), (103, 30_200)];
+        let running = [call("c1", "cargo watch -x test", 30_000, None)];
+        // The call still runs: the group is its foreground work.
+        let t = scan_tree(&scan(40_000, Some(&running), false), &tree, starts(&m));
+        assert!(t.is_empty());
+        // Idle: a call without an end is not running any more.
+        let t = scan_tree(&scan(40_000, Some(&running), true), &tree, starts(&m));
+        assert_eq!(ids(&t), ["pid:103"]);
+        // The call ended and the group lives on: counted while the run works.
+        let ended = [call("c1", "cargo watch -x test", 30_000, Some(31_000))];
+        let t = scan_tree(&scan(40_000, Some(&ended), false), &tree, starts(&m));
+        assert_eq!(t[0].tool_use_id.as_deref(), Some("c1"));
+        // A group started outside the call's time does not match it.
+        let late = [(100, 10_000), (103, 36_000)];
+        let t = scan_tree(&scan(40_000, Some(&ended), false), &tree, starts(&late));
+        assert!(t.is_empty());
+        // Nor does one that runs another command.
+        let other = [call("c1", "npm test", 30_000, Some(31_000))];
+        let t = scan_tree(&scan(40_000, Some(&other), false), &tree, starts(&m));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn commands_match_through_wrappers() {
+        assert!(commands_match(
+            "source ~/.snapshot && eval 'npm run dev &'",
+            "npm run dev &"
+        ));
+        assert!(commands_match("echo  \"a b\"", "echo a b"));
+        assert!(!commands_match(
+            "bash",
+            "bash ./scripts/long-running-job.sh"
+        ));
+        assert!(!commands_match("", "ls"));
     }
 
     #[test]

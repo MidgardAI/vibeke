@@ -1706,6 +1706,7 @@ fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Valu
     crate::items::observe_hook(server, &run, event, p);
     crate::collision::observe(server, &run, event, p);
     bg::observe_hook(server, &run, event, p);
+    bg::observe_tool(&run, event, p);
     let sid = p.get("session_id").and_then(Value::as_str);
     let tool_use = p.get("tool_use_id").and_then(Value::as_str);
     if let Some(mode) = p.get("permission_mode").and_then(Value::as_str)
