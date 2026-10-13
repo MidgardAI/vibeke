@@ -116,6 +116,14 @@ pub fn on_events(app: &mut App, i: usize, events: Vec<PushedEvent>, lagged: bool
             refresh_clients = true;
         } else if k.starts_with("interaction.") {
             inbox = true;
+        } else if k == "browser.annotations_held" {
+            crate::held_notes::on_held(app, i, &v);
+        } else if matches!(
+            k,
+            "browser.annotations_sent" | "browser.annotations_changed"
+        ) {
+            crate::held_notes::on_settled(app, i, &v);
+            refresh_sessions = true;
         } else if k.starts_with("browser.") {
             refresh_sessions = true;
         } else if k == "screenshot.captured" {

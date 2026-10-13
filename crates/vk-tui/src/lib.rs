@@ -35,12 +35,14 @@ pub mod gateway;
 pub mod groups;
 pub mod gw_indicator;
 pub mod handoff;
+pub mod held_notes;
 pub mod image_view;
 pub mod images;
 pub mod inbox;
 pub mod input;
 pub mod keymap;
 pub mod layouts;
+pub mod links;
 pub mod mention;
 pub mod menu;
 #[cfg(test)]

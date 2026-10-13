@@ -38,6 +38,7 @@ use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::handoff::{epoch_ms, same_host};
 use crate::inbox::fmt_age;
 use crate::screen::Grid;
+use crate::time::Instant;
 
 /// `peer.redeem` pairs over the relay: give it longer than the bridge's default 30 s.
 pub const REDEEM_TIMEOUT_MS: u64 = 60_000;
@@ -69,6 +70,8 @@ pub enum InviteKind {
     Share,
     /// A plain device pairing link (the app).
     Device,
+    /// A design review of a preview (the app's review screen).
+    Review,
 }
 
 /// What an invitation link says about itself, read locally without contacting anyone.
@@ -133,6 +136,8 @@ pub fn parse_link(s: &str) -> Result<Invite, String> {
         Some(sh) => match sh.get("kind").and_then(Value::as_str) {
             Some("handoff") => InviteKind::Handoff,
             Some("peer") => InviteKind::Peer,
+            Some("review") => InviteKind::Review,
+            Some("share") if sh.get("preview").is_some_and(|p| !p.is_null()) => InviteKind::Review,
             Some("share") => InviteKind::Share,
             _ => return Err(NOT_A_LINK.into()),
         },
@@ -169,23 +174,35 @@ impl Invite {
                 left(self.until.unwrap_or(self.open_by))
             ),
             InviteKind::Peer => format!("Pair your host {}", self.name()),
-            InviteKind::Share => format!("A share of {} for the Vibeke app", self.name()),
+            InviteKind::Share => format!(
+                "A share of {} for the Vibeke app: opens in your browser",
+                self.name()
+            ),
             InviteKind::Device => format!("A device pairing link for {}", self.name()),
+            InviteKind::Review => format!(
+                "A design review of {} for the Vibeke app: opens in your browser",
+                self.name()
+            ),
         }
     }
 
-    /// Why this host can't accept it, if so.
+    /// Why this host can't accept it, if so. Links for the app are not accepted here: they open
+    /// in the browser ([`Invite::in_browser`]).
     pub fn refusal(&self, now_s: i64) -> Option<String> {
-        match self.kind {
-            InviteKind::Share | InviteKind::Device => {
-                Some("this invitation is for the Vibeke app: open it there".into())
-            }
-            _ if self.open_by <= now_s => Some(format!(
+        (self.open_by <= now_s).then(|| {
+            format!(
                 "this invitation expired {} ago: ask for a new one",
                 fmt_age((now_s - self.open_by) * 1000)
-            )),
-            _ => None,
-        }
+            )
+        })
+    }
+
+    /// The link is for the Vibeke app, so it opens in the system browser.
+    pub fn in_browser(&self) -> bool {
+        matches!(
+            self.kind,
+            InviteKind::Share | InviteKind::Device | InviteKind::Review
+        )
     }
 }
 
@@ -383,6 +400,9 @@ pub struct View {
     pub paste: Option<PasteForm>,
     /// A change in flight.
     pub busy: Option<String>,
+    /// A continue link being imported (`handoff.link.redeem`), followed through
+    /// `handoff.link.status`.
+    pub job: Option<crate::links::Job>,
 }
 
 impl View {
@@ -403,6 +423,7 @@ impl View {
             created: None,
             paste: None,
             busy: None,
+            job: None,
         }
     }
 
@@ -453,9 +474,22 @@ pub enum Reply {
     Shares,
     Prefs,
     SetPrefs,
-    Remove { name: String },
-    Revoke { what: Section, label: String },
-    Create { kind: InviteKind },
+    Remove {
+        name: String,
+    },
+    Revoke {
+        what: Section,
+        label: String,
+    },
+    Create {
+        kind: InviteKind,
+    },
+    /// `handoff.link.redeem` of a pasted continue link: answers `{job}`.
+    ContinueRedeem,
+    /// `handoff.link.status` of the view's job.
+    ContinueStatus {
+        job: String,
+    },
     Redeem,
 }
 
@@ -614,8 +648,9 @@ fn toggle_always_ask(app: &mut App) {
     );
 }
 
-/// Accept the pasted invitation: parsed and checked here first; nothing is sent for a link
-/// that isn't one this host can redeem.
+/// Accept the pasted link: parsed and checked here first; nothing is sent for a link that isn't
+/// one this host can redeem. A continue link is imported (`handoff.link.redeem`), a share or
+/// review link opens in the system browser, and the rest pair (`peer.redeem`).
 fn redeem(app: &mut App) {
     let Some(v) = view_mut(app) else {
         return;
@@ -625,28 +660,91 @@ fn redeem(app: &mut App) {
         return;
     };
     let link = f.input.split_whitespace().collect::<String>();
-    let inv = match parse_link(&link) {
-        Ok(inv) => inv,
+    let parsed = match crate::links::classify(&link) {
+        Ok(l) => l,
         Err(e) => {
             f.error = Some(e);
             return;
         }
     };
-    if let Some(why) = inv.refusal(now_ms() / 1000) {
-        f.error = Some(why);
+    match parsed {
+        crate::links::Link::Continue(c) => {
+            if let Some(why) = c.refusal(now_ms() / 1000) {
+                f.error = Some(why);
+                return;
+            }
+            f.error = None;
+            v.busy = Some("importing the session…".into());
+            gw_call(
+                app,
+                mi,
+                "handoff.link.redeem",
+                json!({"link": link}),
+                Reply::ContinueRedeem,
+            );
+        }
+        crate::links::Link::Pairing(inv) => {
+            if let Some(why) = inv.refusal(now_ms() / 1000) {
+                f.error = Some(why);
+                return;
+            }
+            f.error = None;
+            if inv.in_browser() {
+                let path = if inv.kind == InviteKind::Review {
+                    "review"
+                } else {
+                    "pair"
+                };
+                let url = crate::links::browser_url(&link, path);
+                v.paste = None;
+                v.notice = Some("opened the link in your browser".into());
+                crate::nav::open_url(app, mi, "", &url);
+                return;
+            }
+            let share_user = f.share_user;
+            v.busy = Some(format!("accepting the invitation from {}…", inv.name()));
+            crate::handoff::call_long_pending(
+                app,
+                mi,
+                "gateway.call",
+                json!({"method": "peer.redeem", "params": {"link": link, "share_user": share_user},
+                       "timeout_ms": REDEEM_TIMEOUT_MS}),
+                pend(Reply::Redeem),
+            );
+        }
+    }
+}
+
+/// Ask for the status of the continue-link import while one runs.
+pub fn tick(app: &mut App) {
+    if !matches!(app.mode, Mode::Popup(Popup::Sharing)) {
         return;
     }
-    f.error = None;
-    let share_user = f.share_user;
-    v.busy = Some(format!("accepting the invitation from {}…", inv.name()));
-    crate::handoff::call_long_pending(
+    let now = Instant::now();
+    let Some(v) = view_mut(app) else {
+        return;
+    };
+    let mi = v.mi;
+    let Some(job) = v.job.as_mut().filter(|j| j.due(now)) else {
+        return;
+    };
+    job.asked = Some(now);
+    let id = job.id.clone();
+    gw_call(
         app,
         mi,
-        "gateway.call",
-        json!({"method": "peer.redeem", "params": {"link": link, "share_user": share_user},
-               "timeout_ms": REDEEM_TIMEOUT_MS}),
-        pend(Reply::Redeem),
+        "handoff.link.status",
+        json!({"job": id}),
+        Reply::ContinueStatus { job: id.clone() },
     );
+}
+
+pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
+    if let (Mode::Popup(Popup::Sharing), Some(v)) = (&app.mode, &app.ux.sharing.view)
+        && let Some(j) = &v.job
+    {
+        d.at("sharing.link", j.next_at(now));
+    }
 }
 
 fn close(app: &mut App) {
@@ -766,13 +864,19 @@ fn paste_key(app: &mut App, ev: &KeyEvent) {
         return;
     }
     let plain = !ev.mods.ctrl() && !ev.mods.alt();
-    let rows = [PasteRow::Input, PasteRow::ShareUser, PasteRow::Accept];
+    // A continue link has no git-name choice.
+    let rows: Vec<PasteRow> = if crate::links::is_continue(&f.input) {
+        vec![PasteRow::Input, PasteRow::Accept]
+    } else {
+        vec![PasteRow::Input, PasteRow::ShareUser, PasteRow::Accept]
+    };
+    let n = rows.len();
     let at = rows.iter().position(|r| *r == f.focus).unwrap_or(0);
     let mut submit = false;
     match &ev.key {
-        Key::Named(NamedKey::Tab) if ev.mods.shift() => f.focus = rows[(at + 2) % 3],
-        Key::Named(NamedKey::Tab) | Key::Named(NamedKey::Down) => f.focus = rows[(at + 1) % 3],
-        Key::Named(NamedKey::Up) => f.focus = rows[(at + 2) % 3],
+        Key::Named(NamedKey::Tab) if ev.mods.shift() => f.focus = rows[(at + n - 1) % n],
+        Key::Named(NamedKey::Tab) | Key::Named(NamedKey::Down) => f.focus = rows[(at + 1) % n],
+        Key::Named(NamedKey::Up) => f.focus = rows[(at + n - 1) % n],
         Key::Named(NamedKey::Enter) => match f.focus {
             PasteRow::ShareUser => f.share_user = !f.share_user,
             _ => submit = true,
@@ -848,6 +952,14 @@ fn prefs_reply(v: &mut View, res: Result<Value, RpcErr>, set: bool) {
             v.notice = Some("this server has no handoff preferences (update it)".into());
         }
         Err(e) => v.notice = Some(format!("✗ {}", e.message)),
+    }
+}
+
+/// A continue-link import failed: in the paste field when it is open, else the notice.
+fn continue_failed(v: &mut View, msg: String) {
+    match v.paste.as_mut() {
+        Some(f) => f.error = Some(msg),
+        None => v.notice = Some(format!("✗ {msg}")),
     }
 }
 
@@ -932,6 +1044,71 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     None => v.notice = Some("✗ the gateway returned no link".into()),
                 },
                 Err(e) => failed(v, &e),
+            }
+        }
+        Reply::ContinueRedeem => match res {
+            Ok(x) => match x["job"].as_str().filter(|j| !j.is_empty()) {
+                Some(id) => {
+                    let job = crate::links::Job::new(id);
+                    v.busy = Some(job.text());
+                    v.job = Some(job);
+                    app.dirty = true;
+                }
+                None => {
+                    v.busy = None;
+                    continue_failed(v, "the gateway returned no job".into());
+                }
+            },
+            Err(e) => {
+                v.busy = None;
+                let msg = crate::links::share_error(&e);
+                if unreachable(&e) {
+                    v.error = Some(msg.clone());
+                }
+                continue_failed(v, msg);
+            }
+        },
+        Reply::ContinueStatus { job } => {
+            if v.job.as_ref().is_none_or(|j| j.id != job) {
+                return;
+            }
+            match res {
+                Ok(x) => {
+                    let finish = v.job.as_mut().map(|j| j.apply(&x));
+                    match finish {
+                        Some(crate::links::Finish::Running) => {
+                            v.busy = v.job.as_ref().map(|j| j.text());
+                        }
+                        Some(crate::links::Finish::Done) => {
+                            let incoming = v.job.as_ref().and_then(|j| j.incoming());
+                            v.job = None;
+                            v.busy = None;
+                            v.paste = None;
+                            match incoming {
+                                Some(id) => {
+                                    app.ux.sharing.view = None;
+                                    crate::handoff::refresh(app, mi);
+                                    crate::handoff::open_accept(app, mi, &id);
+                                }
+                                None => {
+                                    v.notice =
+                                        Some("imported: the session waits in Handoffs".into())
+                                }
+                            }
+                        }
+                        Some(crate::links::Finish::Failed(msg)) => {
+                            v.job = None;
+                            v.busy = None;
+                            continue_failed(v, msg);
+                        }
+                        None => {}
+                    }
+                }
+                Err(e) => {
+                    v.job = None;
+                    v.busy = None;
+                    continue_failed(v, crate::links::share_error(&e));
+                }
             }
         }
         Reply::Redeem => {
@@ -1257,12 +1434,26 @@ fn draw_paste(
     );
     a.line(&format!("{prefix}{shown}"), st(PasteRow::Input));
     let sec = now / 1000;
-    match parse_link(&f.input) {
+    let mut continuing = false;
+    match crate::links::classify(&f.input) {
         _ if f.input.trim().is_empty() => a.line(
             "        paste the link (the app URL, vibeke://pair?d=… or the bare code)",
             t.dim(),
         ),
-        Ok(inv) => {
+        Ok(crate::links::Link::Continue(c)) => {
+            continuing = true;
+            a.line(
+                "        Continue link: a session another host shared with you",
+                t.bold(t.green),
+            );
+            for (k, val) in c.lines(sec) {
+                crate::devices::wrap_lines(a, &format!("          {k}: {val}"), t.text());
+            }
+            if let Some(why) = c.refusal(sec) {
+                a.line(&format!("        ✗ {why}"), t.s(t.red));
+            }
+        }
+        Ok(crate::links::Link::Pairing(inv)) => {
             a.line(&format!("        {}", inv.describe(sec)), t.bold(t.green));
             if let Some(why) = inv.refusal(sec) {
                 a.line(&format!("        ✗ {why}"), t.s(t.red));
@@ -1271,25 +1462,31 @@ fn draw_paste(
         Err(e) => a.line(&format!("        ✗ {e}"), t.s(t.red)),
     }
     a.line("", t.text());
+    if !continuing {
+        a.line(
+            &format!(
+                "{} {} Show my git name and email",
+                mark(PasteRow::ShareUser),
+                if f.share_user { "[x]" } else { "[ ]" }
+            ),
+            st(PasteRow::ShareUser),
+        );
+        a.line(
+            "      off: the other side only sees this host's name",
+            t.dim(),
+        );
+        a.line("", t.text());
+    }
+    let (on, off) = if continuing {
+        ("  [> Import <]", "  [ Import ]")
+    } else if matches!(crate::links::classify(&f.input), Ok(crate::links::Link::Pairing(i)) if i.in_browser())
+    {
+        ("  [> Open in browser <]", "  [ Open in browser ]")
+    } else {
+        ("  [> Accept <]", "  [ Accept ]")
+    };
     a.line(
-        &format!(
-            "{} {} Show my git name and email",
-            mark(PasteRow::ShareUser),
-            if f.share_user { "[x]" } else { "[ ]" }
-        ),
-        st(PasteRow::ShareUser),
-    );
-    a.line(
-        "      off: the other side only sees this host's name",
-        t.dim(),
-    );
-    a.line("", t.text());
-    a.line(
-        if f.focus == PasteRow::Accept {
-            "  [> Accept <]"
-        } else {
-            "  [ Accept ]"
-        },
+        if f.focus == PasteRow::Accept { on } else { off },
         if f.focus == PasteRow::Accept {
             t.bold(t.accent)
         } else {

@@ -493,3 +493,387 @@ fn the_approve_warning_mentions_the_sandbox_unless_the_pane_runs_in_one() {
         "They can say yes to what the agent asks — commands it runs as you"
     );
 }
+
+// ---- spec 20: kinds, who may open, grouping --------------------------------------------------------
+
+fn preview_of(handle: &str, pane: &str, label: &str) -> vk_proto::model::Preview {
+    vk_proto::model::Preview {
+        id: format!("PV-{handle}"),
+        handle: handle.into(),
+        machine: "local".into(),
+        pane: Some(pane.into()),
+        task: None,
+        port: 5173,
+        path: "/".into(),
+        label: (!label.is_empty()).then(|| label.to_string()),
+        url: "http://localhost:5173/".into(),
+        scheme: "http".into(),
+        status: vk_proto::model::PreviewStatus::Up,
+        source: vk_proto::model::PreviewSource::Declared,
+        pid: None,
+        first_seen_ms: 0,
+        last_seen_ms: 0,
+    }
+}
+
+/// The form on its Kind field.
+fn kind_form(app: &mut App) {
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(form(app).focus, Field::Kind);
+}
+
+fn with_previews(app: &mut App) {
+    let m = &mut app.machines[0].model;
+    m.panes.push(crate::drafts::tests::pane("p3", "T1", "W2"));
+    m.previews = vec![
+        preview_of("v4", "p1", "shop"),
+        preview_of("v5", "p3", "other workspace"),
+        {
+            let mut gone = preview_of("v6", "p1", "old");
+            gone.status = vk_proto::model::PreviewStatus::Gone;
+            gone
+        },
+    ];
+}
+
+#[test]
+fn a_design_review_lists_the_workspaces_previews_and_defaults_to_github() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.config.sharing.github = vec!["@alice".into(), "bob".into()];
+    with_previews(&mut app);
+    kind_form(&mut app);
+    // Only the workspace's live preview is offered.
+    assert_eq!(form(&app).previews.len(), 1);
+    app.on_key(named(NamedKey::Right));
+    let f = form(&app);
+    assert_eq!(f.kind, Kind::Review);
+    assert_eq!(f.who, Who::Github);
+    assert_eq!(f.notes, Notes::Direct);
+    let s = screen(&app);
+    assert!(s.contains("Share a design review"), "{s}");
+    assert!(s.contains("[Design review]"), "{s}");
+    assert!(s.contains("[v4 shop]"), "{s}");
+    assert!(s.contains("[GitHub]"), "{s}");
+    assert!(
+        s.contains("only @alice, @bob, signed in with GitHub"),
+        "{s}"
+    );
+    assert!(s.contains("[Straight to the agent]"), "{s}");
+    assert!(!s.contains("This pane"), "{s}");
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(
+        p["params"],
+        json!({"kind": "review", "preview": "v4", "notes": "direct", "access": "github",
+               "github": ["alice", "bob"], "ttl_s": 7200})
+    );
+}
+
+#[test]
+fn a_plain_link_review_holds_notes_unless_told_otherwise() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.config.sharing.github = vec!["alice".into()];
+    with_previews(&mut app);
+    kind_form(&mut app);
+    app.on_key(named(NamedKey::Right));
+    // Who → Anyone with the link: notes follow to Hold for me.
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(form(&app).who, Who::Link);
+    assert_eq!(form(&app).notes, Notes::Held);
+    assert!(screen(&app).contains("[Hold for me]"));
+    // Picking Notes by hand keeps it when Who changes again.
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(form(&app).focus, Field::Notes);
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).notes, Notes::Direct);
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Github);
+    assert_eq!(form(&app).notes, Notes::Direct);
+    app.on_key(named(NamedKey::Left));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(
+        p["params"],
+        json!({"kind": "review", "preview": "v4", "notes": "direct", "access": "link",
+               "ttl_s": 7200})
+    );
+}
+
+#[test]
+fn github_is_off_without_a_configured_list_but_any_account_works() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    with_previews(&mut app);
+    kind_form(&mut app);
+    app.on_key(named(NamedKey::Right));
+    // No list: a review starts as a plain link.
+    assert_eq!(form(&app).who, Who::Link);
+    let s = screen(&app);
+    assert!(s.contains("GitHub (off)"), "{s}");
+    assert!(s.contains("set [sharing] github in your config"), "{s}");
+    // Right from Link skips GitHub.
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Any);
+    assert!(screen(&app).contains("[Any GitHub account]"));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(p["params"]["access"], "github");
+    assert_eq!(p["params"]["github"], json!(["*"]));
+    assert_eq!(p["params"]["notes"], "direct");
+}
+
+#[test]
+fn a_review_without_a_preview_says_what_to_do() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    kind_form(&mut app);
+    app.on_key(named(NamedKey::Right));
+    assert!(screen(&app).contains("no preview in this workspace"));
+    app.on_key(named(NamedKey::Enter));
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert!(
+        form(&app)
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("no preview in this workspace")
+    );
+}
+
+#[test]
+fn a_watch_share_for_github_accounts_names_them() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.config.sharing.github = vec!["alice".into()];
+    app.on_key(ch('n'));
+    // What → Who is above it.
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).who, Who::Github);
+    assert!(screen(&app).contains("only @alice, signed in with GitHub"));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
+    assert_eq!(
+        p["params"],
+        json!({"kind": "share", "scope": "view", "pane": "p1", "ttl_s": 7200,
+               "access": "github", "github": ["alice"]})
+    );
+}
+
+#[test]
+fn the_created_review_link_shows_who_can_open_it_and_the_uses_left() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.config.sharing.github = vec!["alice".into(), "bob".into()];
+    with_previews(&mut app);
+    kind_form(&mut app);
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": LINK, "pid": "pidR", "open_by": now_s() + 890,
+               "expires_at": now_s() + 7200, "access": "github", "uses": 20,
+               "github": [{"id": 1, "login": "alice"}, {"id": 2, "login": "bob"}],
+               "notes": "direct", "preview": {"id": "PV-v4", "handle": "v4"}}),
+    );
+    let s = screen(&app);
+    assert!(s.contains("Design review link"), "{s}");
+    assert!(
+        s.contains("Only @alice, @bob can see and leave notes on"),
+        "{s}"
+    );
+    assert!(s.contains("preview v4 shop"), "{s}");
+    assert!(s.contains("Their notes go straight to the agent."), "{s}");
+    assert!(s.contains("Uses left: 20"), "{s}");
+    assert!(s.contains("Revoke it in People when done."), "{s}");
+    assert!(!s.contains("works once"), "{s}");
+    assert!(s.contains(LINK), "{s}");
+}
+
+#[test]
+fn a_held_review_link_says_notes_wait() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    with_previews(&mut app);
+    kind_form(&mut app);
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"link": LINK, "pid": "pidR", "open_by": now_s() + 890, "uses": 1}),
+    );
+    let s = screen(&app);
+    assert!(
+        s.contains("Anyone with this link can see and leave notes on"),
+        "{s}"
+    );
+    assert!(
+        s.contains("Their notes wait for you: send or discard each one."),
+        "{s}"
+    );
+    assert!(
+        s.contains("The link works once and must be opened within"),
+        "{s}"
+    );
+}
+
+#[test]
+fn account_errors_read_as_sentences_in_the_form() {
+    for (kind, text) in [
+        ("account_required", "vibeke login"),
+        ("unavailable", "account server"),
+    ] {
+        let (mut app, mut rxs) = opened();
+        app.size = (140, 40);
+        app.on_key(ch('n'));
+        app.on_key(named(NamedKey::Enter));
+        let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
+        reply_msg(&mut app, 0, req, kind, "raw");
+        let e = form(&app).error.clone().unwrap();
+        assert!(e.contains(text), "{kind}: {e}");
+    }
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.on_key(ch('n'));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
+    let json = json!({"jsonrpc": "2.0", "id": req, "error": {"code": -32000, "message": "raw",
+        "data": {"kind": "unknown_user", "details": {"login": "ghost"}}}})
+    .to_string();
+    app.on_frame(0, ServerFrame::CommandResult { req, json });
+    assert_eq!(
+        form(&app).error.as_deref(),
+        Some("@ghost is not a GitHub user: check the login")
+    );
+}
+
+fn grouped_json() -> Value {
+    let rv = json!({"preview": "PV-v4", "handle": "v4", "label": "shop"});
+    json!({
+        "invitations": [
+            {"id": "pidR", "kind": "share", "scope": "view", "label": "Review for Kim",
+             "limit": null, "created": 1, "link_expires_at": now_s() + 600,
+             "device_expires_at": now_s() + 7200 + 120, "access": "github", "uses": 20,
+             "redeemed": 2, "review": rv}
+        ],
+        "devices": [
+            {"id": "dv1", "kind": "share", "name": "Kim's laptop", "scope": "view",
+             "expires_at": now_s() + 3600 + 120, "limit": null,
+             "github": {"id": 5, "login": "kim"}, "invitation": "pidR"},
+            {"id": "dv3", "kind": "share", "name": "web", "scope": "view",
+             "expires_at": now_s() + 600, "limit": {"pane": "p1"}},
+            {"id": "dv2", "kind": "review", "name": "Lee's phone", "scope": "view",
+             "expires_at": now_s() + 3600 + 120, "limit": null, "github": "lee",
+             "invitation": "pidR"},
+            {"id": "dv4", "kind": "share", "name": "orphan", "scope": "view",
+             "expires_at": now_s() + 600, "limit": null, "invitation": "gone"}
+        ]
+    })
+}
+
+#[test]
+fn devices_group_under_their_invitation_with_their_github_login() {
+    let (mut app, mut rxs) = fleet();
+    app.size = (140, 40);
+    commands(&mut rxs[0]);
+    app.action("people", None);
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.list");
+    reply(&mut app, 0, req, grouped_json());
+    let v = app.ux.people.as_ref().unwrap();
+    let order: Vec<(&str, bool)> = v.rows.iter().map(|r| (r.id.as_str(), r.child)).collect();
+    // Devices without a live invitation first, then each invitation with its devices.
+    assert_eq!(
+        order,
+        [
+            ("dv3", false),
+            ("dv4", false),
+            ("pidR", false),
+            ("dv1", true),
+            ("dv2", true)
+        ]
+    );
+    let s = screen(&app);
+    assert!(s.contains("Kim's laptop (@kim)"), "{s}");
+    assert!(s.contains("Lee's phone (@lee)"), "{s}");
+    assert!(s.contains("└ Kim's laptop"), "{s}");
+    let line = row_line(
+        &app,
+        0,
+        &app.ux.people.as_ref().unwrap().rows[2],
+        now_s() * 1000,
+    );
+    assert_eq!(
+        line,
+        "Review for Kim · design review of v4 shop · Review · 2h left · link opened 2x · 18 uses left"
+    );
+}
+
+#[test]
+fn revoking_an_invitation_revokes_its_devices_with_it() {
+    let (mut app, mut rxs) = fleet();
+    app.size = (140, 40);
+    commands(&mut rxs[0]);
+    app.action("people", None);
+    let (req, _) = gw_of(&commands(&mut rxs[0]), "share.list");
+    reply(&mut app, 0, req, grouped_json());
+    // dv3, dv4, pidR.
+    app.on_key(ch('j'));
+    app.on_key(ch('j'));
+    app.on_key(ch('x'));
+    let s = screen(&app);
+    assert!(
+        s.contains("Revoke the link for Review for Kim and the 2 devices that opened it?"),
+        "{s}"
+    );
+    app.on_key(ch('y'));
+    let (_, p) = gw_of(&commands(&mut rxs[0]), "share.revoke");
+    assert_eq!(p["params"], json!({"id": "pidR"}));
+}
+
+#[test]
+fn group_rows_keeps_the_order_of_a_list_without_invitations_for_its_devices() {
+    let row = |id: &str, pending: bool, inv: Option<&str>| ShareRow {
+        id: id.into(),
+        pending,
+        who: String::new(),
+        scope: "view".into(),
+        workspace: None,
+        pane: None,
+        expires_at: None,
+        link_expires_at: None,
+        github: None,
+        invitation: inv.map(str::to_string),
+        uses_left: None,
+        redeemed: 0,
+        review: None,
+        child: false,
+    };
+    let out = group_rows(vec![
+        row("d2", false, Some("i2")),
+        row("d1", false, None),
+        row("i1", true, None),
+        row("i2", true, None),
+        row("d3", false, Some("i2")),
+    ]);
+    let ids: Vec<&str> = out.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["d1", "i1", "i2", "d2", "d3"]);
+    assert_eq!(
+        out.iter().map(|r| r.child).collect::<Vec<_>>(),
+        [false, false, false, true, true]
+    );
+}

@@ -1268,3 +1268,106 @@ fn a_late_send_reply_never_clears_or_fails_a_newer_form() {
     reply(&mut app, 0, send_b, json!({}));
     assert!(app.ux.handoff.send.is_none());
 }
+
+// ---- spec 20: continue links ---------------------------------------------------------------------
+
+fn gw_call_of(cmds: &[(u64, String, Value)], method: &str) -> (u64, Value) {
+    let m: Vec<_> = cmds
+        .iter()
+        .filter(|c| c.1 == "gateway.call" && c.2["method"] == method)
+        .collect();
+    assert_eq!(m.len(), 1, "expected one gateway.call {method} in {cmds:?}");
+    (m[0].0, m[0].2.clone())
+}
+
+#[test]
+fn l_makes_a_continue_link_for_the_focused_pane_and_copies_it() {
+    let (mut app, mut rxs) = fleet();
+    app.config.sharing.github = vec!["@alice".into(), "bob".into()];
+    commands(&mut rxs[0]);
+    open_list(&mut app);
+    commands(&mut rxs[0]);
+    app.on_key(ch('l'));
+    let (req, p) = gw_call_of(&commands(&mut rxs[0]), "handoff.link.create");
+    assert_eq!(
+        p["params"],
+        json!({"pane": "p1", "access": "github", "github": ["alice", "bob"]})
+    );
+    reply(&mut app, 0, req, json!({"job": "J1"}));
+    tick(&mut app);
+    let (sreq, p) = gw_call_of(&commands(&mut rxs[0]), "handoff.link.status");
+    assert_eq!(p["params"], json!({"job": "J1"}));
+    reply(
+        &mut app,
+        0,
+        sreq,
+        json!({"job": "J1", "kind": "create", "state": "uploading", "progress": 0.5}),
+    );
+    assert!(
+        screen(&app).contains("⏳ uploading 50%…"),
+        "{}",
+        screen(&app)
+    );
+    app.ux
+        .handoff
+        .link
+        .as_mut()
+        .unwrap()
+        .job
+        .as_mut()
+        .unwrap()
+        .asked = Some(crate::time::Instant::now() - 2 * crate::links::POLL);
+    tick(&mut app);
+    let (sreq, _) = gw_call_of(&commands(&mut rxs[0]), "handoff.link.status");
+    let link = "https://app.example/#/continue?d=abc";
+    reply(
+        &mut app,
+        0,
+        sreq,
+        json!({"job": "J1", "kind": "create", "state": "done", "link": link,
+               "expires_at": now_ms() / 1000 + 3600}),
+    );
+    let l = app.ux.handoff.link.as_ref().unwrap();
+    assert!(l.job.is_none());
+    assert_eq!(l.link.as_deref(), Some(link));
+    assert_eq!(
+        app.clipboard_sink.as_ref().unwrap().last(),
+        Some(&(link.as_bytes().to_vec(), false))
+    );
+    let s = screen(&app);
+    assert!(s.contains("Copied to the clipboard."), "{s}");
+    assert!(s.contains(link), "{s}");
+    // Nothing more is asked.
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn l_without_a_github_list_says_what_to_set() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    open_list(&mut app);
+    commands(&mut rxs[0]);
+    app.on_key(ch('l'));
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert!(
+        screen(&app).contains("set [sharing] github"),
+        "{}",
+        screen(&app)
+    );
+}
+
+#[test]
+fn a_failed_link_job_shows_the_reason() {
+    let (mut app, mut rxs) = fleet();
+    app.config.sharing.github = vec!["alice".into()];
+    commands(&mut rxs[0]);
+    open_list(&mut app);
+    commands(&mut rxs[0]);
+    app.on_key(ch('l'));
+    let (req, _) = gw_call_of(&commands(&mut rxs[0]), "handoff.link.create");
+    crate::drafts::tests::reply_err(&mut app, 0, req, "account_required", Value::Null);
+    let l = app.ux.handoff.link.as_ref().unwrap();
+    assert!(l.error.as_deref().unwrap().contains("vibeke login"));
+    assert!(screen(&app).contains("✗ this host is not signed in"));
+}

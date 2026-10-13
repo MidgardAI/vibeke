@@ -134,9 +134,10 @@ fn links_parse_in_all_three_forms_and_garbage_is_refused() {
     .unwrap();
     assert_eq!(peer.kind, InviteKind::Peer);
     assert_eq!(peer.describe(now_s()), "Pair your host mini");
-    // Links for the app, and expired links, parse but are refused.
+    // Links for the app open in the browser; expired links parse but are refused.
     let device = parse_link(&d_value(None, "mini", now_s() + 900)).unwrap();
-    assert!(device.refusal(now_s()).unwrap().contains("Vibeke app"));
+    assert!(device.in_browser());
+    assert!(device.refusal(now_s()).is_none());
     let old = parse_link(&d_value(Some(handoff_share(until)), "x", now_s() - 60)).unwrap();
     assert!(old.refusal(now_s()).unwrap().contains("expired"));
     // Garbage.
@@ -373,19 +374,26 @@ fn garbage_and_expired_pastes_are_refused_before_any_call() {
     assert!(commands(&mut rxs[0]).is_empty());
     let f = app.ux.sharing.view.as_ref().unwrap().paste.clone().unwrap();
     assert!(f.error.unwrap().contains("expired"));
-    // An app share link: for the app, not this host.
+    // An app share link opens in the browser (a bare code goes to the app).
     app.on_key(ctl('u'));
-    typ(
-        &mut app,
-        &d_value(
-            Some(json!({"kind": "share", "scope": "view", "until": now_s() + 3600})),
-            "mini",
-            now_s() + 900,
-        ),
+    let share_code = d_value(
+        Some(json!({"kind": "share", "scope": "view", "until": now_s() + 3600})),
+        "mini",
+        now_s() + 900,
     );
+    typ(&mut app, &share_code);
     app.on_key(named(NamedKey::Enter));
     assert!(commands(&mut rxs[0]).is_empty());
-    assert!(screen(&app).contains("open it there"));
+    assert_eq!(
+        app.nav.opened.last().map(String::as_str),
+        Some(format!("https://app.vibeke.dev/#/pair?d={share_code}").as_str())
+    );
+    assert!(app.ux.sharing.view.as_ref().unwrap().paste.is_none());
+    assert_eq!(
+        app.ux.sharing.view.as_ref().unwrap().notice.as_deref(),
+        Some("opened the link in your browser")
+    );
+    app.on_key(ch('p'));
     // esc leaves the field, esc again the view.
     app.on_key(named(NamedKey::Escape));
     assert!(matches!(app.mode, Mode::Popup(Popup::Sharing)));
@@ -431,4 +439,205 @@ fn a_gateway_that_isnt_running_is_said_so() {
     let (preq, _) = gw(&cmds, "peer.list");
     reply_msg(&mut app, 0, preq, "method_not_found", "no such method");
     assert!(screen(&app).contains("has no gateway bridge"));
+}
+
+// ---- spec 20: continue, share and review links ------------------------------------------------------
+
+use crate::links::tests::c_value;
+
+fn continue_url(exp: i64) -> String {
+    format!("https://app.example/#/continue?d={}", c_value(exp))
+}
+
+#[test]
+fn a_continue_link_shows_its_brief_then_imports() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    let url = continue_url(now_s() + 3600 + 120);
+    app.on_paste(url.clone());
+    let s = screen(&app);
+    assert!(
+        s.contains("Continue link: a session another host shared with you"),
+        "{s}"
+    );
+    assert!(s.contains("From: @alice"), "{s}");
+    assert!(s.contains("Repository: shop"), "{s}");
+    assert!(s.contains("Branch: feature/cart"), "{s}");
+    assert!(s.contains("Agent: claude"), "{s}");
+    assert!(s.contains("Title: Cart totals"), "{s}");
+    assert!(
+        s.contains("Last message: Tests pass;next: wire the CLI."),
+        "{s}"
+    );
+    assert!(s.contains("Expires: in 1h"), "{s}");
+    assert!(s.contains("[ Import ]"), "{s}");
+    assert!(!s.contains("Show my git name"), "{s}");
+    assert!(commands(&mut rxs[0]).is_empty(), "nothing before Import");
+    app.on_key(named(NamedKey::Enter));
+    let (req, p) = gw(&commands(&mut rxs[0]), "handoff.link.redeem");
+    assert_eq!(
+        p,
+        json!({"method": "handoff.link.redeem", "params": {"link": url}})
+    );
+    assert!(screen(&app).contains("⏳ importing the session…"));
+    reply(&mut app, 0, req, json!({"job": "J1"}));
+    assert!(screen(&app).contains("⏳ exporting the session…"));
+    // The status is asked at once, then about once a second.
+    tick(&mut app);
+    let (sreq, p) = gw(&commands(&mut rxs[0]), "handoff.link.status");
+    assert_eq!(p["params"], json!({"job": "J1"}));
+    reply(
+        &mut app,
+        0,
+        sreq,
+        json!({"job": "J1", "kind": "redeem", "state": "downloading", "progress": 0.3}),
+    );
+    assert!(screen(&app).contains("⏳ downloading 30%…"));
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty(), "not asked again yet");
+    let now = Instant::now();
+    assert!(app.deadlines(now).names().contains(&"sharing.link"));
+    app.ux
+        .sharing
+        .view
+        .as_mut()
+        .unwrap()
+        .job
+        .as_mut()
+        .unwrap()
+        .asked = Some(Instant::now() - 2 * crate::links::POLL);
+    tick(&mut app);
+    let (sreq, _) = gw(&commands(&mut rxs[0]), "handoff.link.status");
+    reply(
+        &mut app,
+        0,
+        sreq,
+        json!({"job": "J1", "kind": "redeem", "state": "done", "incoming": "H9"}),
+    );
+    // The incoming handoff opens in the accept overlay.
+    assert!(matches!(app.mode, Mode::Popup(Popup::HandoffAccept)));
+    assert_eq!(app.ux.handoff.accept.as_ref().unwrap().id, "H9");
+    assert!(app.ux.sharing.view.is_none());
+    let cmds = commands(&mut rxs[0]);
+    let (_, p) = crate::drafts::tests::only(&cmds, "handoff.incoming.get");
+    assert_eq!(p, json!({"id": "H9"}));
+}
+
+#[test]
+fn a_failed_import_says_why_in_the_field() {
+    let (mut app, mut rxs) = opened();
+    app.on_paste(continue_url(now_s() + 3600));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw(&commands(&mut rxs[0]), "handoff.link.redeem");
+    reply(&mut app, 0, req, json!({"job": "J2"}));
+    tick(&mut app);
+    let (sreq, _) = gw(&commands(&mut rxs[0]), "handoff.link.status");
+    reply(
+        &mut app,
+        0,
+        sreq,
+        json!({"job": "J2", "kind": "redeem", "state": "failed", "error": "the link expired"}),
+    );
+    let v = app.ux.sharing.view.as_ref().unwrap();
+    assert!(v.job.is_none() && v.busy.is_none());
+    assert_eq!(
+        v.paste.as_ref().unwrap().error.as_deref(),
+        Some("the link expired")
+    );
+    assert!(screen(&app).contains("✗ the link expired"));
+    // No more polling once it ended.
+    tick(&mut app);
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn account_errors_of_a_redeem_read_as_sentences() {
+    let (mut app, mut rxs) = opened();
+    app.on_paste(continue_url(now_s() + 3600));
+    app.on_key(named(NamedKey::Enter));
+    let (req, _) = gw(&commands(&mut rxs[0]), "handoff.link.redeem");
+    reply_msg(&mut app, 0, req, "account_required", "raw");
+    let f = app.ux.sharing.view.as_ref().unwrap().paste.clone().unwrap();
+    assert!(f.error.unwrap().contains("vibeke login"));
+}
+
+#[test]
+fn an_expired_continue_link_is_refused_before_any_call() {
+    let (mut app, mut rxs) = opened();
+    app.on_paste(continue_url(now_s() - 60));
+    assert!(screen(&app).contains("✗ this link expired"));
+    app.on_key(named(NamedKey::Enter));
+    assert!(commands(&mut rxs[0]).is_empty());
+    let f = app.ux.sharing.view.as_ref().unwrap().paste.clone().unwrap();
+    assert!(f.error.unwrap().contains("expired"));
+}
+
+#[test]
+fn a_review_link_opens_in_the_browser() {
+    let (mut app, mut rxs) = opened();
+    let d = d_value(
+        Some(
+            json!({"kind": "review", "scope": "view", "until": now_s() + 3600,
+                    "preview": {"id": "PV-v4", "label": "shop"}}),
+        ),
+        "mini",
+        now_s() + 900,
+    );
+    let url = format!("https://app.example/#/review?d={d}");
+    assert_eq!(parse_link(&url).unwrap().kind, InviteKind::Review);
+    // A share that names a preview is a review too.
+    let share_with_preview = d_value(
+        Some(
+            json!({"kind": "share", "scope": "view", "until": now_s() + 3600,
+                    "preview": {"id": "PV-v4"}}),
+        ),
+        "mini",
+        now_s() + 900,
+    );
+    assert_eq!(
+        parse_link(&share_with_preview).unwrap().kind,
+        InviteKind::Review
+    );
+    app.on_paste(url.clone());
+    let s = screen(&app);
+    assert!(
+        s.contains("A design review of mini for the Vibeke app"),
+        "{s}"
+    );
+    assert!(s.contains("[ Open in browser ]"), "{s}");
+    app.on_key(named(NamedKey::Enter));
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert_eq!(app.nav.opened.last(), Some(&url));
+}
+
+#[test]
+fn tab_skips_the_git_name_choice_for_a_continue_link() {
+    let (mut app, _rxs) = opened();
+    app.on_paste(continue_url(now_s() + 3600));
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(
+        app.ux
+            .sharing
+            .view
+            .as_ref()
+            .unwrap()
+            .paste
+            .as_ref()
+            .unwrap()
+            .focus,
+        PasteRow::Accept
+    );
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(
+        app.ux
+            .sharing
+            .view
+            .as_ref()
+            .unwrap()
+            .paste
+            .as_ref()
+            .unwrap()
+            .focus,
+        PasteRow::Input
+    );
 }

@@ -41,7 +41,7 @@ use crate::devices::{GwHealth, POLL, clean, gateway_problem, wrap_lines};
 use crate::handoff::epoch_ms;
 use crate::inbox::fmt_age;
 use crate::screen::Grid;
-use crate::sharing::{bridge_error, draw_link_qr, gw_call_pending, unreachable};
+use crate::sharing::{draw_link_qr, gw_call_pending, unreachable};
 
 /// Expiry choices (seconds, label); [`DEFAULT_TTL`] is preselected.
 pub const TTLS: [(u64, &str); 5] = [
@@ -103,15 +103,77 @@ pub struct ShareRow {
     pub expires_at: Option<i64>,
     /// Unix seconds: an unused link must be opened before this.
     pub link_expires_at: Option<i64>,
+    /// The GitHub login a device signed in with.
+    pub github: Option<String>,
+    /// A device: the invitation (pairing id) whose link it opened.
+    pub invitation: Option<String>,
+    /// An invitation: how many more times its link can be opened.
+    pub uses_left: Option<u64>,
+    /// An invitation: how many times its link was opened.
+    pub redeemed: u64,
+    /// A design review: the preview it covers ("v4 shop"), else None.
+    pub review: Option<String>,
+    /// Shown under its invitation (set by [`group_rows`]).
+    pub child: bool,
+}
+
+/// The preview a `review` value names: `{preview, handle, label}` or a string.
+fn review_of(v: &Value) -> Option<String> {
+    let t = match v {
+        Value::Null | Value::Bool(false) => return None,
+        Value::String(s) => clean(s),
+        Value::Object(_) => {
+            let h = s_of(v, "handle").map(|s| clean(&s));
+            let l = s_of(v, "label").map(|s| clean(&s));
+            match (h, l) {
+                (Some(h), Some(l)) => format!("{h} {l}"),
+                (Some(x), None) | (None, Some(x)) => x,
+                (None, None) => s_of(v, "preview").map(|s| clean(&s)).unwrap_or_default(),
+            }
+        }
+        _ => return None,
+    };
+    Some(if t.is_empty() { "a preview".into() } else { t })
+}
+
+/// Devices under the invitation they came from: devices without one first (as listed), then
+/// each invitation followed by its devices.
+pub fn group_rows(rows: Vec<ShareRow>) -> Vec<ShareRow> {
+    let (inv, rest): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| r.pending);
+    let known = |r: &ShareRow| {
+        r.invitation
+            .as_ref()
+            .is_some_and(|i| inv.iter().any(|x| &x.id == i))
+    };
+    let (kids, mut out): (Vec<_>, Vec<_>) = rest.into_iter().partition(known);
+    for i in inv {
+        let id = i.id.clone();
+        out.push(i);
+        for k in kids
+            .iter()
+            .filter(|k| k.invitation.as_deref() == Some(id.as_str()))
+        {
+            out.push(ShareRow {
+                child: true,
+                ..k.clone()
+            });
+        }
+    }
+    out
 }
 
 impl ShareRow {
     /// A `share.list` entry (`pending` for `invitations`); None for any other kind.
     fn from_value(v: &Value, pending: bool) -> Option<ShareRow> {
-        if v.get("kind").and_then(Value::as_str) != Some("share") {
+        if !matches!(
+            v.get("kind").and_then(Value::as_str),
+            Some("share" | "review")
+        ) {
             return None;
         }
         let limit = &v["limit"];
+        let uses = v["uses"].as_u64();
+        let redeemed = v["redeemed"].as_u64().unwrap_or(0);
         Some(ShareRow {
             id: s_of(v, "id")?,
             pending,
@@ -132,6 +194,16 @@ impl ShareRow {
             } else {
                 None
             },
+            github: crate::links::login_of(&v["github"]),
+            invitation: if pending { None } else { s_of(v, "invitation") },
+            uses_left: if pending {
+                uses.map(|u| u.saturating_sub(redeemed))
+            } else {
+                None
+            },
+            redeemed: if pending { redeemed } else { 0 },
+            review: review_of(&v["review"]),
+            child: false,
         })
     }
 
@@ -150,6 +222,8 @@ pub struct Confirm {
     pub id: String,
     pub who: String,
     pub pending: bool,
+    /// An invitation: the devices that opened it, revoked with it.
+    pub devices: usize,
 }
 
 /// What a share covers.
@@ -159,26 +233,102 @@ pub enum What {
     Workspace,
 }
 
+/// What the form makes: a watch share of a pane or workspace, or a design review of a preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Watch,
+    Review,
+}
+
+/// Who may open the link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Who {
+    /// Anyone who has the link.
+    Link,
+    /// The GitHub accounts of the `[sharing] github` list.
+    Github,
+    /// Any GitHub account.
+    Any,
+}
+
+/// Where a design review's notes go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notes {
+    /// Straight to the agent.
+    Direct,
+    /// Held until the owner sends or discards them.
+    Held,
+}
+
+impl Who {
+    /// Notes go straight to the agent for GitHub accounts and wait for the owner for a plain
+    /// link (spec 20).
+    fn default_notes(self) -> Notes {
+        match self {
+            Who::Link => Notes::Held,
+            Who::Github | Who::Any => Notes::Direct,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    Kind,
+    Who,
     What,
     Access,
+    Preview,
+    Notes,
     Expires,
     Name,
     Create,
 }
 
-const FIELDS: [Field; 5] = [
-    Field::What,
-    Field::Access,
-    Field::Expires,
-    Field::Name,
-    Field::Create,
-];
+/// A preview a design review can cover.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewChoice {
+    pub id: String,
+    pub handle: String,
+    pub label: String,
+}
+
+/// The previews of the workspace on machine `mi` that are not gone (a preview without a pane
+/// counts: nothing says it belongs elsewhere).
+fn previews_of(app: &App, mi: usize, workspace: Option<&str>) -> Vec<PreviewChoice> {
+    let Some(m) = app.machines.get(mi) else {
+        return Vec::new();
+    };
+    m.model
+        .previews
+        .iter()
+        .filter(|p| p.status != vk_proto::model::PreviewStatus::Gone)
+        .filter(|p| {
+            let pane_ws = p
+                .pane
+                .as_ref()
+                .and_then(|id| m.model.panes.iter().find(|x| &x.id == id))
+                .map(|x| x.workspace.as_str());
+            match (pane_ws, workspace) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            }
+        })
+        .map(|p| PreviewChoice {
+            id: p.id.clone(),
+            handle: p.handle.clone(),
+            label: p
+                .label
+                .as_deref()
+                .map(|l| crate::plugins::sanitize(l, 40))
+                .unwrap_or_default(),
+        })
+        .collect()
+}
 
 /// The new-share form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Form {
+    pub kind: Kind,
     /// The pane **This pane** shares.
     pub pane: Option<String>,
     /// That pane's workspace (**This workspace**).
@@ -193,6 +343,15 @@ pub struct Form {
     pub error: Option<String>,
     /// Enter with Control picked: asking "Give … control …? [y]" before the link is made.
     pub confirming: bool,
+    pub who: Who,
+    pub notes: Notes,
+    /// The user picked Notes: it no longer follows Who.
+    pub notes_set: bool,
+    /// The config's `[sharing] github` list when the form opened.
+    pub github: Vec<String>,
+    /// A design review's candidates, and the one picked.
+    pub previews: Vec<PreviewChoice>,
+    pub preview: usize,
 }
 
 impl Form {
@@ -206,7 +365,9 @@ impl Form {
                 .map(|p| p.workspace.clone())
                 .or_else(|| m.focus.workspace.clone())
         });
+        let previews = previews_of(app, mi, workspace.as_deref());
         Form {
+            kind: Kind::Watch,
             what: if pane.is_some() {
                 What::Pane
             } else {
@@ -217,21 +378,106 @@ impl Form {
             access: 0,
             ttl: DEFAULT_TTL,
             name: String::new(),
+            // The first field is Kind; the form opens on What, as it always did.
             focus: Field::What,
             error: None,
             confirming: false,
+            who: Who::Link,
+            notes: Who::Link.default_notes(),
+            notes_set: false,
+            github: crate::links::github_default(app),
+            previews,
+            preview: 0,
         }
+    }
+
+    /// The fields shown, in order.
+    pub fn fields(&self) -> Vec<Field> {
+        match self.kind {
+            Kind::Watch => vec![
+                Field::Kind,
+                Field::Who,
+                Field::What,
+                Field::Access,
+                Field::Expires,
+                Field::Name,
+                Field::Create,
+            ],
+            Kind::Review => vec![
+                Field::Kind,
+                Field::Who,
+                Field::Preview,
+                Field::Notes,
+                Field::Expires,
+                Field::Name,
+                Field::Create,
+            ],
+        }
+    }
+
+    /// The **Who** choices this form offers (GitHub needs the config list).
+    fn who_options(&self) -> Vec<Who> {
+        let mut v = vec![Who::Link];
+        if !self.github.is_empty() {
+            v.push(Who::Github);
+        }
+        v.push(Who::Any);
+        v
+    }
+
+    fn set_who(&mut self, who: Who) {
+        self.who = who;
+        if !self.notes_set {
+            self.notes = who.default_notes();
+        }
+    }
+
+    /// The picked preview.
+    pub fn picked(&self) -> Option<&PreviewChoice> {
+        self.previews.get(self.preview)
     }
 
     /// `share.create`'s params.
     pub fn params(&self) -> Result<Value, String> {
-        let scope = ACCESS[self.access].0;
-        let mut p = json!({"kind": "share", "scope": scope});
-        match (self.what, &self.pane, &self.workspace) {
-            (What::Pane, Some(id), _) => p["pane"] = json!(id),
-            (What::Workspace, _, Some(id)) => p["workspace"] = json!(id),
-            (What::Pane, None, _) => return Err("no pane to share: focus one first".into()),
-            (What::Workspace, _, None) => return Err("no workspace to share".into()),
+        let review = self.kind == Kind::Review;
+        let mut p = if review {
+            let pv = self.picked().ok_or_else(|| {
+                "no preview in this workspace: ask the agent to declare one".to_string()
+            })?;
+            json!({"kind": "review", "preview": pv.handle,
+            "notes": match self.notes {
+                Notes::Direct => "direct",
+                Notes::Held => "held",
+            }})
+        } else {
+            let scope = ACCESS[self.access].0;
+            let mut p = json!({"kind": "share", "scope": scope});
+            match (self.what, &self.pane, &self.workspace) {
+                (What::Pane, Some(id), _) => p["pane"] = json!(id),
+                (What::Workspace, _, Some(id)) => p["workspace"] = json!(id),
+                (What::Pane, None, _) => return Err("no pane to share: focus one first".into()),
+                (What::Workspace, _, None) => return Err("no workspace to share".into()),
+            }
+            p
+        };
+        match self.who {
+            // A watch share without `access` is a link share, as before.
+            Who::Link if review => p["access"] = json!("link"),
+            Who::Link => {}
+            Who::Github => {
+                if self.github.is_empty() {
+                    return Err(
+                        "no GitHub logins: set [sharing] github in your config, or pick another Who"
+                            .into(),
+                    );
+                }
+                p["access"] = json!("github");
+                p["github"] = json!(self.github);
+            }
+            Who::Any => {
+                p["access"] = json!("github");
+                p["github"] = json!(["*"]);
+            }
         }
         p["ttl_s"] = json!(TTLS[self.ttl].0);
         let name = self.name.trim();
@@ -244,6 +490,26 @@ impl Form {
     /// ←/→ (and space) on a choice.
     fn change(&mut self, by: i32) {
         match self.focus {
+            Field::Kind => {
+                self.kind = match self.kind {
+                    Kind::Watch => Kind::Review,
+                    Kind::Review => Kind::Watch,
+                };
+                // A review is for GitHub accounts when the config names some.
+                self.notes_set = false;
+                let who = if self.kind == Kind::Review && !self.github.is_empty() {
+                    Who::Github
+                } else {
+                    Who::Link
+                };
+                self.set_who(who);
+            }
+            Field::Who => {
+                let opts = self.who_options();
+                let at = opts.iter().position(|w| *w == self.who).unwrap_or(0) as i32;
+                let next = opts[(at + by).rem_euclid(opts.len() as i32) as usize];
+                self.set_who(next);
+            }
             Field::What => {
                 self.what = match self.what {
                     What::Pane => What::Workspace,
@@ -252,6 +518,19 @@ impl Form {
             }
             Field::Access => {
                 self.access = (self.access as i32 + by).rem_euclid(ACCESS.len() as i32) as usize
+            }
+            Field::Preview => {
+                let n = self.previews.len() as i32;
+                if n > 0 {
+                    self.preview = (self.preview as i32 + by).rem_euclid(n) as usize;
+                }
+            }
+            Field::Notes => {
+                self.notes = match self.notes {
+                    Notes::Direct => Notes::Held,
+                    Notes::Held => Notes::Direct,
+                };
+                self.notes_set = true;
             }
             Field::Expires => {
                 self.ttl = (self.ttl as i32 + by).clamp(0, TTLS.len() as i32 - 1) as usize
@@ -275,6 +554,16 @@ pub struct Created {
     /// "view", "approve" or "full".
     pub scope: String,
     pub who: Option<String>,
+    /// A watch share or a design review.
+    pub kind: Kind,
+    /// Who may open it.
+    pub access: Who,
+    /// For GitHub access: the logins it names.
+    pub logins: Vec<String>,
+    /// How many times it can be opened (`share.create` says).
+    pub uses: Option<u64>,
+    /// A review's notes route.
+    pub notes: Option<Notes>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -342,6 +631,10 @@ pub enum Reply {
         what: String,
         scope: String,
         who: Option<String>,
+        kind: Kind,
+        access: Who,
+        logins: Vec<String>,
+        notes: Option<Notes>,
     },
     /// `share.revoke` of a link made for an abandoned attempt: nothing to show.
     Cancel,
@@ -389,6 +682,19 @@ fn workspace_name(app: &App, mi: usize, ws: &str) -> String {
         "workspace {}",
         crate::plugins::sanitize(name.as_deref().unwrap_or(ws), 40)
     )
+}
+
+/// "preview v4 shop", or "preview v4".
+fn preview_name(p: &PreviewChoice) -> String {
+    if p.label.is_empty() {
+        format!("preview {}", crate::plugins::sanitize(&p.handle, 16))
+    } else {
+        format!(
+            "preview {} {}",
+            crate::plugins::sanitize(&p.handle, 16),
+            p.label
+        )
+    }
 }
 
 fn what_of(app: &App, mi: usize, r: &ShareRow) -> String {
@@ -586,10 +892,19 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
 fn ask_revoke(v: &mut View) {
     match v.rows.get(v.sel) {
         Some(r) => {
+            let devices = if r.pending {
+                v.rows
+                    .iter()
+                    .filter(|d| d.invitation.as_deref() == Some(r.id.as_str()))
+                    .count()
+            } else {
+                0
+            };
             v.confirm = Some(Confirm {
                 id: r.id.clone(),
                 who: r.who(),
                 pending: r.pending,
+                devices,
             })
         }
         None => v.notice = Some("nothing selected".into()),
@@ -600,7 +915,9 @@ fn revoke(app: &mut App, c: Confirm) {
     let Some(v) = view_mut(app) else {
         return;
     };
-    v.busy = Some(if c.pending {
+    v.busy = Some(if c.pending && c.devices > 0 {
+        format!("revoking the link for {} and its devices…", c.who)
+    } else if c.pending {
         format!("cancelling the link for {}…", c.who)
     } else {
         format!("revoking {}'s access…", c.who)
@@ -642,7 +959,7 @@ fn submit(app: &mut App) {
         f.error = Some(e);
         return;
     }
-    if f.access == CONTROL {
+    if f.kind == Kind::Watch && f.access == CONTROL {
         f.confirming = true;
         return;
     }
@@ -666,9 +983,10 @@ fn create(app: &mut App) {
             return;
         }
     };
-    let what = match f.what {
-        What::Pane => f.pane.as_deref().map(|p| pane_name(app, mi, p)),
-        What::Workspace => f.workspace.as_deref().map(|w| workspace_name(app, mi, w)),
+    let what = match (f.kind, f.what) {
+        (Kind::Review, _) => f.picked().map(preview_name),
+        (_, What::Pane) => f.pane.as_deref().map(|p| pane_name(app, mi, p)),
+        (_, What::Workspace) => f.workspace.as_deref().map(|w| workspace_name(app, mi, w)),
     }
     .unwrap_or_default();
     let who = Some(f.name.trim().to_string()).filter(|n| !n.is_empty());
@@ -687,8 +1005,20 @@ fn create(app: &mut App) {
         Reply::Create {
             attempt,
             what,
-            scope: ACCESS[f.access].0.to_string(),
+            scope: if f.kind == Kind::Review {
+                "view".to_string()
+            } else {
+                ACCESS[f.access].0.to_string()
+            },
             who,
+            kind: f.kind,
+            access: f.who,
+            logins: if f.who == Who::Github {
+                f.github.clone()
+            } else {
+                Vec::new()
+            },
+            notes: (f.kind == Kind::Review).then_some(f.notes),
         },
     );
 }
@@ -764,10 +1094,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
 fn form_key(f: &mut Form, ev: &KeyEvent) -> bool {
     let plain = !ev.mods.ctrl() && !ev.mods.alt();
     let naming = f.focus == Field::Name;
-    let n = FIELDS.len();
-    let at = FIELDS.iter().position(|x| *x == f.focus).unwrap_or(0);
-    let next = FIELDS[(at + 1) % n];
-    let prev = FIELDS[(at + n - 1) % n];
+    let fields = f.fields();
+    let n = fields.len();
+    let at = fields.iter().position(|x| *x == f.focus).unwrap_or(0);
+    let next = fields[(at + 1) % n];
+    let prev = fields[(at + n - 1) % n];
     match &ev.key {
         Key::Named(NamedKey::Enter) => return true,
         // Tab reaches here only from the name field (elsewhere it switches tabs).
@@ -824,12 +1155,18 @@ pub fn on_paste(app: &mut App, text: &str) {
 
 /// A failed call: an unreachable gateway is the view's banner, anything else its notice.
 fn failed(v: &mut View, e: &RpcErr) {
-    let msg = bridge_error(e);
+    let msg = crate::links::share_error(e);
     if unreachable(e) {
         v.error = Some(msg);
     } else {
         v.notice = Some(format!("✗ {msg}"));
     }
+}
+
+/// The logins the gateway resolved (`github: [{id, login}]`), else the ones asked for.
+fn created_logins(x: &Value, asked: Vec<String>) -> Vec<String> {
+    let got = crate::links::logins_of(&x["github"]);
+    if got.is_empty() { asked } else { got }
 }
 
 /// `share.create` failed: in the form when it is still open (an older gateway refusing a share
@@ -878,7 +1215,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     if let Some(a) = x["invitations"].as_array() {
                         rows.extend(a.iter().filter_map(|i| ShareRow::from_value(i, true)));
                     }
-                    v.rows = rows;
+                    v.rows = group_rows(rows);
                     v.error = None;
                 }
                 Err(e) => failed(v, &e),
@@ -900,7 +1237,14 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::Create {
-            what, scope, who, ..
+            what,
+            scope,
+            who,
+            kind,
+            access,
+            logins,
+            notes,
+            ..
         } => {
             v.busy = None;
             v.creating = None;
@@ -917,6 +1261,11 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                             what,
                             scope,
                             who,
+                            kind,
+                            access,
+                            logins: created_logins(&x, logins),
+                            uses: x["uses"].as_u64(),
+                            notes,
                         });
                         ask_gateway_status(app, mi);
                         refresh(app);
@@ -924,7 +1273,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                     _ => create_failed(v, "the gateway returned no link".into()),
                 },
                 Err(e) => {
-                    let msg = bridge_error(&e);
+                    let msg = crate::links::share_error(&e);
                     if unreachable(&e) {
                         v.error = Some(msg.clone());
                     }
@@ -985,7 +1334,15 @@ fn status_line(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
 }
 
 fn row_line(app: &App, mi: usize, r: &ShareRow, now_ms: i64) -> String {
-    let mut parts = vec![r.who(), what_of(app, mi, r), access(&r.scope).to_string()];
+    let who = match &r.github {
+        Some(g) => format!("{} (@{g})", r.who()),
+        None => r.who(),
+    };
+    let (what, level) = match &r.review {
+        Some(p) => (format!("design review of {p}"), "Review"),
+        None => (what_of(app, mi, r), access(&r.scope)),
+    };
+    let mut parts = vec![who, what, level.to_string()];
     match r.expires_at.map(epoch_ms) {
         Some(t) if t > now_ms => parts.push(format!("{} left", fmt_age(t - now_ms))),
         Some(_) => parts.push("expired".into()),
@@ -993,11 +1350,18 @@ fn row_line(app: &App, mi: usize, r: &ShareRow, now_ms: i64) -> String {
     }
     if r.pending {
         parts.push(match r.link_expires_at.map(epoch_ms) {
-            Some(t) if t > now_ms => {
+            Some(t) if r.redeemed == 0 && t > now_ms => {
                 format!("link not opened yet (open for {})", fmt_age(t - now_ms))
             }
-            _ => "link not opened yet".into(),
+            _ if r.redeemed == 0 => "link not opened yet".into(),
+            _ => format!("link opened {}x", r.redeemed),
         });
+        match r.uses_left {
+            Some(1) if r.redeemed == 0 => {}
+            Some(1) => parts.push("1 use left".into()),
+            Some(n) => parts.push(format!("{n} uses left")),
+            None => {}
+        }
     }
     parts.join(" · ")
 }
@@ -1021,8 +1385,9 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
         let on = i == v.sel;
         a.line(
             &format!(
-                "{} {}",
+                "{} {}{}",
                 if on { "›" } else { " " },
+                if r.child { "  └ " } else { "" },
                 row_line(app, v.mi, r, now_ms)
             ),
             if on { t.sel(t.fg) } else { t.text() },
@@ -1030,7 +1395,14 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
     }
     a.line("", t.text());
     if let Some(c) = &v.confirm {
-        let q = if c.pending {
+        let q = if c.pending && c.devices > 0 {
+            format!(
+                "Revoke the link for {} and the {} device{} that opened it? They lose access. [y] revoke  [other] keep",
+                c.who,
+                c.devices,
+                if c.devices == 1 { "" } else { "s" }
+            )
+        } else if c.pending {
             format!(
                 "Cancel the unused link for {}? It stops working. [y] cancel it  [other] keep",
                 c.who
@@ -1059,7 +1431,15 @@ fn draw_list(app: &App, a: &mut crate::drafts::Area<'_>, v: &View) {
 
 fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> Option<(u16, u16)> {
     let t = app.theme;
-    a.line("Share with someone", t.bold(t.fg));
+    let review = f.kind == Kind::Review;
+    a.line(
+        if review {
+            "Share a design review"
+        } else {
+            "Share with someone"
+        },
+        t.bold(t.fg),
+    );
     a.line("", t.text());
     let mark = |x: Field| if f.focus == x { "›" } else { " " };
     let st = |x: Field| if f.focus == x { t.sel(t.fg) } else { t.text() };
@@ -1070,6 +1450,64 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
             format!(" {s} ")
         }
     };
+    a.line(
+        &format!(
+            "{} Kind     {} {}",
+            mark(Field::Kind),
+            pick(!review, "Watch"),
+            pick(review, "Design review")
+        ),
+        st(Field::Kind),
+    );
+    a.line(
+        if review {
+            "           people look at a preview and leave notes on it"
+        } else {
+            "           people watch a pane or workspace"
+        },
+        t.dim(),
+    );
+    // Who: GitHub is off while the config has no logins.
+    let github = if f.github.is_empty() {
+        "GitHub (off)"
+    } else {
+        "GitHub"
+    };
+    a.line(
+        &format!(
+            "{} Who      {} {} {}",
+            mark(Field::Who),
+            pick(f.who == Who::Link, "Anyone with the link"),
+            pick(f.who == Who::Github, github),
+            pick(f.who == Who::Any, "Any GitHub account")
+        ),
+        st(Field::Who),
+    );
+    let (who_text, who_st) = match f.who {
+        Who::Link => (
+            "anyone who gets the link can open it: send it privately".to_string(),
+            t.dim(),
+        ),
+        Who::Github => (
+            format!(
+                "only {}, signed in with GitHub",
+                crate::links::logins_text(&f.github)
+            ),
+            t.dim(),
+        ),
+        Who::Any => (
+            "any GitHub account that has the link can open it".to_string(),
+            t.dim(),
+        ),
+    };
+    wrap_lines(a, &format!("           {who_text}"), who_st);
+    if f.github.is_empty() {
+        wrap_lines(
+            a,
+            "           GitHub: set [sharing] github in your config to name who may open links",
+            t.s(t.yellow),
+        );
+    }
     let what = match f.what {
         What::Pane => f.pane.as_deref().map_or_else(
             || "no focused pane".to_string(),
@@ -1080,27 +1518,73 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
             |w| workspace_name(app, v.mi, w),
         ),
     };
-    a.line(
-        &format!(
-            "{} What     {} {}",
-            mark(Field::What),
-            pick(f.what == What::Pane, "This pane"),
-            pick(f.what == What::Workspace, "This workspace")
-        ),
-        st(Field::What),
-    );
-    a.line(&format!("           {what}"), t.dim());
-    let levels: Vec<String> = ACCESS
-        .iter()
-        .enumerate()
-        .map(|(i, (_, name))| pick(i == f.access, name))
-        .collect();
-    a.line(
-        &format!("{} Access   {}", mark(Field::Access), levels.join(" ")),
-        st(Field::Access),
-    );
-    let (warning, warning_st) = access_text(app, v.mi, f);
-    wrap_lines(a, &format!("           {warning}"), warning_st);
+    if review {
+        let shown = f.picked().map_or_else(
+            || "no preview".to_string(),
+            |p| preview_name(p).trim_start_matches("preview ").to_string(),
+        );
+        a.line(
+            &format!("{} Preview  [{shown}]", mark(Field::Preview)),
+            st(Field::Preview),
+        );
+        match f.picked() {
+            Some(_) => a.line(
+                &format!(
+                    "           {} of {}: ←/→ for another preview",
+                    f.preview + 1,
+                    f.previews.len()
+                ),
+                t.dim(),
+            ),
+            None => wrap_lines(
+                a,
+                "           no preview in this workspace: ask the agent to declare one",
+                t.s(t.yellow),
+            ),
+        }
+        a.line(
+            &format!(
+                "{} Notes    {} {}",
+                mark(Field::Notes),
+                pick(f.notes == Notes::Direct, "Straight to the agent"),
+                pick(f.notes == Notes::Held, "Hold for me")
+            ),
+            st(Field::Notes),
+        );
+        a.line(
+            match f.notes {
+                Notes::Direct => {
+                    "           notes reach the agent as soon as the reviewer sends them"
+                }
+                Notes::Held => {
+                    "           notes wait for you: send or discard each one in the preview's notes"
+                }
+            },
+            t.dim(),
+        );
+    } else {
+        a.line(
+            &format!(
+                "{} What     {} {}",
+                mark(Field::What),
+                pick(f.what == What::Pane, "This pane"),
+                pick(f.what == What::Workspace, "This workspace")
+            ),
+            st(Field::What),
+        );
+        a.line(&format!("           {what}"), t.dim());
+        let levels: Vec<String> = ACCESS
+            .iter()
+            .enumerate()
+            .map(|(i, (_, name))| pick(i == f.access, name))
+            .collect();
+        a.line(
+            &format!("{} Access   {}", mark(Field::Access), levels.join(" ")),
+            st(Field::Access),
+        );
+        let (warning, warning_st) = access_text(app, v.mi, f);
+        wrap_lines(a, &format!("           {warning}"), warning_st);
+    }
     let ttls: Vec<String> = TTLS
         .iter()
         .enumerate()
@@ -1177,40 +1661,86 @@ fn until_text(until: i64, now: i64) -> String {
     }
 }
 
+/// Who can open a link, as the start of a sentence.
+fn subject(c: &Created) -> String {
+    match c.access {
+        Who::Link => "Anyone with this link".into(),
+        Who::Github if c.logins.is_empty() => "Only the GitHub accounts you named".into(),
+        Who::Github => format!("Only {}", crate::links::logins_text(&c.logins)),
+        Who::Any => "Anyone signed in with GitHub".into(),
+    }
+}
+
 fn draw_created(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, c: &Created) {
     let t = app.theme;
     let now = now_s();
+    let review = c.kind == Kind::Review;
     a.line(
-        &match &c.who {
-            Some(w) => format!("Share link for {}", crate::plugins::sanitize(w, 40)),
-            None => "Share link".into(),
+        &match (&c.who, review) {
+            (Some(w), true) => {
+                format!("Design review link for {}", crate::plugins::sanitize(w, 40))
+            }
+            (None, true) => "Design review link".into(),
+            (Some(w), false) => format!("Share link for {}", crate::plugins::sanitize(w, 40)),
+            (None, false) => "Share link".into(),
         },
         t.bold(t.fg),
     );
-    let can = match c.scope.as_str() {
-        "approve" => "view and answer the agent's questions and approvals in",
-        "full" => "control (type into and prompt the agent of)",
-        _ => "view",
+    let can = if review {
+        "see and leave notes on"
+    } else {
+        match c.scope.as_str() {
+            "approve" => "view and answer the agent's questions and approvals in",
+            "full" => "control (type into and prompt the agent of)",
+            _ => "view",
+        }
     };
     let until = c.until.map(|u| until_text(u, now)).unwrap_or_default();
+    let how = if review {
+        "send it to your reviewer; they open it in a browser"
+    } else {
+        "send it to your colleague; they open it in a browser"
+    };
     wrap_lines(
         a,
-        &format!(
-            "Anyone with this link can {can} {}{until} — send it to your colleague; they open it in a browser.",
-            c.what
-        ),
+        &format!("{} can {can} {}{until} — {how}.", subject(c), c.what),
         t.text(),
     );
-    if let Some(open) = c.open_by.filter(|o| *o > now) {
+    if review {
         a.line(
-            &format!(
-                "The link works once and must be opened within {}.",
-                fmt_age((open - now) * 1000)
-            ),
+            match c.notes {
+                Some(Notes::Held) => "Their notes wait for you: send or discard each one.",
+                _ => "Their notes go straight to the agent.",
+            },
             t.dim(),
         );
     }
-    wrap_lines(a, FIRST_OPENS, t.dim());
+    let single = c.access == Who::Link && c.uses.is_none_or(|u| u == 1);
+    if let Some(open) = c.open_by.filter(|o| *o > now) {
+        a.line(
+            &if single {
+                format!(
+                    "The link works once and must be opened within {}.",
+                    fmt_age((open - now) * 1000)
+                )
+            } else {
+                format!("Open it within {}.", fmt_age((open - now) * 1000))
+            },
+            t.dim(),
+        );
+    }
+    if !single && let Some(u) = c.uses {
+        a.line(&format!("Uses left: {u}"), t.dim());
+    }
+    wrap_lines(
+        a,
+        if c.access == Who::Link {
+            FIRST_OPENS
+        } else {
+            "Revoke it in People when done."
+        },
+        t.dim(),
+    );
     status_line(app, a, v);
     a.line("", t.text());
     let blocked = link_blocked(v);

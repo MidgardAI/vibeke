@@ -641,6 +641,8 @@ pub fn view(app: &App) -> View {
     }
     // Incoming handoffs waiting to be accepted (16 §15.2).
     lists.push(crate::handoff::inbox_items(app));
+    // Review notes held for the owner (spec 20 §7.1).
+    lists.push(crate::held_notes::inbox_items(app));
     if st.five_minute && omitted.is_none() {
         coverage.push("five-minute view needs a newer server; showing all items".into());
     }
@@ -909,6 +911,10 @@ pub fn open_item(app: &mut App, it: &Item, focus: bool) {
         crate::handoff::open_accept(app, mi, &it.key.id);
         return;
     }
+    if it.key.kind == "held_notes" {
+        crate::held_notes::open(app, mi, &it.key.id);
+        return;
+    }
     if let Some(int) = it
         .interaction
         .clone()
@@ -1083,6 +1089,8 @@ fn dismiss_blocked(app: &App, it: &Item) -> Option<String> {
         "Dismiss is unavailable in a shared terminal".into()
     } else if it.key.kind == "handoff" {
         "a handoff waits until it is accepted, declined or expires".into()
+    } else if it.key.kind == "held_notes" {
+        "held notes wait until you send or discard them".into()
     } else if it.stale {
         "machine offline — dismiss when it reconnects".into()
     } else if it.fallback {
@@ -1308,6 +1316,8 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             let it = sel.unwrap();
             if !app.machines[it.key.machine].capabilities().host {
                 app.inbox.notice = Some("Snooze is unavailable in a shared terminal".into());
+            } else if it.key.kind == "held_notes" {
+                app.inbox.notice = Some("held notes wait until you send or discard them".into());
             } else if it.key.kind == "handoff" {
                 app.inbox.notice =
                     Some("a handoff waits until it is accepted, declined or expires".into());
@@ -1451,6 +1461,7 @@ fn class_glyph(i: &Item) -> &'static str {
         3 => match i.key.kind.as_str() {
             "interaction" => "?",
             "handoff" => "⇣",
+            "held_notes" => "✎",
             _ => "!",
         },
         4 => "◆",
