@@ -257,6 +257,101 @@ fn ptyshot(e: &Env, keys: &str, settle: &str) -> (String, String) {
 }
 
 #[test]
+fn closing_the_last_pane_allows_ctrl_c_to_exit_and_restores_the_terminal() {
+    use vk_conformance::pty::{PtyDriver, Spawn};
+
+    for close in [b"exit\r".as_slice(), b"\x02x".as_slice()] {
+        let e = Env::new("vkempty");
+        std::fs::create_dir_all(e.config().parent().unwrap()).unwrap();
+        std::fs::write(
+            e.config(),
+            "[ui]\nonboarding = false\nconfirm_close = \"never\"\n[terminal]\ndefault_shell = \"/bin/sh\"\n",
+        )
+        .unwrap();
+        // The wrapper can report success only after Vibeke exits on its own. It also
+        // checks that raw mode was restored, without touching the host terminal.
+        let wrapper = e.d().join("check-exit.sh");
+        std::fs::write(
+            &wrapper,
+            // BSD sets PENDIN when switching back to canonical input. Ignore only
+            // that transient flag; compare every other terminal setting exactly.
+            r#"tty_state() {
+    tty_snapshot=$(stty -g)
+    case "$tty_snapshot" in
+        *:lflag=*)
+            tty_flags=${tty_snapshot#*:lflag=}
+            tty_flags=${tty_flags%%:*}
+            tty_flags=$((0x$tty_flags & ~@PENDIN@))
+            printf '%s\n' "$tty_snapshot" | sed "s/:lflag=[^:]*:/:lflag=$tty_flags:/"
+            ;;
+        *) printf '%s\n' "$tty_snapshot" ;;
+    esac
+}
+before=$(tty_state)
+"$1"
+status=$?
+after=$(tty_state)
+if [ "$status" -eq 0 ] && [ "$before" = "$after" ]; then
+    printf '\nVIBEKE_EXIT_OK\n'
+else
+    printf '\nVIBEKE_EXIT_FAILED status=%s\n' "$status"
+    printf 'before=%s\nafter=%s\n' "$before" "$after"
+fi
+"#
+            .replace("@PENDIN@", &libc::PENDIN.to_string()),
+        )
+        .unwrap();
+        let command = e.cmd(&[]);
+        let mut env: Vec<(String, String)> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        env.push(("TERM".into(), "xterm-256color".into()));
+        let args = vec![
+            wrapper.to_string_lossy().into_owned(),
+            env!("CARGO_BIN_EXE_vibeke").into(),
+        ];
+        let tui = PtyDriver::spawn(&Spawn {
+            program: Path::new("/bin/sh"),
+            args: &args,
+            cwd: &e.d(),
+            env: &env,
+            cols: 100,
+            rows: 30,
+        })
+        .unwrap();
+        let timeout = Duration::from_secs(10);
+        tui.wait_for_text("$", timeout).unwrap();
+        assert_eq!(
+            e.api("pane.list", json!({}))["panes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+        );
+        tui.write(close).unwrap();
+        tui.wait_for_text("ctrl+c to exit", timeout).unwrap();
+        tui.write(b"\x03").unwrap();
+        tui.wait_for_text("VIBEKE_EXIT_OK", timeout).unwrap();
+        tui.wait_for_text("[detached", timeout).unwrap();
+        tui.shutdown(Duration::from_secs(1)).unwrap();
+        assert!(
+            e.api("pane.list", json!({}))["panes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn first_run_screen_walks_to_a_written_config() {
     let e = Env::new("vkonb");
     // No config file: the first-run screen opens by itself.
