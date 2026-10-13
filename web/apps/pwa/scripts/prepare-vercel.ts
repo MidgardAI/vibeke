@@ -12,6 +12,8 @@ cpSync(new URL('dist/', root), new URL('static/', output), { recursive: true });
 const wasm = process.env.VIBEKE_WASM_TUI === '1';
 if (wasm && !existsSync(new URL('dist/tui/manifest.json', root))) throw new Error('Build the WASM-enabled PWA before packaging it.');
 if (!wasm && existsSync(new URL('dist/tui/manifest.json', root))) throw new Error('This dist enables WASM. Package it with VIBEKE_WASM_TUI=1, or rebuild without the flag.');
+// Design reviews (spec 20 §3.6) frame the preview from its own content origin, `<sid>.p.<domain>`.
+const reviewFrames = process.env.VIBEKE_REVIEW_FRAME_SRC ?? 'https://*.p.vibeke.dev';
 const CSP = [
   "default-src 'self'",
   wasm ? "script-src 'self' 'wasm-unsafe-eval'" : "script-src 'self'",
@@ -25,7 +27,7 @@ const CSP = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  "frame-src 'none'",
+  `frame-src ${reviewFrames}`,
   "frame-ancestors 'none'",
 ].join('; ');
 

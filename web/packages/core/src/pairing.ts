@@ -14,18 +14,52 @@ import { fingerprint, x25519Public } from './keys';
 import { linkExpired, linkHostKey, linkPsk, type PairingLink } from './link';
 import type { Scope } from './model';
 import type { Platform } from './platform';
-import { RpcClient } from './rpc';
+import { RpcClient, RpcError } from './rpc';
 import type { HostRecord, HostStore } from './hosts';
 
 export class PairingError extends Error {
   constructor(
-    readonly code: 'expired' | 'rejected' | 'fingerprint_mismatch' | 'protocol' | 'timeout' | 'channel',
+    /** `refused`: the host answered `pair.claim` with an error (`refusal` names it). */
+    readonly code: 'expired' | 'rejected' | 'fingerprint_mismatch' | 'protocol' | 'timeout' | 'channel' | 'refused',
     message: string,
     override readonly cause?: unknown,
   ) {
     super(message);
     this.name = 'PairingError';
   }
+
+  /** The host's error kind for `refused` (`used`, `github_not_allowed`, …). */
+  get refusal(): string | undefined {
+    return this.code === 'refused' && this.cause instanceof RpcError ? this.cause.kind : undefined;
+  }
+
+  /** GitHub logins the link is for, from a `github_not_allowed` refusal (spec 20 §2.3). */
+  get allowed(): string[] {
+    const d = this.cause instanceof RpcError ? (this.cause.data?.details as { allowed?: unknown } | undefined) : undefined;
+    return Array.isArray(d?.allowed) ? d.allowed.filter((x): x is string => typeof x === 'string').slice(0, 50) : [];
+  }
+}
+
+/**
+ * Host refusals after which the invitation can never work for this device key (spec 20 §2.4).
+ * Only these delete the invitation's key; after anything else (network, timeout, host offline) the
+ * key is kept, so a retry after a lost response is the same device.
+ */
+export const DEFINITIVE_REFUSALS: ReadonlySet<string> = new Set([
+  'used',
+  'expired',
+  'revoked',
+  'forbidden',
+  'github_not_allowed',
+  'attest_invalid',
+  'upgrade_required',
+]);
+
+/** Should the invitation key be deleted after this pairing failure? */
+export function isDefinitiveRefusal(e: unknown): boolean {
+  if (!(e instanceof PairingError)) return false;
+  if (e.code === 'expired' || e.code === 'rejected' || e.code === 'fingerprint_mismatch') return true;
+  return e.code === 'refused' && DEFINITIVE_REFUSALS.has(e.refusal ?? '');
 }
 
 export interface PairOptions {
@@ -46,6 +80,8 @@ export interface PairOptions {
   store?: HostStore;
   /** Tests: fixed ephemeral key. */
   ephemeral?: Uint8Array;
+  /** GitHub attestation for an `access: github` invitation (spec 20 §2.3). */
+  attest?: string;
 }
 
 interface Done {
@@ -134,13 +170,17 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       ];
       const params: Record<string, unknown> = { name: o.deviceName, platform: platform.platformName };
       if (o.vapidPublic) params.vapid_public = o.vapidPublic;
+      if (o.attest) params.attest = o.attest;
       rpc.request<Record<string, unknown>>('pair.claim', params, { timeoutMs: 30_000 }).then(
         (res) => {
           if (res?.status === 'pending') pending(res.fingerprint);
           else if (res?.status === 'done') finish(res);
           else settle(() => reject(new PairingError('protocol', 'unexpected pair.claim result')));
         },
-        (e) => settle(() => reject(new PairingError(e instanceof ChannelError ? 'channel' : 'protocol', (e as Error).message, e))),
+        (e) =>
+          settle(() =>
+            reject(new PairingError(e instanceof ChannelError ? 'channel' : e instanceof RpcError ? 'refused' : 'protocol', (e as Error).message, e)),
+          ),
       );
     });
 
@@ -154,6 +194,7 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       paired_at: clock.now(),
     };
     if (link.share) {
+      // Review links (spec 20 §3) are kept apart from host records by the caller (`reviewRecord`).
       record.kind = 'share';
       record.until = link.share.until;
       if (link.share.label) record.label = link.share.label;
@@ -164,7 +205,11 @@ export async function pair(o: PairOptions): Promise<HostRecord> {
       record.ticket_exp = done.ticket_exp;
     }
     if (o.keyName) record.key = o.keyName;
-    await o.store?.put(record);
+    if (typeof (done as { github?: unknown }).github === 'object') {
+      const g = (done as { github?: { login?: unknown } }).github;
+      if (typeof g?.login === 'string') record.github = g.login;
+    }
+    if (link.share?.kind !== 'review') await o.store?.put(record);
     return record;
   } finally {
     channel.close();

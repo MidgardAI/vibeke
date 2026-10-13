@@ -92,7 +92,15 @@ export function pickPointExpression(x: number, y: number): string {
  * to ${PICK_COVERS_MAX} elements inside it, found on a grid of `elementsFromPoint` samples.
  */
 export function pickRegionExpression(rect: AnnotationRect): string {
-  return `(function (rx, ry, rw, rh) {
+  return `(${PICK_REGION_FN})(${num(rect.x)}, ${num(rect.y)}, ${num(rect.w)}, ${num(rect.h)})`;
+}
+
+/**
+ * Function declaration behind `pickRegionExpression`: `(rx, ry, rw, rh) => RegionPick`. The review
+ * content bundle (spec 20 §3.6) compiles it into its injected script, so picks in the reviewer's
+ * browser match the host's.
+ */
+export const PICK_REGION_FN = `function (rx, ry, rw, rh) {
   ${HELPERS}
   const seen = new Set();
   const found = [];
@@ -120,8 +128,7 @@ export function pickRegionExpression(rect: AnnotationRect): string {
     .slice(0, ${PICK_COVERS_MAX})
     .map((f) => ({ selector: selectorOf(f), text: clean(f.innerText || f.textContent, 120) }));
   return { container: selectorOf(container), covers };
-})(${num(rect.x)}, ${num(rect.y)}, ${num(rect.w)}, ${num(rect.h)})`;
-}
+}`;
 
 /** The result of the region expression in the page. */
 export interface RegionPick {

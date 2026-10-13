@@ -14,6 +14,8 @@
     "build:site": "bun run --cwd apps/site build",
     "preview:site": "bun run --cwd apps/site preview",
     "e2e:site": "bun run --cwd apps/site e2e",
+    "dev:review": "bun run --cwd apps/review-content dev",
+    "build:review": "bun run --cwd apps/review-content build",
     "dev:desktop": "bun run --cwd apps/desktop dev",
     "build:desktop": "bun run --cwd apps/desktop build",
     "test:desktop": "bun run --cwd apps/desktop test",

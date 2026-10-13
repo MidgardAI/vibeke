@@ -2,7 +2,11 @@
 // Windows/Linux via the single-instance lock) and pasted `https://<app>/#/pair?d=…` links, mapped
 // to the app's hash routes. Anything unrecognised is ignored, never navigated to.
 
+import { needsAttestation, parseLink } from '@vibeke/core';
+
 export const PROTOCOL = 'vibeke';
+/** The browser app that opens links this app cannot (spec 20 §7.3). */
+export const BROWSER_APP_URL = 'https://app.vibeke.dev';
 
 const B64URL = /^[A-Za-z0-9_-]{16,8000}$/;
 const ID = /^[A-Za-z0-9_.:-]{1,200}$/;
@@ -47,10 +51,12 @@ function fromParts(path: string, query: URLSearchParams): string | null {
   const parts = path.split('/').filter(Boolean);
   const [a, b, c, d] = parts;
   switch (a) {
-    case 'pair': {
+    case 'pair':
+    case 'review':
+    case 'continue': {
       const dv = query.get('d');
       if (parts.length !== 1 || !dv || !B64URL.test(dv)) return null;
-      return `#/pair?d=${dv}`;
+      return `#/${a}?d=${dv}`;
     }
     case 'inbox':
     case 'panes':
@@ -81,4 +87,34 @@ const enc = encodeURIComponent;
 export function deepLinkFromArgv(argv: readonly string[]): string | null {
   for (const a of argv) if (a.toLowerCase().startsWith(`${PROTOCOL}:`)) return a;
   return null;
+}
+
+export type DeepLinkAction = { kind: 'route'; hash: string } | { kind: 'external'; url: string };
+
+/**
+ * What to do with a deep link (spec 20 §7.3): most map to a route in this app; review links and
+ * GitHub-gated pair links open in the system browser, because the GitHub sign-in round trip and the
+ * review screen live in the browser app. `https://…` links open as they are; `vibeke://` forms open
+ * on `browserApp`.
+ */
+export function deepLinkAction(raw: string, browserApp = BROWSER_APP_URL): DeepLinkAction | null {
+  const hash = deepLinkToHash(raw);
+  if (!hash) return null;
+  const m = /^#\/(pair|review)\?d=(.*)$/.exec(hash);
+  if (m) {
+    let external = m[1] === 'review';
+    if (!external) {
+      try {
+        external = needsAttestation(parseLink(m[2]!));
+      } catch {
+        external = false;
+      }
+    }
+    if (external) {
+      const s = raw.trim();
+      const url = /^https?:\/\//i.test(s) ? s : `${browserApp.replace(/\/+$/, '')}/${hash}`;
+      return { kind: 'external', url };
+    }
+  }
+  return { kind: 'route', hash };
 }

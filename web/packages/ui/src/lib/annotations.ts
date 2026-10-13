@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnnotationDraft, AnnotationNote, AnnotationPick, AnnotationState } from '@vibeke/core';
-import { useApp } from '../app/hooks';
+import { useApp, useConnOf } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from './answer';
 import type { Size } from './screencast';
@@ -60,7 +60,7 @@ export function sendOutcome(state: AnnotationState | undefined): 'delivered' | '
 
 /** Drafts the notes panel can act on: the host keeps sent drafts around, but they are read-only history. */
 export const isEditable = (d: AnnotationDraft | null): d is AnnotationDraft =>
-  !!d && d.state !== 'delivered' && d.state !== 'sending';
+  !!d && d.state !== 'delivered' && d.state !== 'sending' && d.state !== 'held';
 
 export interface Annotations {
   draft: AnnotationDraft | null;
@@ -86,6 +86,7 @@ export interface Annotations {
  */
 export function useAnnotations(hostId: string, kind: 'preview' | 'session', id: string | null, active: boolean): Annotations {
   const app = useApp();
+  const connOf = useConnOf();
   const [draft, setDraft] = useState<AnnotationDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const draftRef = useRef<AnnotationDraft | null>(null);
@@ -102,7 +103,7 @@ export function useAnnotations(hostId: string, kind: 'preview' | 'session', id: 
   const key = `${hostId}:${kind}:${id ?? ''}`;
 
   const refresh = useCallback(async () => {
-    const conn = app.conn(hostId);
+    const conn = connOf(hostId);
     if (!conn || !id) return;
     try {
       const r = await conn.request('browser.annotations', kind === 'preview' ? { preview: id } : { session: id });
@@ -135,7 +136,7 @@ export function useAnnotations(hostId: string, kind: 'preview' | 'session', id: 
     },
     [app],
   );
-  const conn = () => app.conn(hostId);
+  const conn = () => connOf(hostId);
 
   const add: Annotations['add'] = (p) =>
     run(async () => {

@@ -14,6 +14,7 @@ import {
   loadOrCreateDeviceKey,
   pair,
   pairingKey,
+  isDefinitiveRefusal,
   x25519Public,
   type HostRecord,
   type HostState,
@@ -34,7 +35,7 @@ export function toWire(e: unknown): WireError {
   if (e instanceof NotConnectedError) return { type: 'not_connected', hostId: e.hostId };
   if (e instanceof PairingError) {
     const c = e.cause instanceof ChannelError ? e.cause : null;
-    return { type: 'pairing', code: e.code, message: e.message, channelCode: c?.code, closeCode: c?.closeCode };
+    return { type: 'pairing', code: e.code, message: e.message, channelCode: c?.code, closeCode: c?.closeCode, refusal: e.refusal };
   }
   const err = e as { message?: string; code?: unknown };
   return { type: 'error', message: err?.message ?? String(e), code: typeof err?.code === 'string' ? err.code : undefined };
@@ -165,7 +166,8 @@ export class Engine {
     try {
       record = await pair({ link, platform: p, devicePrivate, keyName, deviceName, onPending });
     } catch (e) {
-      if (keyName) await p.keystore.delete(keyName).catch(() => {});
+      // Keep the key after a transient failure (spec 20 §2.4): a retry is the same device.
+      if (keyName && isDefinitiveRefusal(e)) await p.keystore.delete(keyName).catch(() => {});
       throw e;
     }
     const old = this.manager.get(record.host_id)?.getSnapshot().record.key;

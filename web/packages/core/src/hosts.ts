@@ -56,6 +56,8 @@ export interface HostRecord {
   ticket?: string;
   /** Unix seconds the ticket expires. */
   ticket_exp?: number;
+  /** The GitHub login the host recorded for this device (GitHub-gated shares, spec 20 §2.3). */
+  github?: string;
 }
 
 export const hostKind = (r: HostRecord): HostKind => r.kind ?? 'device';

@@ -8,7 +8,7 @@ import type { AppEvent } from '@vibeke/core';
 /** Event type prefixes (and exact types) the UI listens to. */
 const PREFIXES = ['agent.', 'interaction.', 'task.', 'preview.', 'tab.', 'pane.', 'handoff.', 'cloud.', 'screenshot.'] as const;
 // Approved-call requests from panes (the app's attention list); never elevation (`auth.elevate_*`).
-const EXACT = new Set(['notification.created', 'auth.approval_requested', 'auth.approval_granted', 'auth.approval_denied', 'auth.approval_withdrawn']);
+const EXACT = new Set(['notification.created', 'browser.annotations_held', 'auth.approval_requested', 'auth.approval_granted', 'auth.approval_denied', 'auth.approval_withdrawn']);
 
 /** Payload of `vk:host-event`. */
 export interface HostEventPayload {

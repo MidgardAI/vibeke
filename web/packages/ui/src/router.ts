@@ -1,7 +1,8 @@
 // Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
 // `?panel=changes|files|screenshots|previews|off&file=…&commit=…&base=…&view=diff&show=term|conversation&preview=<id>&expand=1`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
-// pairing link `#/pair?d=…` and shared content `#/share-in/<id>`.
+// pairing link `#/pair?d=…`, review and continue links (`#/review?d=…`, `#/continue?d=…`), the
+// GitHub sign-in return `#/attest?t=…`, and shared content `#/share-in/<id>`.
 // Older links (`#/h/<host>/p/<pane>[/history|/changes]`, `#/panes`, `#/focus`, `#/changes`) still
 // parse; the app redirects them to a workspace once it knows the dashboard (app/selection.ts).
 
@@ -50,6 +51,12 @@ export type Route =
   | { name: 'approve'; host: string | null; id: string | null }
   | { name: 'settings'; section?: string }
   | { name: 'pair'; d: string | null }
+  /** A design-review link (spec 20 §3): pairs, then shows the preview under review. */
+  | { name: 'review'; d: string | null }
+  /** The account server's return from a GitHub sign-in (spec 20 §2.3): `?t=` or `?error=`. */
+  | { name: 'attest'; query: string }
+  /** A continue link (spec 20 §4): pick one of the own hosts to take the session. */
+  | { name: 'continue'; d: string | null }
   /** Content shared into the app (Web Share Target), under a one-time id. */
   | { name: 'share_in'; id: string }
   | WorkspaceRoute
@@ -105,6 +112,13 @@ export function parseRoute(hash: string): Route {
       const m = /(?:^|[?&])d=([^&]*)/.exec(h.slice(q + 1));
       return { name: 'pair', d: q >= 0 && m ? m[1]! : null };
     }
+    case 'review':
+    case 'continue': {
+      const m = /(?:^|[?&])d=([^&]*)/.exec(h.slice(q + 1));
+      return { name: a, d: q >= 0 && m ? m[1]! : null };
+    }
+    case 'attest':
+      return { name: 'attest', query: q >= 0 ? h.slice(q + 1) : '' };
     case 'share-in':
       if (b) return { name: 'share_in', id: b };
       break;
@@ -193,7 +207,11 @@ export function formatRoute(r: Route): string {
     case 'share_in':
       return `#/share-in/${enc(r.id)}`;
     case 'pair':
-      return r.d ? `#/pair?d=${r.d}` : '#/pair';
+    case 'review':
+    case 'continue':
+      return r.d ? `#/${r.name}?d=${r.d}` : `#/${r.name}`;
+    case 'attest':
+      return r.query ? `#/attest?${r.query}` : '#/attest';
     case 'workspace': {
       const q = new URLSearchParams();
       if (r.panel) q.set('panel', r.panel);

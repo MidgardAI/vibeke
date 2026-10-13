@@ -8,6 +8,7 @@ import { ExternalLink, Eye, Globe, MonitorPlay } from 'lucide-react';
 import type { BrowserSession, Preview } from '@vibeke/core';
 import { useApp, useHost } from '../../app/hooks';
 import { EmbeddedPreview } from '../../components/embedded-preview';
+import { HeldDrafts } from '../../components/held-drafts';
 import { PhonePreview } from '../../components/phone-preview';
 import { Screencast } from '../../components/screencast';
 import { Button, Empty, StatusDot, type Status } from '../../components/ui';
@@ -19,7 +20,18 @@ import { sessionsFor } from '../../lib/screencast';
 /** Status dots of previews (the panel's rows, the info card). */
 export const PREVIEW_DOT: Record<string, Status> = { up: 'review', down: 'error', declared: 'idle', suggested: 'idle', gone: 'offline' };
 
-export function PreviewView({
+export function PreviewView(props: Parameters<typeof PreviewBody>[0]) {
+  if (!props.preview) return <PreviewBody {...props} />;
+  // Held review notes from reviewers (spec 20 §3.3) sit above the page.
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <HeldDrafts hostId={props.hostId} previewId={props.preview.id} />
+      <PreviewBody {...props} />
+    </div>
+  );
+}
+
+function PreviewBody({
   hostId,
   preview,
   expanded,

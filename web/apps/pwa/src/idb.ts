@@ -1,9 +1,13 @@
 // Minimal IndexedDB key-value wrapper: one database, a few object stores, promise API.
 
 const DB_NAME = 'vibeke';
-const VERSION = 2;
-/** `shared`: content received through the Web Share Target, keyed by a one-time id. */
-export const STORES = ['keys', 'hosts', 'mirrors', 'shared'] as const;
+const VERSION = 3;
+/**
+ * `shared`: content received through the Web Share Target, keyed by a one-time id.
+ * `reviews`: design-review connections, keyed by `<host>/<pid>` (apart from `hosts`, spec 20 §7.2).
+ * `cookies`: the review controller's cookie jars, keyed by review `sid` (spec 20 §3.6).
+ */
+export const STORES = ['keys', 'hosts', 'mirrors', 'shared', 'reviews', 'cookies'] as const;
 export type StoreName = (typeof STORES)[number];
 
 let dbp: Promise<IDBDatabase> | null = null;
