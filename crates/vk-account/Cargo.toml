@@ -9,11 +9,12 @@ license.workspace = true
 libc.workspace = true
 vk-e2e.workspace = true
 vk-store.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 ed25519-dalek = "3"
 sha2.workspace = true
 axum = { version = "0.8", optional = true }

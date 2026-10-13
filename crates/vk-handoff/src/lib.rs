@@ -6,9 +6,11 @@
 //! `untracked/<path>`, `transcript.jsonl` (optional) and `sidechain/<path>` (a Claude session's
 //! `<session>/` directory, optional).
 
+pub mod continue_link;
 mod export;
 mod git;
 mod import;
+pub mod stream;
 mod transcript;
 
 use std::io::Read;

@@ -777,6 +777,7 @@ impl Account {
 
 pub mod attest;
 pub use attest::GithubUser;
+pub mod blobs;
 
 #[cfg(any(test, feature = "fake-server"))]
 pub mod fake;

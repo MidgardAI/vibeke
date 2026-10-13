@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod cli;
 pub mod events;
 pub mod handoff;
+pub mod handoff_link;
 pub mod handoff_peer;
 pub mod handoff_send;
 pub mod local;
