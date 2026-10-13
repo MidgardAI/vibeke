@@ -378,6 +378,9 @@ pub enum Popup {
     Handoffs,
     /// Hand the focused pane off to a paired host; state in `App::ux.handoff.send`.
     HandoffSend,
+    /// A design reviewer's held notes: send them to the agent or discard them; state in
+    /// `App::ux.held`.
+    HeldNotes,
     /// Hosts (16 §15.3–§15.5; the Connections view's Hosts tab): peers, invitations, pasting
     /// an invitation, invited hosts; a full pane-area view, state in `App::ux.sharing`.
     Sharing,

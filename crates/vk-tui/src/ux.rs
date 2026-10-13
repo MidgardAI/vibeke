@@ -66,6 +66,7 @@ pub struct State {
     pub cloud: crate::cloud::State,
     pub sandboxes: Option<crate::sandboxes::View>,
     pub connections: crate::connections::State,
+    pub held: crate::held_notes::State,
 }
 
 /// Replies routed back to the 2B modules.
@@ -82,6 +83,7 @@ pub enum Reply {
     Sharing(crate::sharing::Reply),
     Devices(crate::devices::Reply),
     People(crate::people::Reply),
+    Held(crate::held_notes::Reply),
     Cloud(crate::cloud::Reply),
     Sandboxes(crate::sandboxes::Reply),
     /// `tab.renumber`.
@@ -101,6 +103,7 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         Reply::Sharing(r) => crate::sharing::on_reply(app, mi, r, res),
         Reply::Devices(r) => crate::devices::on_reply(app, mi, r, res),
         Reply::People(r) => crate::people::on_reply(app, mi, r, res),
+        Reply::Held(r) => crate::held_notes::on_reply(app, mi, r, res),
         Reply::Cloud(r) => crate::cloud::on_reply(app, mi, r, res),
         Reply::Sandboxes(r) => crate::sandboxes::on_reply(app, mi, r, res),
         Reply::Renumber => crate::tabbar::on_renumbered(app, res),
@@ -217,6 +220,7 @@ pub fn on_tick(app: &mut App) {
     crate::devices::tick(app);
     crate::cloud::tick(app);
     crate::people::tick(app);
+    crate::sharing::tick(app);
     crate::updates::tick(app);
 }
 
@@ -231,6 +235,8 @@ pub fn deadlines(app: &App, now: Instant, d: &mut crate::deadline::Deadlines) {
     crate::devices::deadlines(app, now, d);
     crate::cloud::deadlines(app, now, d);
     crate::people::deadlines(app, now, d);
+    crate::sharing::deadlines(app, now, d);
+    crate::handoff::deadlines(app, now, d);
     crate::updates::deadlines(app, d);
 }
 

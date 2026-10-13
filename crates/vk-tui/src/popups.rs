@@ -179,6 +179,7 @@ pub fn key(app: &mut App, ev: KeyEvent, p: Popup) {
         Popup::HandoffAccept => crate::handoff::accept_key(app, ev),
         Popup::Handoffs => crate::connections::key(app, ev, crate::connections::Tab::Handoffs),
         Popup::HandoffSend => crate::handoff::send_key(app, ev),
+        Popup::HeldNotes => crate::held_notes::key(app, ev),
         Popup::Sharing => crate::connections::key(app, ev, crate::connections::Tab::Hosts),
         Popup::Devices => crate::connections::key(app, ev, crate::connections::Tab::Devices),
         Popup::People => crate::connections::key(app, ev, crate::connections::Tab::People),
@@ -568,6 +569,7 @@ pub fn draw(app: &App, g: &mut Grid) -> Option<(u16, u16, CursorShape)> {
                 return Some((x, y, CursorShape::Bar));
             }
             Popup::Handoffs => crate::handoff::draw_list(app, g),
+            Popup::HeldNotes => crate::held_notes::draw(app, g),
             Popup::HandoffSend => {
                 let (x, y) = crate::handoff::draw_send(app, g)?;
                 return Some((x, y, CursorShape::Bar));

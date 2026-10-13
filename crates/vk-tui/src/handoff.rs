@@ -389,6 +389,22 @@ pub struct State {
     /// The pane a right-click on its sidebar row picked for the handoff actions (machine,
     /// pane); dropped once the palette it opened is gone.
     pub target: Option<(usize, String)>,
+    /// The continue link `l` makes in the handoffs list (spec 20 §7.1).
+    pub link: Option<LinkMake>,
+}
+
+/// A continue link being made for a pane (`handoff.link.create`), and its outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkMake {
+    pub mi: usize,
+    pub pane: String,
+    /// The job being followed through `handoff.link.status`.
+    pub job: Option<crate::links::Job>,
+    /// The finished link.
+    pub link: Option<String>,
+    /// Unix seconds: when the link stops working.
+    pub expires_at: Option<i64>,
+    pub error: Option<String>,
 }
 
 /// Replies routed back here (through `ux::Reply::Handoff`).
@@ -431,6 +447,14 @@ pub enum Reply {
     /// Then `gateway.call peer.redeem` on the source.
     PairRedeem {
         op: PairOp,
+    },
+    /// `handoff.link.create` through the gateway: answers `{job}`.
+    LinkCreate {
+        pane: String,
+    },
+    /// `handoff.link.status` of the link being made.
+    LinkStatus {
+        job: String,
     },
 }
 
@@ -549,6 +573,119 @@ pub fn on_mouse(app: &mut App, me: &crate::event::MouseEvent) -> bool {
 pub fn tick(app: &mut App) {
     if app.ux.handoff.target.is_some() && !matches!(app.mode, Mode::Popup(Popup::Palette { .. })) {
         app.ux.handoff.target = None;
+    }
+    poll_link(app);
+}
+
+/// Ask `handoff.link.status` about the continue link being made, about once a second.
+fn poll_link(app: &mut App) {
+    let now = crate::time::Instant::now();
+    let Some(l) = app.ux.handoff.link.as_mut() else {
+        return;
+    };
+    let mi = l.mi;
+    let Some(j) = l.job.as_mut().filter(|j| j.due(now)) else {
+        return;
+    };
+    j.asked = Some(now);
+    let id = j.id.clone();
+    crate::sharing::gw_call_pending(
+        app,
+        mi,
+        "handoff.link.status",
+        json!({"job": id}),
+        pend(Reply::LinkStatus { job: id.clone() }),
+    );
+}
+
+pub fn deadlines(app: &App, now: crate::time::Instant, d: &mut crate::deadline::Deadlines) {
+    if let Some(j) = app.ux.handoff.link.as_ref().and_then(|l| l.job.as_ref()) {
+        d.at("handoff.link", j.next_at(now));
+    }
+}
+
+/// `l` in the handoffs list: make a continue link for the machine's focused pane, for the GitHub
+/// logins of `[sharing] github`.
+fn make_link(app: &mut App) {
+    let mi = app.ux.connections.mi;
+    if !app.machines.get(mi).is_some_and(|m| m.connected()) {
+        app.toast("that machine is offline");
+        return;
+    }
+    let Some(pane) = app.machines[mi].focus.pane.clone() else {
+        app.toast("focus the pane to continue elsewhere first");
+        return;
+    };
+    let mut l = LinkMake {
+        mi,
+        pane: pane.clone(),
+        job: None,
+        link: None,
+        expires_at: None,
+        error: None,
+    };
+    let github = crate::links::github_default(app);
+    if github.is_empty() {
+        l.error = Some(
+            "no GitHub logins: set [sharing] github in your config to say who may open a continue link"
+                .into(),
+        );
+        app.ux.handoff.link = Some(l);
+        return;
+    }
+    app.ux.handoff.link = Some(l);
+    crate::sharing::gw_call_pending(
+        app,
+        mi,
+        "handoff.link.create",
+        json!({"pane": pane, "access": "github", "github": github}),
+        pend(Reply::LinkCreate { pane }),
+    );
+}
+
+/// The answer to `handoff.link.create`: the job to follow.
+fn on_link_created(app: &mut App, pane: &str, res: Result<Value, RpcErr>) {
+    let Some(l) = app.ux.handoff.link.as_mut().filter(|l| l.pane == pane) else {
+        return;
+    };
+    match res {
+        Ok(x) => match x["job"].as_str().filter(|j| !j.is_empty()) {
+            Some(id) => l.job = Some(crate::links::Job::new(id)),
+            None => l.error = Some("the gateway returned no job".into()),
+        },
+        Err(e) => l.error = Some(crate::links::share_error(&e)),
+    }
+}
+
+/// The answer to `handoff.link.status`: progress, then the link, copied to the clipboard.
+fn on_link_status(app: &mut App, job: &str, res: Result<Value, RpcErr>) {
+    let Some(l) = app.ux.handoff.link.as_mut() else {
+        return;
+    };
+    if l.job.as_ref().is_none_or(|j| j.id != job) {
+        return;
+    }
+    let finish = match res {
+        Ok(x) => l.job.as_mut().map(|j| j.apply(&x)),
+        Err(e) => Some(crate::links::Finish::Failed(crate::links::share_error(&e))),
+    };
+    match finish {
+        Some(crate::links::Finish::Done) => {
+            let last = l.job.take().map(|j| j.last).unwrap_or(Value::Null);
+            match text(&last, "/link") {
+                Some(link) => {
+                    l.expires_at = last["expires_at"].as_i64();
+                    l.link = Some(link.clone());
+                    app.copy_text(&link);
+                }
+                None => l.error = Some("the gateway returned no link".into()),
+            }
+        }
+        Some(crate::links::Finish::Failed(msg)) => {
+            l.job = None;
+            l.error = Some(msg);
+        }
+        _ => {}
     }
 }
 
@@ -1954,6 +2091,8 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             host,
         } => on_pair_list(app, op, link, pid, host, res),
         Reply::PairRedeem { op } => on_pair_redeem(app, op, res),
+        Reply::LinkCreate { pane } => on_link_created(app, &pane, res),
+        Reply::LinkStatus { job } => on_link_status(app, &job, res),
     }
     app.dirty = true;
 }
@@ -2153,6 +2292,7 @@ pub fn handoffs_key(app: &mut App, ev: KeyEvent) {
             _ => app.toast("only a send in progress can be cancelled"),
         },
         Key::Char('g') if plain => open_list(app),
+        Key::Char('l') if plain => make_link(app),
         _ => {}
     }
     app.dirty = true;
@@ -2244,10 +2384,42 @@ pub fn draw_list(app: &App, g: &mut Grid) {
             t.bold(t.red),
         );
     }
+    if let Some(l) = &app.ux.handoff.link {
+        draw_link(app, &mut a, l);
+    }
     a.footer(
-        "j/k move · enter accept/open · d decline · r retry resume · x cancel send · g refresh · esc",
+        "j/k move · enter accept/open · d decline · r retry resume · x cancel send · l continue link · g refresh · esc",
         t.dim(),
     );
+}
+
+/// The continue link being made, or made: progress, the link (already copied) or why not.
+fn draw_link(app: &App, a: &mut crate::drafts::Area<'_>, l: &LinkMake) {
+    let t = app.theme;
+    let pane = pane_label(app, l.mi, &l.pane);
+    a.line(&format!("Continue link for {pane}"), t.bold(t.fg));
+    if let Some(e) = &l.error {
+        a.line(&format!("✗ {e}"), t.s(t.red));
+    } else if let Some(j) = &l.job {
+        a.line(&format!("⏳ {}", j.text()), t.s(t.yellow));
+    } else if let Some(link) = &l.link {
+        let until = l
+            .expires_at
+            .map(|e| {
+                let left = (epoch_ms(e) - now_ms()).max(0);
+                format!(" It works for {}.", fmt_age(left))
+            })
+            .unwrap_or_default();
+        a.line(
+            &format!("Copied to the clipboard.{until} Send it only to the people you named."),
+            t.dim(),
+        );
+        let w = a.rest().w as usize;
+        let chars: Vec<char> = link.chars().collect();
+        for chunk in chars.chunks(w.max(20)) {
+            a.line(&chunk.iter().collect::<String>(), t.s(t.accent));
+        }
+    }
 }
 
 // ---- send ---------------------------------------------------------------------------------------
