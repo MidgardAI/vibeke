@@ -176,3 +176,84 @@ fn frame_local_sidebar_rows_match_fresh_rows_after_width_change() {
     assert_eq!(a, b);
     assert_eq!(cached, fresh);
 }
+
+#[test]
+fn native_pane_scroll_diff_uses_host_scroll_and_matches_the_fallback_frame() {
+    let mut optimized = ready(true);
+    let mut fallback = ready(true);
+    let mut initial = Vec::new();
+    for app in [&mut optimized, &mut fallback] {
+        app.sidebar = false;
+        // This is the normal collapsed sidebar, including its two-column rail.
+        app.ux.sidebar.hide_rail = false;
+        app.machines[0].model.tabs[0].layout = LayoutNode::Leaf { pane: "p1".into() };
+        app.machines[0].model.panes.retain(|p| p.id == "p1");
+        app.machines[0].panes.remove("p2");
+        let rect = app.tiled_rects()[0].1;
+        assert_eq!(rect.x, crate::sidebar::RAIL_W);
+        app.on_frame(
+            0,
+            ServerFrame::PaneFull {
+                pane: "p1".into(),
+                epoch: 2,
+                rev: 1,
+                cols: rect.w,
+                rows: rect.h,
+                lines: (0..rect.h)
+                    .map(|y| row(&format!("log row {y:03} with terminal output")))
+                    .collect(),
+                cursor: Cursor {
+                    visible: true,
+                    ..Cursor::default()
+                },
+                modes: PaneModes::default(),
+                title: String::new(),
+            },
+        );
+        app.prev = Grid::new(0, 0);
+        initial.push(app.draw_frame(true));
+    }
+    assert_eq!(optimized.prev, fallback.prev);
+    optimized.host_scroll = true;
+    let rect = optimized.tiled_rects()[0].1;
+    let frame = ServerFrame::PaneDiff {
+        pane: "p1".into(),
+        epoch: 2,
+        base_rev: 1,
+        rev: 2,
+        ops: vec![
+            DiffOp::ScrollUp { n: 1 },
+            DiffOp::Rows(vec![(rect.h - 1, row("new log row"))]),
+        ],
+        cursor: Cursor {
+            row: rect.h - 1,
+            visible: true,
+            ..Cursor::default()
+        },
+        modes: PaneModes::default(),
+        title: String::new(),
+    };
+    optimized.on_frame(0, frame.clone());
+    fallback.on_frame(0, frame);
+    let scrolled = optimized.draw_frame(true);
+    let repainted = fallback.draw_frame(true);
+    assert!(
+        scrolled.windows(4).any(|w| w == b"\x1b[1S"),
+        "the App emitted a host scroll"
+    );
+    assert!(!repainted.windows(4).any(|w| w == b"\x1b[1S"));
+    assert!(scrolled.len() < repainted.len());
+    assert_eq!(optimized.prev, fallback.prev);
+    let mut scrolled_host = vk_term::Engine::new(optimized.size.0, optimized.size.1, 0);
+    let mut repainted_host = vk_term::Engine::new(fallback.size.0, fallback.size.1, 0);
+    scrolled_host.feed(&initial[0], &mut Vec::new());
+    repainted_host.feed(&initial[1], &mut Vec::new());
+    scrolled_host.feed(&scrolled, &mut Vec::new());
+    repainted_host.feed(&repainted, &mut Vec::new());
+    assert_eq!(scrolled_host.visible_rows(), repainted_host.visible_rows());
+    assert_eq!(optimized.m().panes["p1"].pending_scroll, 0);
+    assert!(
+        optimized.draw_frame(true).is_empty(),
+        "the scroll is consumed once"
+    );
+}
