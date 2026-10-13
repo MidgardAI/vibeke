@@ -87,6 +87,8 @@ export const RENDERER_METHODS = [
   'pane.close',
   'pane.focus',
   'agent.prompt',
+  'agent.queued',
+  'agent.send_now',
   'agent.commands',
   'agent.models',
   'mention.list',

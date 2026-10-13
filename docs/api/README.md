@@ -62,6 +62,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `agent.manifests_reload` | Write | Pane |
 | `agent.models` | Read | Pane |
 | `agent.prompt` | Write | Own panes |
+| `agent.queued` | Read | Pane |
 | `agent.read` | Read | Pane |
 | `agent.release` | Write | Own panes |
 | `agent.rename` | Write | Own panes |
@@ -69,6 +70,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `agent.resumable` | Read | Pane |
 | `agent.resume` | Write | Own panes |
 | `agent.send_keys` | Write | Own panes |
+| `agent.send_now` | Write | Own panes |
 | `agent.set_model` | Write | Own panes |
 | `agent.spawn` | Write | Pane |
 | `agent.start` | Write | Own panes |

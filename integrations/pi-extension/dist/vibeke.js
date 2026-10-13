@@ -211,7 +211,7 @@ class VibekeClient {
         const trusted = this.connects === 1 && this.dropped === 0 && !this.everReady && this.queue.length > 0;
         let snap = {};
         try {
-          snap = this.o.snapshot();
+          snap = this.o.snapshot(trusted);
         } catch {}
         let seq;
         if (trusted) {
@@ -619,7 +619,7 @@ function createExtension(pi, opts = {}) {
     token: env.VIBEKE_PANE_TOKEN,
     harness: () => host,
     version: EXTENSION_VERSION,
-    snapshot: () => ({
+    snapshot: (queueKept) => ({
       session_id: sessionId(),
       session_file: sessionFile(),
       is_streaming: streaming,
@@ -634,12 +634,13 @@ function createExtension(pi, opts = {}) {
         tool: a.tool,
         reason: a.reason
       })),
-      pending_dialogs: [...dialogs.values()]
+      pending_dialogs: [...dialogs.values()],
+      ...bgAfterConnect(queueKept)
     }),
     ...opts.clientOverrides
   });
   const hostVersion = () => typeof pi.version === "string" ? pi.version : undefined;
-  const HEADLESS_ALLOWED = new Set(["SessionStart", "ToolEnded", "Snapshot"]);
+  const HEADLESS_ALLOWED = new Set(["SessionStart", "ToolEnded", "Snapshot", "BgTasks"]);
   function emit(event, payload = {}) {
     if (headlessOwner && !HEADLESS_ALLOWED.has(event))
       return;
@@ -647,6 +648,141 @@ function createExtension(pi, opts = {}) {
       if (lastCtx?.ui)
         ensureWrapped(lastCtx.ui, lastCtx);
       client.signal(event, payload);
+    } catch {}
+  }
+  const BG_EMPTY = "[]";
+  const BG_POLL_MS = opts.bgPollMs ?? 2000;
+  let lastBg = BG_EMPTY;
+  let bgSeen = false;
+  let bgTimer = null;
+  let shutDown = false;
+  const jobCalls = new Map;
+  const piRuns = new Map;
+  const ompJobsApi = () => typeof lastCtx?.getAsyncJobSnapshot === "function";
+  function ompJobs() {
+    if (!ompJobsApi())
+      return [];
+    const snap = safe(() => lastCtx.getAsyncJobSnapshot());
+    const running = snap && Array.isArray(snap.running) ? snap.running : [];
+    const out = [];
+    for (const j of running) {
+      if (!j || typeof j.id !== "string" || !j.id || j.status !== undefined && j.status !== "running")
+        continue;
+      const call = jobCalls.get(j.id);
+      out.push({
+        id: j.id,
+        type: j.type === "task" ? "subagent" : j.type === "bash" ? "shell" : String(j.type ?? "task"),
+        status: "running",
+        description: typeof j.label === "string" ? j.label : "",
+        ...call ? { tool_use_id: call } : {}
+      });
+    }
+    return out;
+  }
+  function alive(pid) {
+    if (pid === undefined)
+      return true;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return e?.code === "EPERM";
+    }
+  }
+  function piRunTasks() {
+    const sid = sessionId();
+    const out = [];
+    for (const [id, r] of piRuns) {
+      if (!alive(r.pid)) {
+        piRuns.delete(id);
+        continue;
+      }
+      if (r.sessionId && sid && r.sessionId !== sid)
+        continue;
+      out.push({ id, type: "subagent", status: "running", description: r.description });
+    }
+    return out;
+  }
+  function checkBg(force = false) {
+    if (shutDown)
+      return;
+    let list;
+    try {
+      list = [...ompJobs(), ...piRunTasks()];
+    } catch {
+      return;
+    }
+    const key = JSON.stringify(list);
+    if (key !== lastBg || force && (bgSeen || ompJobsApi())) {
+      lastBg = key;
+      if (list.length)
+        bgSeen = true;
+      const kinds = ompJobsApi() ? ["shell", "subagent"] : pi.events ? ["subagent"] : [];
+      emit("BgTasks", { background_tasks: list, kinds });
+    }
+    if (bgTimer)
+      clearTimeout(bgTimer);
+    bgTimer = null;
+    if (list.length) {
+      bgTimer = setTimeout(() => {
+        bgTimer = null;
+        checkBg();
+      }, BG_POLL_MS);
+      bgTimer.unref?.();
+    }
+  }
+  function bgAfterConnect(queueKept) {
+    if (!queueKept && bgSeen && lastBg !== null) {
+      lastBg = null;
+      const t = setTimeout(() => checkBg(), 0);
+      t.unref?.();
+    }
+    return {};
+  }
+  function rememberJobCalls(callId, result) {
+    const d = result?.details;
+    const ids = [];
+    if (typeof d?.async?.jobId === "string")
+      ids.push(d.async.jobId);
+    if (d?.async && Array.isArray(d.progress)) {
+      for (const p of d.progress)
+        if (typeof p?.id === "string" && (p.status === "pending" || p.status === "running"))
+          ids.push(p.id);
+    }
+    if (!ids.length)
+      return;
+    if (jobCalls.size > 500)
+      jobCalls.clear();
+    for (const id of ids)
+      jobCalls.set(id, callId);
+  }
+  function subscribeSubagents() {
+    const bus = pi.events;
+    if (!bus || typeof bus.on !== "function")
+      return;
+    try {
+      bus.on("subagent:async-started", (data) => {
+        try {
+          if (!data || typeof data.id !== "string" || !data.id)
+            return;
+          const agents = Array.isArray(data.agents) ? data.agents.filter((a) => typeof a === "string") : [];
+          const who = typeof data.agent === "string" ? data.agent : agents.join(", ");
+          const what = typeof data.goal === "string" && data.goal ? data.goal : typeof data.task === "string" ? data.task : "";
+          piRuns.set(data.id, {
+            description: [who, what].filter(Boolean).join(": "),
+            ...typeof data.pid === "number" ? { pid: data.pid } : {},
+            ...typeof data.sessionId === "string" ? { sessionId: data.sessionId } : {}
+          });
+          checkBg();
+        } catch {}
+      });
+      bus.on("subagent:async-complete", (data) => {
+        try {
+          const id = typeof data?.runId === "string" ? data.runId : data?.id;
+          if (typeof id === "string" && piRuns.delete(id))
+            checkBg();
+        } catch {}
+      });
     } catch {}
   }
   const wrapped = new WeakSet;
@@ -869,6 +1005,7 @@ function createExtension(pi, opts = {}) {
       host_version: hostVersion(),
       extension_version: EXTENSION_VERSION
     });
+    lastBg = BG_EMPTY;
   }
   function cancelEnd() {
     if (endTimer)
@@ -885,6 +1022,7 @@ function createExtension(pi, opts = {}) {
     const e = lastEnd;
     lastEnd = {};
     emit("TurnEnded", { ...e.stop_reason ? { stop_reason: e.stop_reason } : {}, ...e.last_message ? { last_message: e.last_message } : {} });
+    checkBg(true);
   }
   function lastAssistant(event) {
     const msgs = Array.isArray(event?.messages) ? event.messages : [];
@@ -909,7 +1047,9 @@ function createExtension(pi, opts = {}) {
             lastCtx = ctx;
             startControl(ctx);
           }
-          return fn(event, ctx);
+          const r = fn(event, ctx);
+          checkBg();
+          return r;
         } catch {
           return;
         }
@@ -1036,6 +1176,8 @@ function createExtension(pi, opts = {}) {
     calls.delete(id);
     const tool = e.toolName ?? cached?.tool ?? "";
     const ok = !e.isError;
+    if (ok)
+      rememberJobCalls(id, e.result);
     const fp = ok && cached ? fileChangePath(tool, cached.input, ctx?.cwd ?? lastCtx?.cwd) : undefined;
     emit("ToolEnded", { call_id: id, tool, ok, ...fp ? { file_path: fp } : {} });
     if (typeof pi.sendMessage === "function") {
@@ -1119,11 +1261,16 @@ function createExtension(pi, opts = {}) {
   on("session_shutdown", async (e) => {
     cancelEnd();
     endTurn();
+    shutDown = true;
+    if (bgTimer)
+      clearTimeout(bgTimer);
+    bgTimer = null;
     emit("SessionEnded", { reason: e?.reason ?? "shutdown" });
     await client.flush(300);
     client.close();
   });
   registerShowImage();
+  subscribeSubagents();
   try {
     client.start();
   } catch {}

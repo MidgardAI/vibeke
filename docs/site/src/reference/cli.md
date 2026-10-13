@@ -130,6 +130,8 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `prompt` | `<target>` `<text>` | `agent.prompt` | [--wait] [--timeout-ms n] |
 | `wait` | `<target>` | `agent.wait` | [--until idle,done,needs_approval,...] [--timeout-ms n] |
 | `interrupt` | `<target>` | `agent.interrupt` |  |
+| `queued` | `<target>` | `agent.queued` | messages the harness holds until it can take them |
+| `send-now` | `<target>` | `agent.send_now` | make the harness deliver its queued messages now |
 | `send-keys` | `<target>` `<keys...>` | `agent.send_keys` |  |
 | `read` | `<target>` | `agent.read` | [--source visible\|recent\|transcript] [--lines n] |
 | `transcript` | `<target>` | `agent.transcript` | [--limit n] |

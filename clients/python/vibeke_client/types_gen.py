@@ -1391,6 +1391,22 @@ AgentPromptResult = TypedDict("AgentPromptResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+AgentQueuedParams = TypedDict("AgentQueuedParams", {
+    "target": "Target",
+})
+
+AgentQueuedResultItemsItem = TypedDict("AgentQueuedResultItemsItem", {
+    "id": str,
+    "text": str,
+    "since_ms": int,
+    "source": str,
+})
+
+AgentQueuedResult = TypedDict("AgentQueuedResult", {
+    "run": str,
+    "items": List["AgentQueuedResultItemsItem"],
+})
+
 AgentReadParams = TypedDict("AgentReadParams", {
     "target": "Target",
     "source": NotRequired[Literal["visible", "recent", "transcript"]],
@@ -1458,6 +1474,17 @@ AgentSendKeysParams = TypedDict("AgentSendKeysParams", {
 })
 
 AgentSendKeysResult = TypedDict("AgentSendKeysResult", {
+    "cursor": NotRequired["Cursor"],
+})
+
+AgentSendNowParams = TypedDict("AgentSendNowParams", {
+    "target": "Target",
+})
+
+AgentSendNowResult = TypedDict("AgentSendNowResult", {
+    "run": "AgentRun",
+    "sent": int,
+    "keys": List[str],
     "cursor": NotRequired["Cursor"],
 })
 
@@ -8990,6 +9017,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.manifests_reload": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.models": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.prompt": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.queued": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.read": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.release": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.rename": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -8997,6 +9025,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "agent.resumable": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "agent.resume": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "agent.send_now": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.set_model": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "agent.spawn": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "agent.start": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
@@ -9567,6 +9596,16 @@ AgentNamedSubject = TypedDict("AgentNamedSubject", {
 
 AgentNamedData = TypedDict("AgentNamedData", {
     "name": Optional[str],
+})
+
+AgentQueuedChangedSubject = TypedDict("AgentQueuedChangedSubject", {
+    "run": str,
+    "pane": str,
+})
+
+AgentQueuedChangedData = TypedDict("AgentQueuedChangedData", {
+    "count": int,
+    "ids": List[str],
 })
 
 AgentRateLimitedSubject = TypedDict("AgentRateLimitedSubject", {
@@ -12333,6 +12372,7 @@ EVENT_TYPES = (
     "agent.identified",
     "agent.item",
     "agent.named",
+    "agent.queued_changed",
     "agent.rate_limited",
     "agent.resume_handle",
     "agent.session_ended",

@@ -1088,17 +1088,12 @@ impl Parser {
                 self.codex_agent_start(&key, thread.as_deref(), call_id.as_deref(), label, ts, out);
             }
             // `send_message` also interacts, but only `followup_task` starts a turn.
-            "interacted" => {
-                if call.is_some_and(|c| matches!(c.tool.as_str(), "followup_task" | "send_input")) {
-                    self.codex_agent_start(
-                        &key,
-                        thread.as_deref(),
-                        call_id.as_deref(),
-                        None,
-                        ts,
-                        out,
-                    );
-                }
+            "interacted"
+                if call
+                    .as_ref()
+                    .is_some_and(|c| matches!(c.tool.as_str(), "followup_task" | "send_input")) =>
+            {
+                self.codex_agent_start(&key, thread.as_deref(), call_id.as_deref(), None, ts, out);
             }
             kind @ ("completed" | "interrupted" | "errored" | "failed" | "shutdown" | "closed") => {
                 self.codex_agent_end(&key, kind, ts, out);

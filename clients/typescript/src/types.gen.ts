@@ -1316,6 +1316,20 @@ export type AgentPromptResult = {
   cursor?: Cursor;
 };
 
+export type AgentQueuedParams = {
+  target: Target;
+};
+
+export type AgentQueuedResult = {
+  run: string;
+  items: {
+    id: string;
+    text: string;
+    since_ms: number;
+    source: string;
+  }[];
+};
+
 export type AgentReadParams = {
   target: Target;
   source?: "visible" | "recent" | "transcript";
@@ -1383,6 +1397,17 @@ export type AgentSendKeysParams = {
 };
 
 export type AgentSendKeysResult = {
+  cursor?: Cursor;
+};
+
+export type AgentSendNowParams = {
+  target: Target;
+};
+
+export type AgentSendNowResult = {
+  run: AgentRun;
+  sent: number;
+  keys: string[];
   cursor?: Cursor;
 };
 
@@ -8331,6 +8356,7 @@ export interface Methods {
   "agent.manifests_reload": { params: AgentManifestsReloadParams; result: AgentManifestsReloadResult };
   "agent.models": { params: AgentModelsParams; result: AgentModelsResult };
   "agent.prompt": { params: AgentPromptParams; result: AgentPromptResult };
+  "agent.queued": { params: AgentQueuedParams; result: AgentQueuedResult };
   "agent.read": { params: AgentReadParams; result: AgentReadResult };
   "agent.release": { params: AgentReleaseParams; result: AgentReleaseResult };
   "agent.rename": { params: AgentRenameParams; result: AgentRenameResult };
@@ -8338,6 +8364,7 @@ export interface Methods {
   "agent.resumable": { params: AgentResumableParams; result: AgentResumableResult };
   "agent.resume": { params: AgentResumeParams; result: AgentResumeResult };
   "agent.send_keys": { params: AgentSendKeysParams; result: AgentSendKeysResult };
+  "agent.send_now": { params: AgentSendNowParams; result: AgentSendNowResult };
   "agent.set_model": { params: AgentSetModelParams; result: AgentSetModelResult };
   "agent.spawn": { params: AgentSpawnParams; result: AgentSpawnResult };
   "agent.start": { params: AgentStartParams; result: AgentStartResult };
@@ -8801,6 +8828,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.manifests_reload": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.models": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.prompt": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.queued": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.read": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.release": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.rename": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -8808,6 +8836,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "agent.resumable": { mutating: false, scope: "pane", paneScope: "open" },
   "agent.resume": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "agent.send_now": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.set_model": { mutating: true, scope: "pane", paneScope: "own_target" },
   "agent.spawn": { mutating: true, scope: "pane", paneScope: "open" },
   "agent.start": { mutating: true, scope: "pane", paneScope: "own_target" },
@@ -9378,6 +9407,16 @@ export type AgentNamedSubject = {
 
 export type AgentNamedData = {
   name: string | null;
+};
+
+export type AgentQueuedChangedSubject = {
+  run: string;
+  pane: string;
+};
+
+export type AgentQueuedChangedData = {
+  count: number;
+  ids: string[];
 };
 
 export type AgentRateLimitedSubject = {
@@ -12124,6 +12163,7 @@ export interface EventMap {
   "agent.identified": { subject: AgentIdentifiedSubject; data: AgentIdentifiedData };
   "agent.item": { subject: AgentItemSubject; data: AgentItemData };
   "agent.named": { subject: AgentNamedSubject; data: AgentNamedData };
+  "agent.queued_changed": { subject: AgentQueuedChangedSubject; data: AgentQueuedChangedData };
   "agent.rate_limited": { subject: AgentRateLimitedSubject; data: AgentRateLimitedData };
   "agent.resume_handle": { subject: AgentResumeHandleSubject; data: AgentResumeHandleData };
   "agent.session_ended": { subject: AgentSessionEndedSubject; data: AgentSessionEndedData };

@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 464,
+  "method_count": 466,
   "methods": [
     {
       "name": "adapter.control",
@@ -277,6 +277,20 @@
       "result": "{run: AgentRun, turn?: any, turn_started?: bool, interaction?: string, mention_sent?: string}"
     },
     {
+      "name": "agent.queued",
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "gateway": "open",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{target: Target}",
+      "result": "{run: string, items: [{id: string, text: string, since_ms: int, source: string}]}"
+    },
+    {
       "name": "agent.read",
       "mutating": false,
       "scope": "pane",
@@ -373,6 +387,20 @@
       "spec": "`{target, keys}` → `{}`",
       "params": "{target: Target, keys: [string]}",
       "result": "{}"
+    },
+    {
+      "name": "agent.send_now",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "agents"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{target: Target}",
+      "result": "{run: AgentRun, sent: int, keys: [string]}"
     },
     {
       "name": "agent.set_model",

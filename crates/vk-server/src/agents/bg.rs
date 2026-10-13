@@ -182,12 +182,13 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
                 t
             })
             .collect();
-        next.extend(
-            r.bg_tasks
-                .iter()
-                .filter(|t| t.source == StateSource::Process)
-                .cloned(),
-        );
+        let procs: Vec<BgTask> = r
+            .bg_tasks
+            .iter()
+            .filter(|t| t.source == StateSource::Process && !reported_elsewhere(&next, t))
+            .cloned()
+            .collect();
+        next.extend(procs);
         Some((next, now - SKEW_MS))
     });
 }
@@ -240,6 +241,10 @@ pub fn set_processes(server: &Arc<Server>, run: &str, procs: Vec<BgTask>) {
             .cloned()
             .collect();
         for mut p in procs {
+            // The harness reports this work itself (an omp async bash job): keep its entry.
+            if reported_elsewhere(&next, &p) {
+                continue;
+            }
             if let Some(old) = r.bg_tasks.iter().find(|o| o.id == p.id) {
                 p.since_ms = p.since_ms.min(old.since_ms);
             }
@@ -247,6 +252,16 @@ pub fn set_processes(server: &Arc<Server>, run: &str, procs: Vec<BgTask>) {
         }
         Some((next, r.bg_level_ms))
     });
+}
+
+/// Whether a process task is work a harness-reported task already covers: both came from the
+/// same tool call.
+fn reported_elsewhere(tasks: &[BgTask], p: &BgTask) -> bool {
+    p.tool_use_id.as_ref().is_some_and(|id| {
+        tasks
+            .iter()
+            .any(|t| t.source != StateSource::Process && t.tool_use_id.as_ref() == Some(id))
+    })
 }
 
 /// Forget everything: the harness session started over or its process exited (its children

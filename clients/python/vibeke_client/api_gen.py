@@ -71,6 +71,9 @@ class Api:
     async def agent_prompt(self, params: "t.AgentPromptParams") -> "t.AgentPromptResult":
         return await self.call("agent.prompt", params)  # type: ignore[arg-type, return-value]
 
+    async def agent_queued(self, params: "t.AgentQueuedParams") -> "t.AgentQueuedResult":
+        return await self.call("agent.queued", params)  # type: ignore[arg-type, return-value]
+
     async def agent_read(self, params: "t.AgentReadParams") -> "t.AgentReadResult":
         return await self.call("agent.read", params)  # type: ignore[arg-type, return-value]
 
@@ -91,6 +94,9 @@ class Api:
 
     async def agent_send_keys(self, params: "t.AgentSendKeysParams") -> "t.AgentSendKeysResult":
         return await self.call("agent.send_keys", params)  # type: ignore[arg-type, return-value]
+
+    async def agent_send_now(self, params: "t.AgentSendNowParams") -> "t.AgentSendNowResult":
+        return await self.call("agent.send_now", params)  # type: ignore[arg-type, return-value]
 
     async def agent_set_model(self, params: "t.AgentSetModelParams") -> "t.AgentSetModelResult":
         return await self.call("agent.set_model", params)  # type: ignore[arg-type, return-value]

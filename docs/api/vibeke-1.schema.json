@@ -6031,6 +6031,60 @@
         ]
       }
     },
+    "agent.queued": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "since_ms": {
+                  "type": "integer"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "text",
+                "since_ms",
+                "source"
+              ]
+            }
+          }
+        },
+        "required": [
+          "run",
+          "items"
+        ]
+      }
+    },
     "agent.read": {
       "mutating": false,
       "scope": "pane",
@@ -6274,6 +6328,47 @@
             "$ref": "#/$defs/Cursor"
           }
         }
+      }
+    },
+    "agent.send_now": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/$defs/AgentRun"
+          },
+          "sent": {
+            "type": "integer"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "run",
+          "sent",
+          "keys"
+        ]
       }
     },
     "agent.set_model": {
@@ -34082,6 +34177,41 @@
         },
         "required": [
           "name"
+        ]
+      }
+    },
+    "agent.queued_changed": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run",
+          "pane"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "count",
+          "ids"
         ]
       }
     },

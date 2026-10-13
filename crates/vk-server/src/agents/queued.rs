@@ -192,7 +192,8 @@ pub fn codex_pending(lines: &[String]) -> Option<Vec<String>> {
                 }
                 last.push_str(t);
             }
-            None => items.push(t.to_string()),
+            // The rest of a header that wrapped on a narrow pane (`immediately)`).
+            None => {}
         }
     }
     if items.is_empty() {
@@ -450,6 +451,17 @@ mod tests {
         );
         let p = codex_pending(&lines).unwrap();
         assert_eq!(p, vec!["also update the docs", "and the tests,\nplease"]);
+    }
+
+    #[test]
+    fn codex_pending_skips_a_wrapped_header() {
+        // Codex 0.162 on an 80-column pane.
+        let got = codex_pending(&screen(
+            "• Working (2s • esc to interrupt)\n\n\
+             • Messages to be submitted after next tool call (press esc to interrupt and send\n  \
+             immediately)\n  ↳ then echo ten\n\n› Ask Codex to do anything\n",
+        ));
+        assert_eq!(got, Some(vec!["then echo ten".to_string()]));
     }
 
     #[test]
