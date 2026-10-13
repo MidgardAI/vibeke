@@ -61,12 +61,13 @@ const cookieJars = {
 };
 
 /**
- * Where a design review runs the preview in the reviewer's own browser:
- * `VITE_REVIEW_CONTENT_ORIGIN`, e.g. `https://{sid}.p.vibeke.dev` in production once that wildcard
- * domain serves `apps/review-content`, or `http://{sid}.p.localhost:5174` for local development.
- * Unset: reviews use the host's browser (the screencast) only.
+ * Where a design review runs the preview in the reviewer's own browser. Unset, it is derived
+ * from the app's own https origin (`https://{sid}.p.vibeke.dev` for app.vibeke.dev, served by
+ * `apps/review-content`); a plain-http origin gets the host's browser (the screencast). Set
+ * `VITE_REVIEW_CONTENT_ORIGIN` to `http://{sid}.p.localhost:5174` for local development, or to
+ * `off` to always use the screencast.
  */
-const reviewContentPattern = (import.meta.env?.VITE_REVIEW_CONTENT_ORIGIN as string | undefined) || 'off';
+const reviewContentPattern = (import.meta.env?.VITE_REVIEW_CONTENT_ORIGIN as string | undefined) || undefined;
 const accountServer = (import.meta.env?.VITE_ACCOUNT_SERVER as string | undefined) || undefined;
 
 const lifecycle: Lifecycle = {
