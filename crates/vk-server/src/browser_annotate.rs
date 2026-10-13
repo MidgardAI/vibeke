@@ -30,6 +30,13 @@
 //! - The notes panel is a split under the browser pane (`browser.pane.annotations`, marker
 //!   `browser-annotations:<pane>`). It runs inside a pane, so it may edit and send the draft of
 //!   its own browser pane ([`split_allows`]); other panes may not.
+//! - **Review notes** (spec 20 §3.3, §3.4): the gateway adds notes on behalf of a reviewer with
+//!   `author` (refused from panes). Drafts are keyed by `(workspace, target, author)`, and a
+//!   call with `author` sees and changes only that author's drafts. `annotations_send {hold}`
+//!   parks a draft as `held` (event `browser.annotations_held` and a notification) until the
+//!   owner releases it (`browser.annotations_release`, the normal delivery) or discards it
+//!   (`browser.annotations_discard`). `annotation_add {capture}` without an image renders a
+//!   crop of the note in a confined headless session on the preview, in the background.
 
 use super::Target;
 use crate::Server;
@@ -59,6 +66,8 @@ pub const METHODS: &[(&str, bool)] = &[
     ("browser.annotations_clear", true),
     ("browser.annotations", false),
     ("browser.annotations_send", true),
+    ("browser.annotations_release", true),
+    ("browser.annotations_discard", true),
     ("browser.feedback", true),
     ("browser.pane.annotations", true),
 ];
@@ -190,12 +199,119 @@ pub struct Viewport {
     pub device: Option<String>,
 }
 
+/// Who wrote a draft's notes when it is not the owner (spec 20 §3.4): a reviewer that opened a
+/// review link, set by the gateway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Author {
+    /// `github` | `share`.
+    pub kind: String,
+    /// The GitHub user id, or the share device id.
+    pub id: String,
+    /// What people see: the GitHub login, or the share's label.
+    pub label: String,
+}
+
+impl Author {
+    /// The same person (the label may change).
+    pub fn same(&self, other: &Author) -> bool {
+        self.kind == other.kind && self.id == other.id
+    }
+
+    /// How the prompt and notifications name the author: `@alice (GitHub)`, or the share's
+    /// label quoted as data.
+    pub fn phrase(&self) -> String {
+        match self.kind.as_str() {
+            "github" => format!("@{} (GitHub)", self.login()),
+            _ => format!("{} (share link)", q(&self.label, 64)),
+        }
+    }
+
+    /// `@alice` for a GitHub author, else the label quoted.
+    pub fn short(&self) -> String {
+        match self.kind.as_str() {
+            "github" => format!("@{}", self.login()),
+            _ => q(&self.label, 64),
+        }
+    }
+
+    /// A GitHub login has letters, digits and hyphens only (at most 39); anything else is
+    /// dropped, so a label can never carry text of its own into the prompt.
+    fn login(&self) -> String {
+        let l: String = self
+            .label
+            .trim_start_matches('@')
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .take(39)
+            .collect();
+        if l.is_empty() {
+            self.id
+                .chars()
+                .filter(char::is_ascii_digit)
+                .take(20)
+                .collect()
+        } else {
+            l
+        }
+    }
+}
+
+/// Do two optional authors match (`None` is the owner's own draft)?
+fn same_author(a: Option<&Author>, b: Option<&Author>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.same(b),
+        _ => false,
+    }
+}
+
+/// The `author` param (spec 20 §3.4): only from a non-pane caller (the gateway sets it for a
+/// reviewer). `{kind: github|share, id: string|int, label?}`.
+pub fn author_param(ctx: &Ctx, p: &Value) -> Result<Option<Author>, RpcError> {
+    let Some(a) = p.get("author").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    if ctx.pane_scope.is_some() {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "`author` is set by the gateway for a reviewer; a pane may not set it",
+        )
+        .details(json!({"scope": "pane"})));
+    }
+    let kind = a.get("kind").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(kind, "github" | "share") {
+        return Err(invalid("author.kind: expected github or share"));
+    }
+    let id = match a.get("id") {
+        Some(Value::String(x)) => x.trim().to_string(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+        return Err(invalid("author.id: expected a short id"));
+    }
+    let label = a
+        .get("label")
+        .and_then(Value::as_str)
+        .map(|l| one_line(&vk_browser::capture::escape_controls(l.trim()), 64))
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| id.clone());
+    Ok(Some(Author {
+        kind: kind.into(),
+        id,
+        label,
+    }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     pub target: AnnotationTarget,
+    /// The reviewer who wrote it (spec 20 §3.4); `None`: the owner's own draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<Author>,
     /// The agent pane it is (or will be) delivered to.
     #[serde(default)]
     pub agent_pane: Option<String>,
@@ -207,8 +323,9 @@ pub struct Draft {
     pub notes: Vec<Note>,
     #[serde(default)]
     pub page_note: Option<String>,
-    /// `open` | `queued` | `sending` (typed or prompted, not confirmed yet) | `delivered` |
-    /// `unconfirmed` (it may have reached the agent; never sent again without the user).
+    /// `open` | `held` (sent by a reviewer, waiting for the owner) | `queued` | `sending` (typed
+    /// or prompted, not confirmed yet) | `delivered` | `unconfirmed` (it may have reached the
+    /// agent; never sent again without the user).
     pub state: String,
     /// How it was delivered: `feedback` | `typed` | `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -551,20 +668,44 @@ fn target_of(
     Err(invalid("needs `pane`, `session` or `preview`"))
 }
 
-/// The open draft of a target, else its newest queued one.
-fn current(server: &Server, t: &AnnotationTarget) -> Option<Draft> {
+/// The open draft of a target and author, else its newest undelivered one.
+fn current(server: &Server, t: &AnnotationTarget, author: Option<&Author>) -> Option<Draft> {
     let mut v: Vec<Draft> = all(server)
         .into_iter()
-        .filter(|d| d.target == *t && d.state != "delivered")
+        .filter(|d| {
+            d.target == *t && d.state != "delivered" && same_author(d.author.as_ref(), author)
+        })
         .collect();
     v.sort_by_key(|d| (d.state == "open", d.updated_at_ms));
     v.pop()
 }
 
-fn open_draft(server: &Server, t: &AnnotationTarget) -> Option<Draft> {
+fn open_draft(server: &Server, t: &AnnotationTarget, author: Option<&Author>) -> Option<Draft> {
     all(server)
         .into_iter()
-        .find(|d| d.target == *t && d.state == "open")
+        .find(|d| d.target == *t && d.state == "open" && same_author(d.author.as_ref(), author))
+}
+
+/// Every draft of a target, oldest first: of one author when `author` is given (a reviewer
+/// sees its own notes and their states), else of everyone (owners see every draft with its
+/// author).
+fn drafts_of(server: &Server, t: &AnnotationTarget, author: Option<&Author>) -> Vec<Draft> {
+    let mut v: Vec<Draft> = all(server)
+        .into_iter()
+        .filter(|d| {
+            d.target == *t && author.is_none_or(|a| d.author.as_ref().is_some_and(|x| x.same(a)))
+        })
+        .collect();
+    v.sort_by_key(|d| d.created_at_ms);
+    v
+}
+
+/// The draft `id`, if the caller may act on it: with `author`, only that author's drafts (any
+/// other is reported missing, so a reviewer cannot probe others' drafts).
+fn get_for(server: &Server, id: &str, author: Option<&Author>) -> Result<Draft, RpcError> {
+    get(server, id)
+        .filter(|d| author.is_none_or(|a| d.author.as_ref().is_some_and(|x| x.same(a))))
+        .ok_or_else(|| not_found("annotation draft", id))
 }
 
 // ---- API ----------------------------------------------------------------------------------------
@@ -580,6 +721,8 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
             | "browser.annotations_clear"
             | "browser.annotations"
             | "browser.annotations_send"
+            | "browser.annotations_release"
+            | "browser.annotations_discard"
             | "browser.feedback"
             | "browser.pane.annotations"
     ) {
@@ -592,15 +735,33 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     {
         return Some(Err(e));
     }
+    let author = match author_param(ctx, p) {
+        Ok(a) => a,
+        Err(e) => return Some(Err(e)),
+    };
+    if author.is_some()
+        && matches!(
+            method,
+            "browser.annotations_release" | "browser.annotations_discard"
+        )
+    {
+        return Some(Err(err(
+            ErrorKind::PermissionDenied,
+            format!("{method} is the owner's: a call for a reviewer (`author`) may not use it"),
+        )));
+    }
+    let author = author.as_ref();
     Some(match method {
         "browser.annotate" => annotate(server, ctx, p).await,
-        "browser.annotation_pick" => pick_api(server, ctx, p).await,
+        "browser.annotation_pick" => pick_api(server, ctx, p, author).await,
         "browser.annotation_add" => add(server, ctx, p),
-        "browser.annotation_update" => update(server, p),
-        "browser.annotation_remove" => remove(server, p),
-        "browser.annotations_clear" => clear(server, p),
-        "browser.annotations" => read(server, ctx, p),
-        "browser.annotations_send" => send(server, ctx, p).await,
+        "browser.annotation_update" => update(server, p, author),
+        "browser.annotation_remove" => remove(server, p, author),
+        "browser.annotations_clear" => clear(server, p, author),
+        "browser.annotations" => read(server, ctx, p, author),
+        "browser.annotations_send" => send(server, ctx, p, author).await,
+        "browser.annotations_release" => release(server, ctx, p).await,
+        "browser.annotations_discard" => discard(server, p),
         "browser.feedback" => feedback(server, ctx, p).await,
         "browser.pane.annotations" => notes_split(server, ctx, p),
         _ => return None,
@@ -612,8 +773,9 @@ fn num(p: &Value, k: &str) -> Option<f64> {
 }
 
 /// `browser.annotation_add {target, url, title?, viewport?, kind, selector?, role?, name?, text?,
-/// html?, rect?, covers?, image_b64?, note?}` on the target's owner.
+/// html?, rect?, covers?, image_b64?, note?, author?, capture?}` on the target's owner.
 pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let author = author_param(ctx, p)?;
     let target = p
         .get("target")
         .filter(|t| t.is_object())
@@ -676,10 +838,11 @@ pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     });
     let st = &server.browser.annotate;
     let _w = st.write.lock().unwrap();
-    let mut d = open_draft(server, &target).unwrap_or_else(|| Draft {
+    let mut d = open_draft(server, &target, author.as_ref()).unwrap_or_else(|| Draft {
         id: crate::core::ulid(),
         workspace: workspace.clone(),
         target: target.clone(),
+        author: author.clone(),
         agent_pane: None,
         url: url.clone(),
         title: None,
@@ -747,13 +910,82 @@ pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     d.rev += 1;
     d.updated_at_ms = now();
     put(server, &d, changed(&d))?;
+    drop(_w);
+    if b(p, "capture") == Some(true) && note.image.is_none() {
+        capture_later(server, &d, &note);
+    }
     Ok(json!({"draft": d, "note": note}))
 }
 
-fn load_editable(server: &Server, p: &Value) -> Result<Draft, RpcError> {
+/// `annotation_add {capture: true}` without an image (spec 20 §3.6): render a crop of the note
+/// in a confined headless session on the draft's preview, in the background, and attach it to
+/// the note. Best effort: the add never waits for it or fails with it. Only drafts on a
+/// preview (or on a session opened on one) are cropped.
+fn capture_later(server: &Arc<Server>, d: &Draft, note: &Note) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let preview = match &d.target {
+        AnnotationTarget::Preview(id) => Some(id.clone()),
+        AnnotationTarget::Session(s) => server.agent_browser.watch_info(s).and_then(|i| i.preview),
+        AnnotationTarget::Pane(_) => None,
+    };
+    let Some(preview) = preview else { return };
+    let req = crate::agent_browser::CropRequest {
+        preview,
+        url: d.url.clone(),
+        viewport: d.viewport.as_ref().map(|v| (v.w, v.h)),
+        dpr: d.viewport.as_ref().and_then(|v| v.dpr),
+        selector: note.selector.clone(),
+        rect: note.rect.map(|r| (r.x, r.y, r.w, r.h)),
+    };
+    let (server, id, n) = (server.clone(), d.id.clone(), note.n);
+    tokio::spawn(async move {
+        match crate::agent_browser::capture_crop(&server, &req).await {
+            Ok(png) => attach_crop(&server, &id, n, &png),
+            Err(e) => tracing::debug!(draft = %id, n, error = %e.message, "annotation crop failed"),
+        }
+    });
+}
+
+/// Store a rendered crop as the screenshot of note `n`, if the note still has none and the
+/// draft has not gone out yet. Not a content change (`rev` stays): a delivery reserved
+/// meanwhile builds its prompt from what it reserved.
+fn attach_crop(server: &Arc<Server>, id: &str, n: u32, png: &[u8]) {
+    use base64::Engine as _;
+    if png.is_empty() || png.len() > MAX_IMAGE {
+        return;
+    }
+    let _w = server.browser.annotate.write.lock().unwrap();
+    let Some(mut d) = get(server, id)
+        .filter(|d| matches!(d.state.as_str(), "open" | "held" | "queued" | "unconfirmed"))
+    else {
+        return;
+    };
+    let Some(note) = d.notes.iter_mut().find(|x| x.n == n && x.image.is_none()) else {
+        return;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    let Ok(v) = crate::api::blob_put(
+        server,
+        &crate::drafts::user_ctx(),
+        &json!({"data_b64": b64, "name": format!("annotation-{id}-{n}.png")}),
+    ) else {
+        return;
+    };
+    note.image = v["path"].as_str().map(str::to_string);
+    d.updated_at_ms = now();
+    let _ = put(server, &d, changed(&d));
+}
+
+fn load_editable(server: &Server, p: &Value, author: Option<&Author>) -> Result<Draft, RpcError> {
     let id = req(p, "draft")?;
-    let d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
+    let d = get_for(server, id, author)?;
     match d.state.as_str() {
+        "held" => Err(err(
+            ErrorKind::Conflict,
+            "the draft was sent and waits for the owner; new picks start a new draft",
+        )),
         "delivered" => Err(err(
             ErrorKind::Conflict,
             "the draft was already delivered; new picks start a new draft",
@@ -763,10 +995,10 @@ fn load_editable(server: &Server, p: &Value) -> Result<Draft, RpcError> {
     }
 }
 
-/// `browser.annotation_update {draft, n?, note?, page_note?}`.
-fn update(server: &Server, p: &Value) -> R {
+/// `browser.annotation_update {draft, n?, note?, page_note?, author?}`.
+fn update(server: &Server, p: &Value, author: Option<&Author>) -> R {
     let _w = server.browser.annotate.write.lock().unwrap();
-    let mut d = load_editable(server, p)?;
+    let mut d = load_editable(server, p, author)?;
     if let Some(n) = u(p, "n") {
         let text = s(p, "note").ok_or_else(|| invalid("`n` needs `note`"))?;
         let note = d
@@ -785,10 +1017,10 @@ fn update(server: &Server, p: &Value) -> R {
     Ok(json!({"draft": d}))
 }
 
-/// `browser.annotation_remove {draft, n}`.
-fn remove(server: &Server, p: &Value) -> R {
+/// `browser.annotation_remove {draft, n, author?}`.
+fn remove(server: &Server, p: &Value, author: Option<&Author>) -> R {
     let _w = server.browser.annotate.write.lock().unwrap();
-    let mut d = load_editable(server, p)?;
+    let mut d = load_editable(server, p, author)?;
     let n = u(p, "n").ok_or_else(|| invalid("missing param `n`"))?;
     let i = d
         .notes
@@ -805,36 +1037,47 @@ fn remove(server: &Server, p: &Value) -> R {
     Ok(json!({"draft": d}))
 }
 
-/// `browser.annotations_clear {draft}`: the draft and its screenshots are removed.
-fn clear(server: &Server, p: &Value) -> R {
+/// `browser.annotations_clear {draft, author?}`: the draft and its screenshots are removed.
+fn clear(server: &Server, p: &Value, author: Option<&Author>) -> R {
     let _w = server.browser.annotate.write.lock().unwrap();
     let id = req(p, "draft")?;
-    let Some(d) = get(server, id) else {
+    let Ok(d) = get_for(server, id, author) else {
         return Ok(json!({"cleared": false}));
     };
     delete(server, &d)?;
     Ok(json!({"cleared": true}))
 }
 
-/// `browser.annotations {pane | session | preview | draft}`.
-fn read(server: &Server, ctx: &Ctx, p: &Value) -> R {
-    let d = match s(p, "draft") {
-        Some(id) => Some(get(server, id).ok_or_else(|| not_found("annotation draft", id))?),
-        None => {
-            let (t, _) = target_of(server, ctx, p)?;
-            current(server, &t)
-        }
-    };
-    if let Some(d) = &d
-        && !may_see(server, ctx, d)
-    {
-        return Err(err(
+/// `browser.annotations {pane | session | preview | draft, author?}`. By target, `draft` is the
+/// current draft of the caller (the owner's own, or `author`'s), and `drafts` lists every draft
+/// of the target (only `author`'s with `author`) with its author and state.
+fn read(server: &Server, ctx: &Ctx, p: &Value, author: Option<&Author>) -> R {
+    let refuse = || {
+        err(
             ErrorKind::PermissionDenied,
             "from a pane, only the agent the notes are for, the agent that opened the page, or the notes split may read them",
         )
-        .details(json!({"scope": "pane"})));
+        .details(json!({"scope": "pane"}))
+    };
+    if let Some(id) = s(p, "draft") {
+        let d = get_for(server, id, author)?;
+        if !may_see(server, ctx, &d) {
+            return Err(refuse());
+        }
+        return Ok(json!({"draft": d}));
     }
-    Ok(json!({"draft": d}))
+    let (t, _) = target_of(server, ctx, p)?;
+    let d = current(server, &t, author);
+    if let Some(d) = &d
+        && !may_see(server, ctx, d)
+    {
+        return Err(refuse());
+    }
+    let drafts: Vec<Draft> = drafts_of(server, &t, author)
+        .into_iter()
+        .filter(|x| may_see(server, ctx, x))
+        .collect();
+    Ok(json!({"draft": d, "drafts": drafts}))
 }
 
 // ---- prompt -------------------------------------------------------------------------------------
@@ -863,7 +1106,14 @@ fn q(s: &str, max: usize) -> String {
 /// The prompt for a draft. Every page-derived value (url, title, selector, role, name, text,
 /// covered elements) is quoted with [`q`]; only the user's notes are written as they are.
 pub fn prompt(d: &Draft) -> String {
-    let mut head = format!("Browser feedback on {}", q(&d.url, 2048));
+    let mut head = match &d.author {
+        Some(a) => format!(
+            "Browser feedback from {} on {}",
+            a.phrase(),
+            q(&d.url, 2048)
+        ),
+        None => format!("Browser feedback on {}", q(&d.url, 2048)),
+    };
     let mut paren: Vec<String> = d
         .title
         .iter()
@@ -1305,44 +1555,83 @@ pub fn recover(server: &Arc<Server>) {
 }
 
 /// A draft may be (re)sent when it is `open`, `queued` or `unconfirmed` (the user's explicit
-/// choice to send again).
-fn check_sendable(d: &Draft) -> Result<(), RpcError> {
+/// choice to send again). A `held` draft waits for the owner: a reviewer (`for_author`) cannot
+/// send it again; the owner sending it is the same as releasing it.
+fn check_sendable(d: &Draft, for_author: bool) -> Result<(), RpcError> {
     match d.state.as_str() {
         "delivered" => Err(err(ErrorKind::Conflict, "the draft was already delivered")),
         "sending" => Err(err(ErrorKind::Conflict, "the draft is being delivered")),
+        "held" if for_author => Err(err(
+            ErrorKind::Conflict,
+            "the draft was sent and waits for the owner",
+        )),
         _ => Ok(()),
     }
 }
 
-/// `browser.annotations_send {draft, agent?, copy_only?}`.
-async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    let id = req(p, "draft")?;
-    let d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
-    let text = prompt(&d);
-    if b(p, "copy_only") == Some(true) {
-        return Ok(
-            json!({"state": d.state, "via": d.via, "agent_pane": d.agent_pane, "text": text}),
-        );
+/// The pane a draft's target belongs to: the browser pane, the session's home pane, or the
+/// preview's pane.
+fn target_pane(server: &Server, t: &AnnotationTarget) -> Option<String> {
+    match t {
+        AnnotationTarget::Pane(p) => Some(p.clone()),
+        AnnotationTarget::Session(s) => session_pane(server, s),
+        AnnotationTarget::Preview(id) => server.with_core(|c| preview_home(c, id)?.pane),
     }
-    if d.notes.is_empty() && d.page_note.is_none() {
-        return Err(invalid("nothing to send: the draft has no notes"));
+}
+
+/// The preview handle a draft is about (its target, or the preview its session was opened on).
+fn target_preview(server: &Server, t: &AnnotationTarget) -> Option<String> {
+    match t {
+        AnnotationTarget::Preview(id) => server.with_core(|c| {
+            c.model
+                .previews
+                .iter()
+                .find(|x| x.id == *id || x.handle == *id)
+                .map(|x| x.handle.clone())
+        }),
+        AnnotationTarget::Session(s) => server.agent_browser.watch_info(s).and_then(|i| i.preview),
+        AnnotationTarget::Pane(_) => None,
     }
-    check_sendable(&d)?;
-    let mut d = d;
-    // A draft made before its target had a known home (a phone's preview session) gets one now.
+}
+
+/// Fill in the workspace of a draft made before its target had a known home (a phone's preview
+/// session) and pick its recipient: `agent` when given, else the draft's, else the default.
+fn recipient(
+    server: &Server,
+    ctx: &Ctx,
+    d: &Draft,
+    agent: Option<&str>,
+) -> Result<(Option<String>, Option<String>), RpcError> {
     let ws = d
         .workspace
         .clone()
         .or_else(|| target_workspace(server, &d.target));
-    d.workspace = ws.clone();
-    let agent = match s(p, "agent") {
+    let mut probe = d.clone();
+    probe.workspace = ws.clone();
+    let agent = match agent {
         Some(a) => Some(resolve_pane(server, ctx, Some(a))?.id),
-        None => d.agent_pane.clone().or_else(|| default_agent(server, &d)),
+        None => d
+            .agent_pane
+            .clone()
+            .or_else(|| default_agent(server, &probe)),
     };
+    Ok((ws, agent))
+}
+
+/// Queue draft `id` for `agent` (when `check` still passes under the write lock) and deliver
+/// it through the normal path. Returns the send result.
+async fn queue_and_deliver(
+    server: &Arc<Server>,
+    id: &str,
+    ws: Option<String>,
+    agent: Option<String>,
+    check: &(dyn Fn(&Draft) -> Result<(), RpcError> + Sync),
+    text: String,
+) -> R {
     {
         let _w = server.browser.annotate.write.lock().unwrap();
         let mut d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
-        check_sendable(&d)?;
+        check(&d)?;
         if d.workspace.is_none() {
             d.workspace = ws;
         }
@@ -1360,6 +1649,143 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         v["via"] = json!(via);
     }
     Ok(v)
+}
+
+/// `browser.annotations_send {draft, agent?, copy_only?, hold?, author?}`.
+async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value, author: Option<&Author>) -> R {
+    let id = req(p, "draft")?;
+    let d = get_for(server, id, author)?;
+    let text = prompt(&d);
+    if b(p, "copy_only") == Some(true) {
+        return Ok(
+            json!({"state": d.state, "via": d.via, "agent_pane": d.agent_pane, "text": text}),
+        );
+    }
+    if d.notes.is_empty() && d.page_note.is_none() {
+        return Err(invalid("nothing to send: the draft has no notes"));
+    }
+    let for_author = author.is_some();
+    check_sendable(&d, for_author)?;
+    let (ws, agent) = recipient(server, ctx, &d, s(p, "agent"))?;
+    if b(p, "hold") == Some(true) {
+        return hold(server, id, ws, agent, for_author, text);
+    }
+    queue_and_deliver(
+        server,
+        id,
+        ws,
+        agent,
+        &|d: &Draft| check_sendable(d, for_author),
+        text,
+    )
+    .await
+}
+
+/// `annotations_send {hold: true}` (spec 20 §3.3): the draft waits as `held` for the owner, who
+/// gets the event `browser.annotations_held` and a notification.
+fn hold(
+    server: &Arc<Server>,
+    id: &str,
+    ws: Option<String>,
+    agent: Option<String>,
+    for_author: bool,
+    text: String,
+) -> R {
+    let d = {
+        let _w = server.browser.annotate.write.lock().unwrap();
+        let mut d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
+        check_sendable(&d, for_author)?;
+        if d.state == "held" {
+            return Ok(json!({"state": "held", "agent_pane": d.agent_pane, "text": text}));
+        }
+        if d.workspace.is_none() {
+            d.workspace = ws;
+        }
+        d.agent_pane = agent;
+        d.rev += 1;
+        d.state = "held".into();
+        d.via = None;
+        d.detail = None;
+        d.updated_at_ms = now();
+        let preview = target_preview(server, &d.target);
+        let count = d.notes.len() + usize::from(d.page_note.is_some() && d.notes.is_empty());
+        let mut c = server.core.lock().unwrap();
+        let mut tx = Tx::new();
+        tx.m.put(K_ANNOTATION_DRAFT, &d.id, None, &d);
+        tx.event(
+            "browser.annotations_changed",
+            subject(&d),
+            json!({"notes": d.notes.len(), "state": d.state}),
+        );
+        tx.event(
+            "browser.annotations_held",
+            subject(&d),
+            json!({"draft": d.id, "preview": preview, "author": d.author, "count": count}),
+        );
+        server.commit(&mut c, tx).map_err(internal)?;
+        d
+    };
+    notify_held(server, &d);
+    Ok(json!({"state": "held", "agent_pane": d.agent_pane, "text": text}))
+}
+
+/// The owner's notification for a held draft: "3 review notes from @alice on v4".
+fn notify_held(server: &Server, d: &Draft) {
+    let count = d.notes.len().max(1);
+    let who = d
+        .author
+        .as_ref()
+        .map_or_else(|| "a reviewer".to_string(), Author::short);
+    let on = target_preview(server, &d.target).unwrap_or_else(|| one_line(&d.url, 80));
+    let title = format!(
+        "{count} review note{} from {who} on {on}",
+        if count == 1 { "" } else { "s" }
+    );
+    let pane = target_pane(server, &d.target);
+    server.notify(
+        "browser.annotations_held",
+        pane.as_deref(),
+        &title,
+        "Send them to the agent or discard them in the preview's notes.",
+        "normal",
+    );
+}
+
+/// `browser.annotations_release {draft, agent?}` (spec 20 §3.3): deliver a held draft through
+/// the normal path. The owner's only (refused for panes and for calls with `author`).
+async fn release(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+    let id = req(p, "draft")?;
+    let d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
+    let held = |d: &Draft| {
+        if d.state == "held" {
+            Ok(())
+        } else {
+            Err(err(
+                ErrorKind::Conflict,
+                format!("the draft is {}, not held", d.state),
+            ))
+        }
+    };
+    held(&d)?;
+    let (ws, agent) = recipient(server, ctx, &d, s(p, "agent"))?;
+    let text = prompt(&d);
+    queue_and_deliver(server, id, ws, agent, &held, text).await
+}
+
+/// `browser.annotations_discard {draft}` (spec 20 §3.3): delete a held draft and its
+/// screenshots. The owner's only.
+fn discard(server: &Server, p: &Value) -> R {
+    let _w = server.browser.annotate.write.lock().unwrap();
+    let id = req(p, "draft")?;
+    let d = get(server, id).ok_or_else(|| not_found("annotation draft", id))?;
+    if d.state != "held" {
+        return Err(err(
+            ErrorKind::Conflict,
+            format!("the draft is {}, not held", d.state),
+        ));
+    }
+    delete(server, &d)?;
+    Ok(json!({"discarded": true}))
 }
 
 /// Retry queued drafts whenever a run becomes idle (and every 30 s, for a focus that moved
@@ -1703,8 +2129,9 @@ async fn ensure_enabled(server: &Arc<Server>, pane: Option<&str>, picker: &Picke
     }
 }
 
-/// Run a pick and add its note on the owner. Returns `{draft, note}`.
-async fn pick_and_add(server: &Arc<Server>, src: &Source, act: Act) -> R {
+/// Run a pick and add its note on the owner (for `author` when a reviewer picked). Returns
+/// `{draft, note}`.
+async fn pick_and_add(server: &Arc<Server>, src: &Source, act: Act, author: Option<&Author>) -> R {
     let p = src.picker.clone();
     let pick: Option<Pick> = tokio::task::spawn_blocking(move || match act {
         Act::Point(x, y) => p.pick_point(x, y),
@@ -1721,6 +2148,9 @@ async fn pick_and_add(server: &Arc<Server>, src: &Source, act: Act) -> R {
     params["viewport"] = src.viewport.clone();
     if let Some(t) = &src.title {
         params["title"] = json!(t);
+    }
+    if let Some(a) = author {
+        params["author"] = json!(a);
     }
     if let Some(img) = &pick.image {
         use base64::Engine as _;
@@ -1829,7 +2259,7 @@ fn run(server: &Arc<Server>, t: &Arc<Target>, act: Act) {
                 let r = match pane_source(&server, &t).await {
                     Ok(src) => {
                         ensure_enabled(&server, Some(&t.pane), &src.picker).await;
-                        pick_and_add(&server, &src, act).await
+                        pick_and_add(&server, &src, act, None).await
                     }
                     Err(e) => Err(e),
                 };
@@ -1869,7 +2299,7 @@ async fn annotate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         })
         .await;
         let mut v = json!({"on": on});
-        if let Some(d) = open_draft(server, &AnnotationTarget::Session(id)) {
+        if let Some(d) = open_draft(server, &AnnotationTarget::Session(id), None) {
             v["draft"] = json!(d.id);
         }
         return Ok(v);
@@ -1923,10 +2353,10 @@ async fn annotate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 Some(s) => AnnotationTarget::Session(s.to_string()),
                 None => AnnotationTarget::Pane(pane.clone()),
             };
-            current(server, &t).map(|d| d.id)
+            current(server, &t, None).map(|d| d.id)
         }
         Err(_) => pane_target(server, &pane)
-            .and_then(|t| current(server, &t))
+            .and_then(|t| current(server, &t, None))
             .map(|d| d.id),
     };
     if let Some(d) = draft {
@@ -1935,9 +2365,10 @@ async fn annotate(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     Ok(v)
 }
 
-/// `browser.annotation_pick {pane | session, x, y, w?, h?}`: pick without a pointer (phone taps,
-/// tests). Coordinates are page CSS px; with `w` and `h` a region.
-async fn pick_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
+/// `browser.annotation_pick {pane | session, x, y, w?, h?, author?}`: pick without a pointer
+/// (phone taps, tests). Coordinates are page CSS px; with `w` and `h` a region. With `author`
+/// the note goes to that reviewer's draft.
+async fn pick_api(server: &Arc<Server>, ctx: &Ctx, p: &Value, author: Option<&Author>) -> R {
     let x = num(p, "x").ok_or_else(|| invalid("missing param `x`"))?;
     let y = num(p, "y").ok_or_else(|| invalid("missing param `y`"))?;
     let act = match (num(p, "w"), num(p, "h")) {
@@ -1959,7 +2390,7 @@ async fn pick_api(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
     };
     ensure_enabled(server, pane.as_deref(), &src.picker).await;
-    pick_and_add(server, &src, act).await
+    pick_and_add(server, &src, act, author).await
 }
 
 #[cfg(test)]

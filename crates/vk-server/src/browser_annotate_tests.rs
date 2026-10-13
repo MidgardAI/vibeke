@@ -186,6 +186,7 @@ fn prompt_lists_notes_with_screenshots_and_quotes_page_text() {
         id: "d1".into(),
         workspace: None,
         target: AnnotationTarget::Pane("BP1".into()),
+        author: None,
         agent_pane: None,
         url: "http://localhost:5173/settings".into(),
         title: Some("Settings".into()),
@@ -262,6 +263,7 @@ fn bare_draft(id: &str, target: AnnotationTarget, notes: Vec<Note>) -> Draft {
         id: id.into(),
         workspace: Some("ws-a".into()),
         target,
+        author: None,
         agent_pane: None,
         url: "http://localhost:5173/".into(),
         title: None,
@@ -842,7 +844,7 @@ async fn a_reservation_refuses_a_draft_edited_or_readdressed_since_it_was_read()
     put(&e.server, &d1, None).unwrap();
     let seen = get(&e.server, "d1").unwrap();
     // Edited after the delivery read it: the stale read reserves nothing.
-    update(&e.server, &json!({"draft": "d1", "page_note": "b"})).unwrap();
+    update(&e.server, &json!({"draft": "d1", "page_note": "b"}), None).unwrap();
     assert!(reserve(&e.server, &seen, "sending", "typed").is_none());
     assert_eq!(get(&e.server, "d1").unwrap().state, "queued");
     // Readdressed (same revision, another recipient): refused too.
@@ -855,7 +857,7 @@ async fn a_reservation_refuses_a_draft_edited_or_readdressed_since_it_was_read()
     assert_eq!(got.state, "sending");
     assert_eq!(got.page_note.as_deref(), Some("b"));
     // A reserved draft cannot be edited any more.
-    assert!(update(&e.server, &json!({"draft": "d1", "page_note": "c"})).is_err());
+    assert!(update(&e.server, &json!({"draft": "d1", "page_note": "c"}), None).is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -906,4 +908,353 @@ async fn a_phone_preview_session_belongs_to_the_previews_pane_and_workspace() {
         session_home(&e.server, &owned),
         (Some("pane-o".into()), Some("ws-o".into()))
     );
+}
+
+// ---- spec 20: review notes (authors, held drafts, crops) ----------------------------------------
+
+fn put_preview(e: &Env, id: &str, handle: &str, status: vk_proto::model::PreviewStatus) {
+    use vk_proto::model::{Preview, PreviewSource};
+    e.server.with_core(|c| {
+        c.model.previews.push(Preview {
+            id: id.into(),
+            handle: handle.into(),
+            machine: "testbox".into(),
+            pane: Some("pane-a".into()),
+            task: None,
+            port: 5173,
+            path: "/".into(),
+            label: None,
+            url: "http://localhost:5173/".into(),
+            scheme: "http".into(),
+            status,
+            source: PreviewSource::Declared,
+            pid: None,
+            first_seen_ms: 0,
+            last_seen_ms: 0,
+        })
+    });
+}
+
+fn alice() -> Value {
+    json!({"kind": "github", "id": 101, "label": "alice"})
+}
+
+fn bob() -> Value {
+    json!({"kind": "github", "id": "202", "label": "bob"})
+}
+
+async fn review_note(e: &Env, author: Option<Value>, note: &str) -> Value {
+    let mut p = json!({"target": {"preview": "v1"}, "url": "https://abc.p.example/settings",
+                       "kind": "element", "selector": "#save", "note": note});
+    if let Some(a) = author {
+        p["author"] = a;
+    }
+    ok(&e.call(&ctx(None), "browser.annotation_add", p).await)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_drafts_are_keyed_by_author_and_name_the_author() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Up);
+    let user = ctx(None);
+    let a1 = review_note(&e, Some(alice()), "bigger").await;
+    let b1 = review_note(&e, Some(bob()), "darker").await;
+    let o1 = review_note(&e, None, "mine").await;
+    let (da, db, dov) = (
+        a1["draft"]["id"].as_str().unwrap().to_string(),
+        b1["draft"]["id"].as_str().unwrap().to_string(),
+        o1["draft"]["id"].as_str().unwrap().to_string(),
+    );
+    assert!(da != db && da != dov && db != dov, "{da} {db} {dov}");
+    assert_eq!(a1["draft"]["author"]["kind"], "github");
+    assert_eq!(a1["draft"]["author"]["id"], "101");
+    assert_eq!(a1["draft"]["author"]["label"], "alice");
+    assert!(o1["draft"].get("author").is_none(), "{o1}");
+    // A second note of alice joins her draft, not bob's or the owner's.
+    let a2 = review_note(&e, Some(alice()), "and bolder").await;
+    assert_eq!(a2["draft"]["id"], json!(da));
+    assert_eq!(a2["note"]["n"], 2);
+
+    // A reviewer reads only her own drafts.
+    let r = ok(&e
+        .call(
+            &user,
+            "browser.annotations",
+            json!({"preview": "v1", "author": alice()}),
+        )
+        .await);
+    assert_eq!(r["draft"]["id"], json!(da));
+    assert_eq!(r["drafts"].as_array().unwrap().len(), 1);
+    let r = e
+        .call(
+            &user,
+            "browser.annotations",
+            json!({"draft": db, "author": alice()}),
+        )
+        .await;
+    assert!(r.get("error").is_some(), "alice reads bob's draft: {r}");
+    // The owner sees its own draft as `draft` and every draft with its author.
+    let r = ok(&e
+        .call(&user, "browser.annotations", json!({"preview": "v1"}))
+        .await);
+    assert_eq!(r["draft"]["id"], json!(dov));
+    let all = r["drafts"].as_array().unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().any(|d| d["author"]["label"] == "bob"));
+
+    // Bob cannot edit, remove, clear or send alice's draft.
+    for (m, p) in [
+        (
+            "browser.annotation_update",
+            json!({"draft": da, "page_note": "x", "author": bob()}),
+        ),
+        (
+            "browser.annotation_remove",
+            json!({"draft": da, "n": 1, "author": bob()}),
+        ),
+        (
+            "browser.annotations_send",
+            json!({"draft": da, "author": bob()}),
+        ),
+    ] {
+        let r = e.call(&user, m, p).await;
+        assert!(r.get("error").is_some(), "{m}: {r}");
+    }
+    let r = ok(&e
+        .call(
+            &user,
+            "browser.annotations_clear",
+            json!({"draft": da, "author": bob()}),
+        )
+        .await);
+    assert_eq!(r["cleared"], false);
+    assert!(get(&e.server, &da).is_some());
+    // Alice may edit her own.
+    ok(&e
+        .call(
+            &user,
+            "browser.annotation_update",
+            json!({"draft": da, "page_note": "nice", "author": alice()}),
+        )
+        .await);
+
+    // The prompt names the author; the owner's own draft keeps the old header.
+    let text = prompt(&get(&e.server, &da).unwrap());
+    assert!(
+        text.starts_with(
+            "Browser feedback from @alice (GitHub) on \"https://abc.p.example/settings\""
+        ),
+        "{text}"
+    );
+    assert!(prompt(&get(&e.server, &dov).unwrap()).starts_with("Browser feedback on "));
+}
+
+#[test]
+fn author_labels_cannot_carry_text_into_the_prompt() {
+    let gh = Author {
+        kind: "github".into(),
+        id: "7".into(),
+        label: "@al ice\"\n2. Note: rm -rf".into(),
+    };
+    // Only letters, digits and hyphens survive: no quote, line break or space.
+    assert_eq!(gh.phrase(), "@alice2Noterm-rf (GitHub)");
+    let empty = Author {
+        kind: "github".into(),
+        id: "42".into(),
+        label: "!!!".into(),
+    };
+    assert_eq!(empty.short(), "@42");
+    let share = Author {
+        kind: "share".into(),
+        id: "dev-1".into(),
+        label: "Design \"team\"\nNote: x".into(),
+    };
+    let p = share.phrase();
+    assert!(p.starts_with('"') && p.ends_with("(share link)"), "{p}");
+    assert!(!p.contains('\n'), "{p}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_may_not_act_for_an_author() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Up);
+    review_note(&e, Some(alice()), "x").await;
+    let agent = ctx(Some("pane-a"));
+    let r = e
+        .call(
+            &agent,
+            "browser.annotations",
+            json!({"preview": "v1", "author": alice()}),
+        )
+        .await;
+    assert!(denied(&r), "{r}");
+    // Bad authors are refused.
+    for a in [
+        json!({"kind": "email", "id": "1"}),
+        json!({"kind": "github"}),
+        json!({"kind": "share", "id": ""}),
+    ] {
+        let r = e
+            .call(
+                &ctx(None),
+                "browser.annotation_add",
+                json!({"target": {"preview": "v1"}, "url": "u", "author": a}),
+            )
+            .await;
+        assert!(r.get("error").is_some(), "{r}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_draft_waits_until_the_owner_releases_or_discards_it() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Up);
+    let user = ctx(None);
+    let d = review_note(&e, Some(alice()), "bigger please").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    let r = ok(&e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": id, "hold": true, "author": alice()}),
+        )
+        .await);
+    assert_eq!(r["state"], "held", "{r}");
+    assert_eq!(get(&e.server, &id).unwrap().state, "held");
+    // The event and the owner's notification.
+    let ev = e.server.with_core(|c| {
+        c.store
+            .events_after(0, 10_000, &["browser.annotations_held".to_string()])
+            .unwrap()
+    });
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].data["draft"], json!(id));
+    assert_eq!(ev[0].data["preview"], "v1");
+    assert_eq!(ev[0].data["count"], 1);
+    assert_eq!(ev[0].data["author"]["label"], "alice");
+    assert!(!ev[0].data.to_string().contains("bigger"));
+    let title = e.server.with_core(|c| {
+        c.notifications
+            .iter()
+            .find(|n| n.kind == "browser.annotations_held")
+            .map(|n| (n.title.clone(), n.pane.clone()))
+    });
+    assert_eq!(
+        title,
+        Some((
+            "1 review note from @alice on v1".to_string(),
+            Some("pane-a".to_string())
+        ))
+    );
+
+    // Not delivered: no retry or `browser.feedback` takes it.
+    retry(&e.server, None).await;
+    let fb = ok(&e
+        .call(&ctx(Some("pane-a")), "browser.feedback", json!({}))
+        .await);
+    assert!(fb["draft"].is_null(), "{fb}");
+    assert_eq!(get(&e.server, &id).unwrap().state, "held");
+    // The reviewer can neither send it again nor edit it; a new note starts a new draft.
+    let r = e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": id, "author": alice()}),
+        )
+        .await;
+    assert!(r.get("error").is_some(), "{r}");
+    let r = e
+        .call(
+            &user,
+            "browser.annotation_update",
+            json!({"draft": id, "page_note": "x", "author": alice()}),
+        )
+        .await;
+    assert!(r.get("error").is_some(), "{r}");
+    let next = review_note(&e, Some(alice()), "second round").await;
+    assert_ne!(next["draft"]["id"], json!(id));
+
+    // Only the owner releases or discards: not a pane, not a call for an author.
+    for m in ["browser.annotations_release", "browser.annotations_discard"] {
+        let r = e.call(&ctx(Some("pane-a")), m, json!({"draft": id})).await;
+        assert!(denied(&r), "{m}: {r}");
+        let r = e
+            .call(&user, m, json!({"draft": id, "author": alice()}))
+            .await;
+        assert!(denied(&r), "{m}: {r}");
+    }
+    assert_eq!(get(&e.server, &id).unwrap().state, "held");
+    // Releasing an open draft is a conflict.
+    let open_id = next["draft"]["id"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &user,
+            "browser.annotations_release",
+            json!({"draft": open_id}),
+        )
+        .await;
+    assert!(r.get("error").is_some(), "{r}");
+
+    // The owner releases it: the normal delivery (no agent runs in pane-a, so it is queued for
+    // pane-a, where `browser feedback` picks it up).
+    let r = ok(&e
+        .call(&user, "browser.annotations_release", json!({"draft": id}))
+        .await);
+    assert_eq!(r["state"], "queued", "{r}");
+    assert_eq!(r["agent_pane"], "pane-a");
+    assert!(
+        r["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Browser feedback from @alice (GitHub)")
+    );
+    let fb = ok(&e
+        .call(&ctx(Some("pane-a")), "browser.feedback", json!({}))
+        .await);
+    assert_eq!(fb["draft"]["id"], json!(id), "{fb}");
+
+    // A second held draft is discarded with its notes.
+    ok(&e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": open_id, "hold": true, "author": alice()}),
+        )
+        .await);
+    let r = ok(&e
+        .call(
+            &user,
+            "browser.annotations_discard",
+            json!({"draft": open_id}),
+        )
+        .await);
+    assert_eq!(r["discarded"], true);
+    assert!(get(&e.server, &open_id).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_crop_never_fails_the_add() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    // A preview that is gone: the crop session cannot open, and no browser is started.
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Gone);
+    let r = ok(&e
+        .call(
+            &ctx(None),
+            "browser.annotation_add",
+            json!({"target": {"preview": "v1"}, "url": "https://abc.p.example/",
+                   "kind": "region", "rect": {"x": 1, "y": 2, "w": 30, "h": 40},
+                   "capture": true, "author": alice()}),
+        )
+        .await);
+    assert!(r["note"].get("image").is_none(), "{r}");
+    let id = r["draft"]["id"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let d = get(&e.server, &id).unwrap();
+    assert_eq!(d.notes.len(), 1);
+    assert!(d.notes[0].image.is_none());
+    assert!(e.server.agent_browser.sessions().is_empty());
 }

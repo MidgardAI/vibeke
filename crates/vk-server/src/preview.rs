@@ -1069,13 +1069,41 @@ async fn to_machine(
     }
 }
 
+/// `preview.connect {preview}` (spec 20 §3.6): the `{machine, host, port}` form of a declared
+/// preview (id or handle), resolved here so the caller never chooses a host or port. Refused
+/// when the preview is gone or unknown, and when `host`, `port` or `machine` come with it.
+pub(crate) fn connect_target(c: &crate::core::Core, p: &Value) -> Result<Value, RpcError> {
+    let Some(raw) = s(p, "preview") else {
+        return Ok(p.clone());
+    };
+    if ["host", "port", "machine"]
+        .iter()
+        .any(|k| p.get(*k).is_some_and(|v| !v.is_null()))
+    {
+        return Err(invalid(
+            "preview.connect takes either `preview` or `machine`, `host` and `port`",
+        ));
+    }
+    let pv = c
+        .model
+        .previews
+        .iter()
+        .find(|x| x.id == raw || x.handle == raw)
+        .filter(|x| x.status != PreviewStatus::Gone)
+        .ok_or_else(|| not_found("preview", raw))?;
+    Ok(json!({"machine": pv.machine, "host": "localhost", "port": pv.port}))
+}
+
 /// `preview.connect {machine?, host, port}` (06 B3.5): validate the params and open a stream
 /// to a loopback port on the preview machine, with the same route as the SOCKS listener
 /// (`to_machine`). Counts the stream in `preview.status.accepted` once it is open.
+/// `preview.connect {preview}` resolves the machine and port first ([`connect_target`]).
 pub(crate) async fn connect_stream(
     server: &Arc<Server>,
     p: &Value,
 ) -> Result<Box<dyn socks::Stream>, RpcError> {
+    let resolved = server.with_core(|c| connect_target(c, p))?;
+    let p = &resolved;
     let machine = s(p, "machine").unwrap_or_default().to_string();
     let Some(host) = s(p, "host") else {
         return Err(invalid("missing param `host`"));

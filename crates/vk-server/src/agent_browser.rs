@@ -281,6 +281,10 @@ pub struct Session {
     pub mobile: bool,
     /// Which previews this session may reach (`None` = every declared preview of the machine).
     pub scope: Option<PreviewScope>,
+    /// Confined to one preview (spec 20 §3.7, `browser.session_open {preview, confine: true}`):
+    /// the preview's id. Only its port on loopback plus public hosts are reachable, and
+    /// `browser.navigate` accepts only `back`, `forward` and `reload`.
+    pub confine: Option<String>,
     proxy: Mutex<Option<ProxyHandle>>,
     console: Mutex<VecDeque<Value>>,
     network: Mutex<VecDeque<Value>>,
@@ -825,6 +829,60 @@ pub fn current_policy(server: &Server, cfg: &AgentBrowserConfig) -> Policy {
     session_policy(server, cfg, None)
 }
 
+/// The policy of a session: confined to one preview ([`confined_policy`]), else
+/// [`session_policy`].
+pub fn net_policy(
+    server: &Server,
+    cfg: &AgentBrowserConfig,
+    scope: Option<&PreviewScope>,
+    confine: Option<&str>,
+) -> Policy {
+    let Some(preview) = confine else {
+        return session_policy(server, cfg, scope);
+    };
+    let (own, ports) = server.with_core(|c| {
+        let live: Vec<&vk_proto::model::Preview> = c
+            .model
+            .previews
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.status,
+                    PreviewStatus::Declared | PreviewStatus::Up | PreviewStatus::Down
+                )
+            })
+            .collect();
+        (
+            live.iter().find(|p| p.id == preview).map(|p| p.port),
+            live.iter().map(|p| p.port).collect::<Vec<u16>>(),
+        )
+    });
+    confined_policy(own, ports, cfg.external())
+}
+
+/// The policy of a confined session (spec 20 §3.7): loopback reaches only `own` (the preview's
+/// port; `None` when the preview is gone, so nothing on loopback). The machine's other
+/// previews are `foreign_preview`; other loopback and private addresses are refused, and the
+/// `browser_allow_private` rules do not apply. Public hosts follow `external` as for any
+/// session.
+pub fn confined_policy(
+    own: Option<u16>,
+    machine_ports: impl IntoIterator<Item = u16>,
+    external: External,
+) -> Policy {
+    let preview_ports: std::collections::BTreeSet<u16> = own.into_iter().collect();
+    let foreign_ports = machine_ports
+        .into_iter()
+        .filter(|p| !preview_ports.contains(p))
+        .collect();
+    Policy {
+        preview_ports,
+        foreign_ports,
+        allow: Vec::new(),
+        external,
+    }
+}
+
 /// The policy for one session: with a [`PreviewScope`] only that scope's previews are
 /// reachable, the machine's other previews are `foreign_preview`.
 pub fn session_policy(
@@ -906,6 +964,7 @@ fn record_denial(
 async fn fetch_decision(
     server: &Server,
     scope: Option<&PreviewScope>,
+    confine: Option<&str>,
     url: &str,
     resource_type: &str,
     main_frame: bool,
@@ -917,7 +976,7 @@ async fn fetch_decision(
         return Some(Reason::Scheme.as_str());
     };
     let cfg = server.agent_browser.config();
-    let pol = session_policy(server, &cfg, scope);
+    let pol = net_policy(server, &cfg, scope, confine);
     let kind = if main_frame && resource_type == "Document" {
         Kind::Navigation
     } else {
@@ -1060,7 +1119,16 @@ fn on_event(
             let (srv, cdp, sess, sid) =
                 (server.clone(), cdp.clone(), sess.clone(), sid.to_string());
             rt.spawn(async move {
-                match fetch_decision(&srv, sess.scope.as_ref(), &url, &rtype, main).await {
+                match fetch_decision(
+                    &srv,
+                    sess.scope.as_ref(),
+                    sess.confine.as_deref(),
+                    &url,
+                    &rtype,
+                    main,
+                )
+                .await
+                {
                     None => {
                         let _ = cdp.send(
                             Some(&sid),
@@ -1329,13 +1397,11 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     Some(match method {
         "browser.open" | "browser.session_open" => open(server, ctx, p).await,
         "browser.navigate" => match target_session(server, ctx, method, p) {
-            Ok(sess) => {
-                let to = match s(p, "url").or_else(|| s(p, "path")) {
-                    Some(t) => t.to_string(),
-                    None => return Some(Err(invalid("missing param `url`"))),
-                };
-                navigate(server, &sess, &to, p).await
-            }
+            Ok(sess) => match nav_request(sess.confine.is_some(), p) {
+                Ok(NavRequest::Url(to)) => navigate(server, &sess, &to, p).await,
+                Ok(NavRequest::History(action)) => history(server, &sess, &action).await,
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         },
         "browser.click" => with_session(server, ctx, method, p, click).await,
@@ -1474,6 +1540,45 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     })
 }
 
+/// What a `browser.navigate` call asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NavRequest {
+    /// `url` or `path`.
+    Url(String),
+    /// `action`: `back` | `forward` | `reload`.
+    History(String),
+}
+
+/// Read `browser.navigate {url | path | action}`. A confined session (spec 20 §3.7) accepts
+/// only `action: back | forward | reload`.
+pub(crate) fn nav_request(confined: bool, p: &Value) -> Result<NavRequest, RpcError> {
+    if let Some(a) = s(p, "action") {
+        return match a {
+            "back" | "forward" | "reload" => Ok(NavRequest::History(a.to_string())),
+            _ => Err(invalid("`action` is back, forward or reload")),
+        };
+    }
+    if confined {
+        return Err(custom(
+            ErrorKind::PermissionDenied,
+            "confined_session",
+            "this session is confined to its preview: browser.navigate accepts only `action` back, forward or reload",
+            json!({"confined": true}),
+        ));
+    }
+    match s(p, "url").or_else(|| s(p, "path")) {
+        Some(t) => Ok(NavRequest::Url(t.to_string())),
+        None => Err(invalid("missing param `url` (or `action`)")),
+    }
+}
+
+/// `browser.navigate {session, action}`: back, forward or reload in the session's history.
+async fn history(server: &Arc<Server>, sess: &Arc<Session>, action: &str) -> R {
+    let cdp = server.agent_browser.cdp().await?;
+    apply_input(&cdp, sess, &InputStep::History(action.to_string())).await?;
+    Ok(json!({"session": sess.handle, "action": action}))
+}
+
 async fn with_session<F, Fut>(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value, f: F) -> R
 where
     F: FnOnce(Arc<Cdp>, Arc<Session>, Value) -> Fut,
@@ -1507,6 +1612,12 @@ fn scope_for(server: &Server, ctx: &Ctx, cfg: &AgentBrowserConfig) -> Option<Pre
 async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let cfg = server.agent_browser.config();
     let scope = scope_for(server, ctx, &cfg);
+    let confine_wanted = b(p, "confine").unwrap_or(false);
+    if confine_wanted && s(p, "preview").is_none_or(|t| t.contains("://")) {
+        return Err(invalid("`confine` needs `preview` (an id or handle)"));
+    }
+    // A confined session (spec 20 §3.7): the preview's id once it is resolved.
+    let mut confine: Option<String> = None;
     // What to open.
     let mut preview_id = None;
     let url = match (s(p, "preview"), s(p, "url")) {
@@ -1551,6 +1662,9 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
                 }
             }
             preview_id = Some(pv.handle.clone());
+            if confine_wanted {
+                confine = Some(pv.id.clone());
+            }
             Some(preview_url(&pv))
         }
         (Some(u), _) | (None, Some(u)) => Some(u.to_string()),
@@ -1601,7 +1715,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     if let Some(u) = &url
         && let Some(t) = policy::parse_target(u)
     {
-        let pol = session_policy(server, &cfg, scope.as_ref());
+        let pol = net_policy(server, &cfg, scope.as_ref(), confine.as_deref());
         let ips = proxy::resolve_with(&proxy::SystemResolver, &t.host, t.port)
             .await
             .unwrap_or_default();
@@ -1619,8 +1733,14 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     // The session's filtering proxy.
     let srv = server.clone();
     let proxy_scope = scope.clone();
+    let proxy_confine = confine.clone();
     let mut po = ProxyOptions::new(Arc::new(move || {
-        session_policy(&srv, &srv.agent_browser.config(), proxy_scope.as_ref())
+        net_policy(
+            &srv,
+            &srv.agent_browser.config(),
+            proxy_scope.as_ref(),
+            proxy_confine.as_deref(),
+        )
     }));
     if let Some(root) = proc_.pid {
         po.peer_check = Some(Arc::new(move |peer, local| {
@@ -1728,6 +1848,7 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         device: device.map(|d| d.name.to_string()),
         mobile: device.is_some_and(|d| d.mobile),
         scope,
+        confine,
         proxy: Mutex::new(Some(proxy)),
         console: Mutex::default(),
         network: Mutex::default(),
@@ -1834,6 +1955,9 @@ async fn open(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     );
     let mut out = sess.summary(server);
     out["machine"] = json!(server.opts.machine);
+    if sess.confine.is_some() {
+        out["confined"] = json!(true);
+    }
     out["environment"] = environment(server, &proc_);
     out["environment"]["device"] = json!(sess.device);
     out["environment"]["viewport"] =
@@ -1895,7 +2019,7 @@ async fn navigate(server: &Arc<Server>, sess: &Arc<Session>, to: &str, p: &Value
         return Err(destination_denied(&url, Reason::Scheme.as_str()));
     };
     let cfg = server.agent_browser.config();
-    let pol = session_policy(server, &cfg, sess.scope.as_ref());
+    let pol = net_policy(server, &cfg, sess.scope.as_ref(), sess.confine.as_deref());
     let ips = proxy::resolve_with(&proxy::SystemResolver, &t.host, t.port)
         .await
         .unwrap_or_default();
@@ -2670,6 +2794,116 @@ async fn one_shot_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         out[k] = opened[k].clone();
     }
     Ok(out)
+}
+
+/// Where a crop session goes for a note made at `page_url` (spec 20 §3.6): the same path,
+/// query and fragment on the preview's own origin (`base`). A reviewer's page URL is on the
+/// review content origin, never the preview's, so only the path is kept. `None` when
+/// `page_url` is not an http(s) URL.
+pub fn crop_url(base: &str, page_url: &str) -> Option<String> {
+    let page = url::Url::parse(page_url).ok()?;
+    if !matches!(page.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut out = url::Url::parse(base).ok()?;
+    out.set_path(page.path());
+    out.set_query(page.query());
+    out.set_fragment(page.fragment());
+    Some(out.to_string())
+}
+
+/// Padding around an annotation crop, and its largest side (CSS px).
+const CROP_PAD: f64 = 8.0;
+const CROP_MAX: f64 = 4096.0;
+
+/// The clip of an annotation crop: `(x, y, w, h)` padded by [`CROP_PAD`], kept inside the
+/// page (no negative origin) and at most [`CROP_MAX`] on a side. `None` for an empty or
+/// non-finite rectangle.
+pub fn crop_clip(x: f64, y: f64, w: f64, h: f64) -> Option<(f64, f64, f64, f64)> {
+    if ![x, y, w, h].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let x0 = (x - CROP_PAD).max(0.0);
+    let y0 = (y - CROP_PAD).max(0.0);
+    let w = (x + w + CROP_PAD - x0).clamp(1.0, CROP_MAX);
+    let h = (y + h + CROP_PAD - y0).clamp(1.0, CROP_MAX);
+    Some((x0, y0, w, h))
+}
+
+/// What to crop for an annotation note (spec 20 §3.6).
+#[derive(Debug, Clone, Default)]
+pub struct CropRequest {
+    /// The preview (id or handle) the note was made on.
+    pub preview: String,
+    /// The page the note was made on (any origin; only its path is used, [`crop_url`]).
+    pub url: String,
+    pub viewport: Option<(u32, u32)>,
+    pub dpr: Option<f64>,
+    pub selector: Option<String>,
+    /// `(x, y, w, h)` in page CSS px, used when there is no selector or it is not found.
+    pub rect: Option<(f64, f64, f64, f64)>,
+}
+
+/// Render a PNG crop of a note's element or area in a fresh confined session on its preview
+/// (spec 20 §3.6, §3.7), then close the session. Best effort: any failure is an error the
+/// caller may ignore.
+pub async fn capture_crop(server: &Arc<Server>, req: &CropRequest) -> Result<Vec<u8>, RpcError> {
+    use base64::Engine as _;
+    let ctx = crate::drafts::user_ctx();
+    let mut p = json!({"preview": req.preview, "confine": true, "wait": "load"});
+    if let Some((w, h)) = req.viewport.filter(|(w, h)| *w > 0 && *h > 0) {
+        p["viewport"] = json!({"width": w, "height": h});
+    }
+    if let Some(d) = req.dpr.filter(|d| (0.5..=8.0).contains(d)) {
+        p["dpr"] = json!(d);
+    }
+    let opened = open(server, &ctx, &p).await?;
+    let handle = opened["session"].as_str().unwrap_or("").to_string();
+    let sess = server
+        .agent_browser
+        .session(&handle)
+        .ok_or_else(|| not_found("browser_session", &handle))?;
+    let shot = async {
+        let base = sess.url.lock().unwrap().clone();
+        if let Some(u) = crop_url(&base, &req.url)
+            && u != base
+        {
+            navigate(server, &sess, &u, &json!({})).await?;
+        }
+        let cdp = server.agent_browser.cdp().await?;
+        let mut clip = None;
+        if let Some(sel) = &req.selector
+            && let Ok(el) = locate(&cdp, &sess, sel, Duration::from_secs(3)).await
+        {
+            let (w, h) = (
+                el["width"].as_f64().unwrap_or(0.0),
+                el["height"].as_f64().unwrap_or(0.0),
+            );
+            clip = crop_clip(
+                el["x"].as_f64().unwrap_or(0.0) - w / 2.0,
+                el["y"].as_f64().unwrap_or(0.0) - h / 2.0,
+                w,
+                h,
+            );
+        }
+        let (x, y, w, h) = clip
+            .or_else(|| req.rect.and_then(|(x, y, w, h)| crop_clip(x, y, w, h)))
+            .ok_or_else(|| invalid("nothing to crop: no element found and no rectangle"))?;
+        let r = call_timeout(
+            &cdp,
+            Some(&sess.cdp_session),
+            "Page.captureScreenshot",
+            json!({"format": "png", "clip": {"x": x, "y": y, "width": w, "height": h, "scale": 1}}),
+            Duration::from_secs(30),
+        )
+        .await?;
+        base64::engine::general_purpose::STANDARD
+            .decode(r["data"].as_str().unwrap_or(""))
+            .map_err(|e| err(ErrorKind::Internal, format!("screenshot data: {e}")))
+    }
+    .await;
+    close_session(server, &sess, "annotation_crop").await;
+    shot
 }
 
 async fn snapshot(cdp: Arc<Cdp>, sess: Arc<Session>, p: Value) -> R {

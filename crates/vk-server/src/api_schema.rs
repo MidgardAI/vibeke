@@ -491,7 +491,7 @@ Task = {id: string, handle: string, title: string, slug: string, workspace: stri
 Preview = {id: string, handle: string, machine: string, pane: string|null, task: string|null, port: int, path: string, label: string|null, url: string, scheme: string, status: suggested|declared|up|down|gone, source: declared|listener|output_url|banner, pid: int|null, first_seen_ms: int, last_seen_ms: int, pane_handle?: string|null, task_handle?: string|null}
 PreviewCa = {path: string, sha256: string, spki_sha256: string, trust: string}
 PreviewMirror = {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user}
-BrowserSession = {session: string, session_id: string, owner: {pane: string, pane_handle: string|null, run: string|null} | {user: string}, preview: string|null, url: string, created_ms: int, viewport: {width: int, height: int}, device: string|null, previews: own|machine, human_control: bool, screencast: bool, proxy_port: int|null, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device: string|null, viewport: {width: int, height: int}, dpr: number}, status?: int|null, final_url?: string, title?: string}
+BrowserSession = {session: string, session_id: string, owner: {pane: string, pane_handle: string|null, run: string|null} | {user: string}, preview: string|null, url: string, created_ms: int, viewport: {width: int, height: int}, device: string|null, previews: own|machine, human_control: bool, screencast: bool, proxy_port: int|null, machine: string, environment: {kind: string, machine: string, runner: string, browser: any, fresh_context: bool, device: string|null, viewport: {width: int, height: int}, dpr: number}, status?: int|null, final_url?: string, title?: string, confined?: bool}
 Appearance = {known: bool, dark: bool, mode: string, theme: string, source: string}
 PaneLive = {pane: string, progress: {state: normal|error|indeterminate|paused, pct: int|null}|null, last_exit: {code: int, at_ms: int}|null, user_vars: [[string]]}
 LayoutSpec = object
@@ -511,7 +511,9 @@ TaskPorts = {task: string, handle: string, lease: {start: int, end: int, count: 
 AnnotationTarget = {pane: string} | {session: string} | {preview: string}
 AnnotationRect = {x: number, y: number, w: number, h: number}
 AnnotationNote = {n: int, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image?: string, note: string}
-AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|queued|sending|delivered|unconfirmed, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
+AnnotationAuthor = {kind: github|share, id: string, label: string}
+AnnotationAuthorParam = {kind: github|share, id: string|int, label?: string}
+AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, author?: AnnotationAuthor, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|held|queued|sending|delivered|unconfirmed, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
@@ -733,7 +735,8 @@ preview.status :: {} => {socks_port: int|null, browsers: [{profile: string, mach
 # full scope only
 preview.mirror :: {preview: Target, machine?: string} => {machine: string, preview: string, preview_handle: string, local_port: int, addrs: [string], since_ms: int, accepted: int, rejected: int, authenticated: bool, peer_check: same_user, warning: string, url?: string, already?: bool}
 # full scope, user clients only (the gateway's `tunnel.*`); after the result the connection carries raw bytes (06 B3.5)
-preview.connect :: {machine?: string, host: string, port: int} => {connected: bool}
+# {preview} (id or handle): the server resolves the machine and port; refused when the preview is gone
+preview.connect :: {machine?: string, host: string, port: int} | {preview: string} => {connected: bool}
 # full scope only
 preview.unmirror :: {preview?: Target|int, port?: int, machine?: string} => {local_port: int, machine: string, preview: string}
 
@@ -784,9 +787,11 @@ draft.reconcile :: {draft: Target} => {send: object, receipt: object, may_retry:
 
 # --- browser (06 B) ---
 browser.list :: {} => {sessions: [object], browser: object, machine: string}
-browser.session_open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int} => BrowserSession
+# confine (needs preview; spec 20 §3.7): the session reaches only that preview's port on loopback plus public hosts, and browser.navigate takes only `action`; the result then has confined: true
+browser.session_open :: {url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int, confine?: bool} => BrowserSession
 browser.session_close :: {session?: string, browser_session?: string, target?: string} => {session: string, closed: bool}
-browser.navigate :: {session?: string, browser_session?: string, target?: string, url?: string, path?: string, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000} => {session: string, status: int|null, final_url: string, title: string}
+# `action` moves in the session's history instead of loading a URL; a confined session accepts only `action`
+browser.navigate :: {session?: string, browser_session?: string, target?: string, url?: string, path?: string, action?: back|forward|reload, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000} => {session: string, status: int|null, final_url: string, title: string} | {session: string, action: back|forward|reload}
 browser.click :: {session?: string, browser_session?: string, target?: string, selector?: string, text?: string, x?: number, y?: number, click_count?: int = 1, timeout_ms?: int = 5000} => {session: string, x: number, y: number, element: {x: number, y: number, width: number, height: number, tag: string, text: string}|null}
 browser.type :: {session?: string, browser_session?: string, target?: string, text: string, selector?: string, clear?: bool, submit?: bool, timeout_ms?: int} => {session: string, typed: int}
 browser.press :: {session?: string, browser_session?: string, target?: string, key: string} => {session: string, key: string}
@@ -824,15 +829,23 @@ browser.pane.console_push :: {pane: Target, entries: [object]} => {pane: string,
 # on the media host (the pane's renderer): pointer input of the pane picks instead of reaching the page while on
 browser.annotate :: {pane?: Target, session?: string, on?: bool = true} => {on: bool, draft?: string}
 # pick at a page CSS point, or a region with w and h, without a pointer
-browser.annotation_pick :: {pane?: Target, session?: string, x: number, y: number, w?: number, h?: number} => {draft: AnnotationDraft, note: AnnotationNote}
+# author (not from panes): the gateway picks for a reviewer; the note goes to that reviewer's draft
+browser.annotation_pick :: {pane?: Target, session?: string, x: number, y: number, w?: number, h?: number, author?: AnnotationAuthorParam} => {draft: AnnotationDraft, note: AnnotationNote}
 # on the target's owner; media hosts and the desktop app add picks with it
-browser.annotation_add :: {target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string} => {draft: AnnotationDraft, note: AnnotationNote}
-browser.annotation_update :: {draft: string, n?: int, note?: string, page_note?: string} => {draft: AnnotationDraft}
-browser.annotation_remove :: {draft: string, n: int} => {draft: AnnotationDraft}
-browser.annotations_clear :: {draft: string} => {cleared: bool}
-browser.annotations :: {pane?: Target, session?: string, preview?: string, draft?: string} => {draft: AnnotationDraft|null}
-# copy_only returns the prompt and changes nothing (state is then the draft's own)
-browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool} => {state: delivered|sending|unconfirmed|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+# drafts are keyed by target and author (spec 20 §3.4): author (not from panes) adds to that reviewer's draft; capture with no image_b64 renders a crop on the preview in the background, best effort
+browser.annotation_add :: {target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string, author?: AnnotationAuthorParam, capture?: bool} => {draft: AnnotationDraft, note: AnnotationNote}
+# with author, only that reviewer's drafts (others are not found)
+browser.annotation_update :: {draft: string, n?: int, note?: string, page_note?: string, author?: AnnotationAuthorParam} => {draft: AnnotationDraft}
+browser.annotation_remove :: {draft: string, n: int, author?: AnnotationAuthorParam} => {draft: AnnotationDraft}
+browser.annotations_clear :: {draft: string, author?: AnnotationAuthorParam} => {cleared: bool}
+# by target: draft is the caller's current draft (the owner's own, or author's); drafts lists every draft of the target (only author's with author)
+browser.annotations :: {pane?: Target, session?: string, preview?: string, draft?: string, author?: AnnotationAuthorParam} => {draft: AnnotationDraft|null, drafts?: [AnnotationDraft]}
+# copy_only returns the prompt and changes nothing (state is then the draft's own); hold parks the draft as held for the owner (spec 20 §3.3)
+browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool, hold?: bool, author?: AnnotationAuthorParam} => {state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+# the owner delivers a held draft through the normal path (refused for panes and for calls with author)
+browser.annotations_release :: {draft: string, agent?: Target} => {state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+# the owner deletes a held draft and its screenshots (refused for panes and for calls with author)
+browser.annotations_discard :: {draft: string} => {discarded: bool}
 # the agent side: the oldest queued draft for the caller's pane (or a pane it created); wait is seconds
 browser.feedback :: {pane?: Target, wait_ms?: int = 0, wait?: int} => {draft: AnnotationDraft|null, text?: string}
 browser.pane.annotations :: {pane?: Target, open?: bool, focus?: bool = true} => {open: bool, split?: string}
@@ -1259,6 +1272,7 @@ browser.navigated :: {pane: string, tab?: string, workspace?: string} => {url: s
 browser.viewport_changed :: {pane: string, tab?: string, workspace?: string} => {device: string|null, viewport: any}
 browser.annotations_changed :: {draft: string, pane?: string} => {notes: int, state: string}
 browser.annotations_sent :: {draft: string, pane?: string} => {via: string, agent_pane: string|null, notes: int}
+browser.annotations_held :: {draft: string, pane?: string} => {draft: string, preview: string|null, author: AnnotationAuthor|null, count: int}
 notification.created :: {pane: string|null} => {id: string, kind: string, title: string, body: string, urgency: string}
 notes.updated :: {workspace: string} => {rev: int, bytes: int}
 draft.created :: {draft?: string} => any

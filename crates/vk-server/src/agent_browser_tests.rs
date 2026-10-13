@@ -1198,6 +1198,7 @@ async fn sessions_reach_only_their_own_previews() {
         fetch_decision(
             &e.server,
             sess.scope.as_ref(),
+            sess.confine.as_deref(),
             "http://127.0.0.1:6000/a.js",
             "Script",
             false
@@ -1209,6 +1210,7 @@ async fn sessions_reach_only_their_own_previews() {
         fetch_decision(
             &e.server,
             sess.scope.as_ref(),
+            sess.confine.as_deref(),
             "http://127.0.0.1:5173/a.js",
             "Script",
             false
@@ -1370,6 +1372,7 @@ async fn redeclaring_a_foreign_preview_does_not_take_it_over() {
         fetch_decision(
             &e.server,
             sess.scope.as_ref(),
+            sess.confine.as_deref(),
             "http://127.0.0.1:6000/a.js",
             "Script",
             false
@@ -1935,4 +1938,332 @@ async fn screencast_frame_long_poll_returns_when_a_frame_arrives() {
         .unwrap();
     assert_eq!(r["seq"], 1);
     assert!(r["data_b64"].is_string());
+}
+
+// ---- spec 20 §3.7: confined sessions -------------------------------------------------------------
+
+#[test]
+fn confined_policy_reaches_only_its_preview_port_and_public_hosts() {
+    use std::net::IpAddr;
+    let ip = |s: &str| -> IpAddr { s.parse().unwrap() };
+    let pol = confined_policy(Some(5173), [5173, 6000, 6100], External::Subresources);
+    let sub =
+        |host: &str, addr: &str, port: u16| pol.decide(host, port, &[ip(addr)], Kind::Subresource);
+    // The preview's own port on loopback.
+    assert!(sub("localhost", "127.0.0.1", 5173).allow);
+    assert!(sub("localhost", "::1", 5173).allow);
+    // Other previews of the machine: foreign_preview.
+    let d = sub("localhost", "127.0.0.1", 6000);
+    assert!(!d.allow);
+    assert_eq!(d.reason.as_str(), "foreign_preview");
+    // Other loopback ports and private addresses.
+    assert_eq!(
+        sub("localhost", "127.0.0.1", 5432).reason.as_str(),
+        "loopback_port_not_a_preview"
+    );
+    assert!(!sub("db", "10.0.0.5", 5173).allow);
+    assert!(!sub("router", "192.168.1.1", 80).allow);
+    assert!(!sub("meta", "169.254.169.254", 80).allow);
+    // Public hosts as for any session (subresources yes, top-level navigation no).
+    assert!(sub("cdn.example", "93.184.216.34", 443).allow);
+    assert!(
+        !pol.decide("example.com", 443, &[ip("93.184.216.34")], Kind::Navigation)
+            .allow
+    );
+    // `browser_allow_private` rules never apply to a confined session.
+    assert!(pol.allow.is_empty());
+    // A preview that is gone: nothing on loopback.
+    let gone = confined_policy(None, [6000], External::Allow);
+    assert!(gone.preview_ports.is_empty());
+    assert!(
+        !gone
+            .decide("localhost", 5173, &[ip("127.0.0.1")], Kind::Subresource)
+            .allow
+    );
+}
+
+#[test]
+fn confined_sessions_navigate_only_back_forward_and_reload() {
+    for a in ["back", "forward", "reload"] {
+        assert_eq!(
+            nav_request(true, &json!({"session": "b1", "action": a})).unwrap(),
+            NavRequest::History(a.into())
+        );
+    }
+    let e = nav_request(
+        true,
+        &json!({"session": "b1", "url": "http://localhost:5173/x"}),
+    )
+    .unwrap_err();
+    assert_eq!(kind(&e), "confined_session");
+    assert!(nav_request(true, &json!({"path": "/x"})).is_err());
+    assert!(nav_request(true, &json!({"action": "stop"})).is_err());
+    // Unconfined sessions keep URL navigation and gain the history actions.
+    assert_eq!(
+        nav_request(false, &json!({"url": "http://localhost:5173/x"})).unwrap(),
+        NavRequest::Url("http://localhost:5173/x".into())
+    );
+    assert_eq!(
+        nav_request(false, &json!({"path": "/y"})).unwrap(),
+        NavRequest::Url("/y".into())
+    );
+    assert!(nav_request(false, &json!({})).is_err());
+}
+
+#[test]
+fn crop_urls_keep_the_path_on_the_previews_origin() {
+    assert_eq!(
+        crop_url(
+            "http://localhost:5173/",
+            "https://abc.p.example/settings?tab=2#top"
+        )
+        .as_deref(),
+        Some("http://localhost:5173/settings?tab=2#top")
+    );
+    assert_eq!(
+        crop_url("http://localhost:5173/", "http://localhost:5173/").as_deref(),
+        Some("http://localhost:5173/")
+    );
+    assert_eq!(
+        crop_url("http://localhost:5173/", "file:///etc/passwd"),
+        None
+    );
+    assert_eq!(crop_url("http://localhost:5173/", "not a url"), None);
+    // Clips are padded, never start off the page and stay bounded.
+    assert_eq!(
+        crop_clip(10.0, 20.0, 30.0, 40.0),
+        Some((2.0, 12.0, 46.0, 56.0))
+    );
+    assert_eq!(
+        crop_clip(0.0, 3.0, 10.0, 10.0),
+        Some((0.0, 0.0, 18.0, 21.0))
+    );
+    assert_eq!(crop_clip(0.0, 0.0, 99_999.0, 5.0).unwrap().2, 4096.0);
+    assert_eq!(crop_clip(0.0, 0.0, 0.0, 5.0), None);
+    assert_eq!(crop_clip(f64::NAN, 0.0, 5.0, 5.0), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_session_reaches_only_its_preview() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let e = Env::new();
+    e.put_preview("v2", 6000);
+    let user = ctx_full();
+    // `confine` needs a preview.
+    let err = e
+        .call(
+            &user,
+            "browser.session_open",
+            json!({"url": "http://localhost:5173/", "confine": true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "invalid_params");
+    let r = e
+        .call(
+            &user,
+            "browser.session_open",
+            json!({"preview": "v1", "confine": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["confined"], true);
+    let h = r["session"].as_str().unwrap().to_string();
+    let sess = e.server.agent_browser.session(&h).unwrap();
+    assert!(sess.confine.is_some());
+    // An unconfined session says nothing.
+    let plain = e
+        .call(&user, "browser.session_open", json!({"preview": "v1"}))
+        .await
+        .unwrap();
+    assert!(plain.get("confined").is_none(), "{plain}");
+
+    // URL navigation is refused, even to the preview itself; history actions work.
+    let err = e
+        .call(
+            &user,
+            "browser.navigate",
+            json!({"session": h, "url": "http://localhost:5173/x"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&err), "confined_session");
+    let r = e
+        .call(
+            &user,
+            "browser.navigate",
+            json!({"session": h, "action": "reload"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r["action"], "reload");
+    assert_eq!(e.fake().calls_of("Page.reload").len(), 1);
+
+    // The Fetch layer: another preview and other loopback ports are refused.
+    let fd = |url: &'static str| {
+        let (srv, sess) = (e.server.clone(), sess.clone());
+        async move {
+            fetch_decision(
+                &srv,
+                sess.scope.as_ref(),
+                sess.confine.as_deref(),
+                url,
+                "Script",
+                false,
+            )
+            .await
+        }
+    };
+    assert_eq!(fd("http://127.0.0.1:5173/a.js").await, None);
+    assert_eq!(
+        fd("http://127.0.0.1:6000/a.js").await,
+        Some("foreign_preview")
+    );
+    assert_eq!(
+        fd("http://127.0.0.1:5432/a.js").await,
+        Some("loopback_port_not_a_preview")
+    );
+    // A full-scope unconfined session still reaches every preview of the machine.
+    let other = e.server.agent_browser.session("b2").unwrap();
+    assert_eq!(
+        fetch_decision(
+            &e.server,
+            other.scope.as_ref(),
+            other.confine.as_deref(),
+            "http://127.0.0.1:6000/a.js",
+            "Script",
+            false
+        )
+        .await,
+        None
+    );
+
+    // The session's filtering proxy says the same.
+    let proxy_port = r_proxy_port(&e, &h);
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .unwrap();
+    sock.write_all(b"GET http://127.0.0.1:6000/ HTTP/1.1\r\nHost: 127.0.0.1:6000\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = sock.read(&mut buf).await.unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+    assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+    assert!(head.contains("foreign_preview"), "{head}");
+}
+
+fn r_proxy_port(e: &Env, handle: &str) -> u16 {
+    let sess = e.server.agent_browser.session(handle).unwrap();
+    sess.summary(&e.server)["proxy_port"].as_u64().unwrap() as u16
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn annotation_crops_render_in_a_confined_session_that_closes() {
+    let e = Env::new();
+    let png = capture_crop(
+        &e.server,
+        &CropRequest {
+            preview: "v1".into(),
+            url: "https://abc.p.example/settings?tab=2".into(),
+            viewport: Some((390, 844)),
+            dpr: Some(2.0),
+            selector: None,
+            rect: Some((10.0, 20.0, 30.0, 40.0)),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(png, vk_browser::fake::PNG_1X1);
+    let f = e.fake();
+    let navs: Vec<String> = f
+        .calls_of("Page.navigate")
+        .iter()
+        .map(|c| c.1["url"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(
+        navs,
+        vec![
+            "http://localhost:5173/".to_string(),
+            "http://localhost:5173/settings?tab=2".to_string()
+        ]
+    );
+    let shot = f.calls_of("Page.captureScreenshot");
+    assert_eq!(shot.len(), 1);
+    assert_eq!(
+        shot[0].1["clip"],
+        json!({"x": 2.0, "y": 12.0, "width": 46.0, "height": 56.0, "scale": 1})
+    );
+    // The crop session is gone again, and it was not recorded as a screenshot.
+    assert!(
+        e.server.agent_browser.sessions().is_empty() || {
+            e.server
+                .agent_browser
+                .sessions()
+                .iter()
+                .all(|s| s.closed.load(Ordering::SeqCst))
+        }
+    );
+    assert!(e.events("browser.screenshot").is_empty());
+    // A gone preview is not cropped.
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut() {
+            p.status = PreviewStatus::Gone;
+        }
+    });
+    assert!(
+        capture_crop(
+            &e.server,
+            &CropRequest {
+                preview: "v1".into(),
+                url: "http://localhost:5173/".into(),
+                rect: Some((0.0, 0.0, 5.0, 5.0)),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[test]
+fn preview_connect_resolves_a_preview_server_side() {
+    let e = Env::new();
+    let t = e
+        .server
+        .with_core(|c| crate::preview::connect_target(c, &json!({"preview": "v1"})))
+        .unwrap();
+    assert_eq!(
+        t,
+        json!({"machine": "testbox", "host": "localhost", "port": 5173})
+    );
+    // The old form passes through unchanged.
+    let p = json!({"host": "127.0.0.1", "port": 80});
+    assert_eq!(
+        e.server
+            .with_core(|c| crate::preview::connect_target(c, &p))
+            .unwrap(),
+        p
+    );
+    // Not both forms at once; unknown and gone previews are refused.
+    assert!(
+        e.server
+            .with_core(|c| crate::preview::connect_target(c, &json!({"preview": "v1", "port": 22})))
+            .is_err()
+    );
+    assert!(
+        e.server
+            .with_core(|c| crate::preview::connect_target(c, &json!({"preview": "v9"})))
+            .is_err()
+    );
+    e.server.with_core(|c| {
+        for p in c.model.previews.iter_mut() {
+            p.status = PreviewStatus::Gone;
+        }
+    });
+    let gone = e
+        .server
+        .with_core(|c| crate::preview::connect_target(c, &json!({"preview": "v1"})))
+        .unwrap_err();
+    assert_eq!(gone.data.kind, "not_found");
 }
