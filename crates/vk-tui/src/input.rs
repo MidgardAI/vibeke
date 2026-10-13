@@ -514,6 +514,21 @@ impl Decoder {
         self.held = false;
         let mut out = Vec::new();
         let mut i = 0;
+        if self.query_escape_expired
+            && self.buf.len() >= 3
+            && !matches!(
+                self.buf.as_slice(),
+                [ESC, b'[', b'?', ..] | [ESC, b']', b'1', ..]
+            )
+            && !PASTE_START.starts_with(&self.buf)
+            && !self.buf.starts_with(PASTE_START)
+        {
+            // Appearance replies (OSC 11, CSI 997 and DA1) and bracketed paste
+            // framing may continue an ESC held past its key deadline. Parse other
+            // bytes as separate keys, even when the introducer arrived earlier.
+            out.push(named(NamedKey::Escape, Mods::empty(), KeyKind::Press));
+            i = 1;
+        }
         while i < self.buf.len() {
             if let Some(p) = self.paste.as_mut() {
                 // Inside a bracketed paste: everything up to `ESC [ 201 ~` is text.
@@ -732,6 +747,7 @@ fn tail_step(t: Tail, b: &[u8]) -> TailStep {
     }
 }
 
+const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// One input at the start of `b`.
@@ -1798,17 +1814,67 @@ mod appearance_tests {
     }
 
     #[test]
+    fn expired_escape_splits_bytes_outside_reply_and_paste_prefixes() {
+        for bytes in [&b"[A"[..], b"]x", b"[2x", b"[200x"] {
+            for split in 0..bytes.len() {
+                let mut dec = Decoder::new();
+                dec.capture_appearance = true;
+                assert!(dec.feed(b"\x1b").is_empty());
+                let got = if split > 0 {
+                    assert!(
+                        dec.feed_after_wait(&bytes[..split], Duration::from_millis(80), true)
+                            .is_empty()
+                    );
+                    // The original ESC deadline still applies after the query ends.
+                    dec.feed_after_wait(&bytes[split..], Duration::from_millis(100), false)
+                } else {
+                    dec.feed_after_wait(bytes, Duration::from_millis(80), true)
+                };
+                let mut expected = vec![named(NamedKey::Escape, Mods::empty(), KeyKind::Press)];
+                expected.extend(bytes.iter().map(|b| {
+                    let mods = if b.is_ascii_uppercase() {
+                        Mods::SHIFT
+                    } else {
+                        Mods::empty()
+                    };
+                    Input::Key(key(Key::Char(*b as char), mods))
+                }));
+                assert_eq!(got, expected, "{bytes:?}, split {split}");
+                assert_eq!(dec.wait(), None);
+                assert!(dec.flush().is_empty());
+                assert_eq!(
+                    dec.feed(b"z"),
+                    [Input::Key(key(Key::Char('z'), Mods::empty()))]
+                );
+            }
+        }
+        // Normal escape sequences arriving within the key deadline are unchanged.
+        let mut dec = Decoder::new();
+        dec.feed(b"\x1b");
+        assert_eq!(
+            dec.feed_after_wait(b"[A", Duration::from_millis(20), true),
+            [named(NamedKey::Up, Mods::empty(), KeyKind::Press)]
+        );
+    }
+
+    #[test]
     fn delayed_reply_introducers_and_paste_are_not_escape_keys() {
         for reply in [&b"\x1b]11;rgb:0/0/0\x07"[..], b"\x1b[?997;1n"] {
-            let mut dec = Decoder::new();
-            dec.capture_appearance = true;
-            dec.feed(&reply[..1]);
-            assert!(
-                dec.feed_after_wait(&reply[1..2], Duration::from_millis(80), true)
-                    .is_empty()
-            );
-            let got = dec.feed_after_wait(&reply[2..], Duration::from_millis(100), true);
-            assert!(matches!(got.as_slice(), [Input::Appearance(_)]));
+            for split_introducer in [false, true] {
+                let mut dec = Decoder::new();
+                dec.capture_appearance = true;
+                dec.feed(&reply[..1]);
+                let got = if split_introducer {
+                    assert!(
+                        dec.feed_after_wait(&reply[1..2], Duration::from_millis(80), true)
+                            .is_empty()
+                    );
+                    dec.feed_after_wait(&reply[2..], Duration::from_millis(100), false)
+                } else {
+                    dec.feed_after_wait(&reply[1..], Duration::from_millis(80), true)
+                };
+                assert!(matches!(got.as_slice(), [Input::Appearance(_)]));
+            }
         }
         let mut dec = Decoder::new();
         dec.capture_appearance = true;
@@ -1827,6 +1893,20 @@ mod appearance_tests {
             ),
             [Input::Event(Event::Paste("split paste".into()))]
         );
+        let paste = b"\x1b[200~split paste\x1b[201~";
+        for split in 2..PASTE_START.len() {
+            let mut dec = Decoder::new();
+            dec.feed(&paste[..1]);
+            assert!(
+                dec.feed_after_wait(&paste[1..split], Duration::from_millis(80), true)
+                    .is_empty()
+            );
+            assert_eq!(
+                dec.feed_after_wait(&paste[split..], Duration::from_millis(100), false),
+                [Input::Event(Event::Paste("split paste".into()))],
+                "split {split}"
+            );
+        }
     }
 
     #[test]
