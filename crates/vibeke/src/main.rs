@@ -254,6 +254,13 @@ fn main() {
             std::process::exit(EXIT_USAGE);
         }
     };
+    // Isolated native TUI probe: parse --json globally, then fork its PTY before starting
+    // any runtime threads. This command always uses its own server and configuration.
+    if args.first().map(String::as_str) == Some("debug")
+        && args.get(1).map(String::as_str) == Some("tui-latency")
+    {
+        std::process::exit(idle::tui_latency(&args[2..], g.json.unwrap_or(false)));
+    }
     if let Err(e) = export_config_overrides() {
         eprintln!("{e}");
         std::process::exit(EXIT_USAGE);

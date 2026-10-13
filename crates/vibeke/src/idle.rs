@@ -16,6 +16,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use vk_term::Engine;
 
+#[path = "tui_latency.rs"]
+mod latency;
+pub use latency::run as tui_latency;
+
 #[derive(Clone, Copy, Default, Debug)]
 struct Sample {
     cpu_s: f64,
@@ -142,21 +146,34 @@ struct Env {
 }
 
 impl Env {
+    fn vars(&self) -> Vec<(String, String)> {
+        std::env::vars()
+            .filter(|(key, _)| !key.starts_with("VIBEKE"))
+            .chain([
+                ("TERM".into(), "xterm-256color".into()),
+                (
+                    "VIBEKE_RUNTIME_DIR".into(),
+                    self.dir.join("run").to_string_lossy().into_owned(),
+                ),
+                (
+                    "VIBEKE_STATE_DIR".into(),
+                    self.dir.join("state").to_string_lossy().into_owned(),
+                ),
+                (
+                    "VIBEKE_CONFIG".into(),
+                    self.dir.join("config.toml").to_string_lossy().into_owned(),
+                ),
+                ("VIBEKE_NO_OPEN".into(), "1".into()),
+            ])
+            .collect()
+    }
+
     fn cmd(&self, args: &[&str]) -> Command {
         let mut c = Command::new(&self.exe);
-        c.env("VIBEKE_RUNTIME_DIR", self.dir.join("run"))
-            .env("VIBEKE_STATE_DIR", self.dir.join("state"))
-            .env("VIBEKE_CONFIG", self.dir.join("config.toml"))
-            .env("VIBEKE_NO_OPEN", "1");
-        for k in [
-            "VIBEKE",
-            "VIBEKE_SOCKET",
-            "VIBEKE_SESSION",
-            "VIBEKE_PANE_TOKEN",
-        ] {
-            c.env_remove(k);
-        }
-        c.arg("--json")
+        c.env_clear()
+            .envs(self.vars())
+            .current_dir(&self.dir)
+            .arg("--json")
             .args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::null());
@@ -348,25 +365,7 @@ pub fn idle(args: &[String]) -> i32 {
     }
 
     // Phase B: headless TUI attached (it answers terminal queries like a host would).
-    let d = &run.env.dir;
-    let envv: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| !k.starts_with("VIBEKE"))
-        .chain([
-            ("TERM".into(), "xterm-256color".into()),
-            (
-                "VIBEKE_RUNTIME_DIR".into(),
-                d.join("run").to_string_lossy().into_owned(),
-            ),
-            (
-                "VIBEKE_STATE_DIR".into(),
-                d.join("state").to_string_lossy().into_owned(),
-            ),
-            (
-                "VIBEKE_CONFIG".into(),
-                d.join("config.toml").to_string_lossy().into_owned(),
-            ),
-        ])
-        .collect();
+    let envv = run.env.vars();
     let argv = vec![run.env.exe.to_string_lossy().into_owned(), "attach".into()];
     let (pty, child) = match vk_hold::pty::spawn(&argv, &PathBuf::from("/tmp"), &envv, 120, 36) {
         Ok(x) => x,
