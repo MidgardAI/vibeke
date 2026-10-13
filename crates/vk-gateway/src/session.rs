@@ -96,9 +96,9 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
             // Look the pairing up first: only a claimable pairing spends a handshake budget, and
             // that budget is its own (spec 16 §4.3), so knowing the host id blocks nothing.
             match gw.state.pairing(hello.pid.as_deref().unwrap_or("")) {
-                Ok(Some(p))
-                    if p.exp > now_s() && p.status == crate::state::PairingStatus::Pending =>
-                {
+                // A pending pairing, or an exhausted multi-use share that only admits a device
+                // that already redeemed it (checked once its key is known, below).
+                Ok(Some(p)) if p.admits_handshake(now_s()) => {
                     if !crate::pair::handshake_allowed(&p.pid, gw.limits.pair_handshakes_per_min) {
                         return reject(ws, json!({"error": "rate_limited"}).to_string()).await;
                     }
@@ -133,6 +133,14 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
         return;
     };
     let device = match &pairing {
+        // An exhausted invitation admits only an idempotent retry by a device that redeemed it
+        // (spec 20 §2.4); a new device key is refused before the handshake completes.
+        Some(p)
+            if p.status != crate::state::PairingStatus::Pending
+                && p.redemption_by(&b64::encode(remote)).is_none() =>
+        {
+            return reject(ws, json!({"error": "used"}).to_string()).await;
+        }
         Some(_) => None,
         None => match gw.device_by_key(&remote) {
             Some(d) => Some(d),
@@ -306,6 +314,35 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
         };
         gw.touch_visible(&device_id);
 
+        // Review devices (spec 20 §3.2) get their own complete allow-list: the connection-level
+        // methods below never apply to them, and every other call goes through
+        // `review::authorize` in `handle`.
+        if device.is_review() {
+            match method.as_str() {
+                "hello" => {
+                    respond(&out, id, Ok(crate::review::hello(&gw, &device))).await;
+                    continue;
+                }
+                m if m.starts_with("tunnel.") => {}
+                m if m.starts_with("tui.")
+                    || m == "events.subscribe"
+                    || m == "client.visibility" =>
+                {
+                    respond(
+                        &out,
+                        id,
+                        Err(ApiError::new(
+                            "forbidden",
+                            format!("{m} is not available to a review device"),
+                        )),
+                    )
+                    .await;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
         // Connection-level methods obey the same kind and scope rules as everything else.
         if matches!(
             method.as_str(),
@@ -413,10 +450,13 @@ async fn device_loop(gw: Arc<Gateway>, ws: impl Ws, session: Session, device_id:
                     continue;
                 }
                 let info = gw.server.info.lock().unwrap().clone();
-                let r = json!({"host_name": gw.host_name, "host_id": gw.keys.host_id(), "device_id": device.id,
+                let mut r = json!({"host_name": gw.host_name, "host_id": gw.keys.host_id(), "device_id": device.id,
                                "scope": device.scope, "kind": device.kind, "expires_at": device.expires_at, "limit": device.limit, "server_version": info.get("server_version"),
                                "gateway_version": env!("CARGO_PKG_VERSION"),
                                "features": features(&gw)});
+                if let Some(g) = &device.github {
+                    r["github"] = json!(g);
+                }
                 respond(&out, id, Ok(r)).await;
                 continue;
             }
@@ -494,6 +534,10 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "wasm_tui_share",
         // Embedded previews in the desktop app (`tunnel.*`, spec 06 B3.5).
         "tunnel",
+        // `tunnel.open {preview}`, review shares and GitHub-gated, multi-use links (spec 20).
+        "tunnel_preview",
+        "share_review",
+        "share_github",
     ];
     if gw.cfg.stt.is_some() {
         f.push("stt");
@@ -516,27 +560,40 @@ pub(crate) async fn handle(
     method: &str,
     params: Value,
 ) -> api::ApiResult {
-    if !api::kind_allows(&device.kind, method) {
-        return Err(ApiError::new(
-            "forbidden",
-            format!("{method} is not available to a {} device", device.kind),
-        ));
-    }
-    let Some(need) = api::required_scope(method) else {
-        return Err(ApiError::new(
-            "method_not_found",
-            format!("unknown method {method}"),
-        ));
+    // A review device's call is decided and rewritten by its own allow-list, before (and instead
+    // of) the kind, scope and host-wide checks, which never see it (spec 20 §3.2).
+    let review = device.is_review();
+    let (params, mutating) = if review {
+        let params = crate::review::authorize(gw, device, method, params)?;
+        (params, crate::review::is_mutating(method))
+    } else {
+        if !api::kind_allows(&device.kind, method) {
+            return Err(ApiError::new(
+                "forbidden",
+                format!("{method} is not available to a {} device", device.kind),
+            ));
+        }
+        let Some(need) = api::required_scope(method) else {
+            return Err(ApiError::new(
+                "method_not_found",
+                format!("unknown method {method}"),
+            ));
+        };
+        if device.scope < need {
+            return Err(ApiError::new(
+                "forbidden",
+                format!("{method} needs {} scope", need.as_str()),
+            ));
+        }
+        (params, api::is_mutating(method))
     };
-    if device.scope < need {
-        return Err(ApiError::new(
-            "forbidden",
-            format!("{method} needs {} scope", need.as_str()),
-        ));
-    }
     let call = Call { gw, device };
-    if !api::is_mutating(method) {
-        return call.dispatch(method, params).await;
+    if !mutating {
+        return if review {
+            crate::review::execute(gw, device, method, params).await
+        } else {
+            call.dispatch(method, params).await
+        };
     }
     let op_id = params
         .get("op_id")
@@ -563,7 +620,11 @@ pub(crate) async fn handle(
             };
         }
     };
-    let r = call.dispatch(method, params.clone()).await;
+    let r = if review {
+        crate::review::execute(gw, device, method, params.clone()).await
+    } else {
+        call.dispatch(method, params.clone()).await
+    };
     guard.complete(&r);
     let target = ["interaction", "pane", "target", "device"]
         .iter()

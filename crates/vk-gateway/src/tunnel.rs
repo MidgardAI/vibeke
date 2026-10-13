@@ -31,13 +31,19 @@ pub const MAX_SEND: usize = 64 * 1024;
 pub const WINDOW: u64 = 512 * 1024;
 /// Open (and opening) streams per device connection.
 pub const MAX_STREAMS: usize = 64;
+/// The same for a review device (spec 20 §3.6).
+pub const MAX_REVIEW_STREAMS: usize = 32;
 /// Queued writes per stream; a client that waits for each `tunnel.send` response never fills it.
 const WRITE_QUEUE: usize = 8;
 /// Longest server response line read before the stream starts.
 const MAX_RESPONSE: u64 = 64 * 1024;
 
-/// Full-scope devices without a limit; never shares, peers or limited devices.
+/// Full-scope devices without a limit, and review devices (for their one preview, see
+/// [`open_params`]); never other shares, peers or limited devices.
 pub fn authorize(device: &Device) -> Result<(), ApiError> {
+    if device.is_review() && device.kind == "share" && !device.expired() {
+        return Ok(());
+    }
     if device.kind != "device"
         || device.scope != Scope::Full
         || device.limit.is_some()
@@ -168,6 +174,11 @@ impl Tunnels {
         params: Value,
         id: Option<Value>,
     ) -> BoxFuture<'static, ()> {
+        let max = if device.is_review() {
+            MAX_REVIEW_STREAMS
+        } else {
+            MAX_STREAMS
+        };
         let out = self.inner.out.clone();
         if method == "tunnel.close" {
             if let Some(s) = params.get("stream").and_then(Value::as_str) {
@@ -179,7 +190,10 @@ impl Tunnels {
             return reply(out, id, Err(e));
         }
         match method {
-            "tunnel.open" => self.open(params, id),
+            "tunnel.open" => match open_params(&params, device) {
+                Ok(target) => self.open(target, id, max),
+                Err(e) => reply(out, id, Err(e)),
+            },
             "tunnel.send" => match self.send(&params) {
                 Ok(rx) => async move {
                     let r = match rx {
@@ -202,18 +216,14 @@ impl Tunnels {
         }
     }
 
-    fn open(&self, params: Value, id: Option<Value>) -> BoxFuture<'static, ()> {
+    fn open(&self, target: Value, id: Option<Value>, max: usize) -> BoxFuture<'static, ()> {
         let out = self.inner.out.clone();
-        let target = match open_params(&params) {
-            Ok(t) => t,
-            Err(e) => return reply(out, id, Err(e)),
-        };
         let stream_id = {
             let mut st = self.inner.state.lock().unwrap();
             if st.closed {
                 return reply(out, id, Err(ApiError::unavailable("Connection closed")));
             }
-            if st.streams.len() + st.pending >= MAX_STREAMS {
+            if st.streams.len() + st.pending >= max {
                 return reply(
                     out,
                     id,
@@ -340,8 +350,35 @@ fn reply(out: Out, id: Option<Value>, r: ApiResult) -> BoxFuture<'static, ()> {
     async move { crate::session::respond(&out, id, r).await }.boxed()
 }
 
-/// The `preview.connect` params of a `tunnel.open`: only `machine`, `host` and `port` pass.
-fn open_params(p: &Value) -> Result<Value, ApiError> {
+/// The `preview.connect` params of a `tunnel.open`: `{preview}` (the server resolves its machine
+/// and port, spec 20 §3.6), or `machine`, `host` and `port`. A review device may only use the
+/// `{preview}` form, for its own preview.
+fn open_params(p: &Value, device: &Device) -> Result<Value, ApiError> {
+    let preview = p.get("preview").filter(|v| !v.is_null());
+    if let Some(rv) = &device.review {
+        if ["host", "port", "machine"]
+            .iter()
+            .any(|k| p.get(*k).is_some_and(|v| !v.is_null()))
+        {
+            return Err(ApiError::new(
+                "forbidden",
+                "A review opens streams to its preview only (tunnel.open {preview})",
+            ));
+        }
+        return match preview.and_then(Value::as_str) {
+            Some(v) if v == rv.preview => Ok(json!({"preview": v})),
+            _ => Err(ApiError::new(
+                "forbidden",
+                "A review opens streams to its preview only",
+            )),
+        };
+    }
+    if let Some(v) = preview {
+        return match v.as_str().filter(|v| !v.is_empty() && v.len() <= 255) {
+            Some(v) => Ok(json!({"preview": v})),
+            None => Err(ApiError::invalid("Invalid preview")),
+        };
+    }
     let host = p
         .get("host")
         .and_then(Value::as_str)
@@ -609,6 +646,7 @@ mod tests {
         d.limit = Some(crate::state::Limit {
             pane: Some("p1".into()),
             workspace: None,
+            preview: None,
         });
         assert!(authorize(&d).is_err());
         // A limited device is refused.
@@ -649,8 +687,63 @@ mod tests {
         assert!(decode_send(Some("not base64!")).is_err());
     }
 
+    fn review_device() -> Device {
+        let mut d = device();
+        d.kind = "share".into();
+        d.scope = Scope::View;
+        d.expires_at = Some(u64::MAX);
+        d.limit = Some(crate::state::Limit {
+            pane: None,
+            workspace: None,
+            preview: Some("pv1".into()),
+        });
+        d.review = Some(crate::state::Review {
+            preview: "pv1".into(),
+            sid: "s".into(),
+            ..Default::default()
+        });
+        d
+    }
+
+    #[test]
+    fn review_devices_open_streams_to_their_preview_only() {
+        let r = review_device();
+        assert!(authorize(&r).is_ok());
+        assert_eq!(
+            open_params(&json!({"preview": "pv1", "x": 1}), &r).unwrap(),
+            json!({"preview": "pv1"})
+        );
+        for bad in [
+            json!({"preview": "pv2"}),
+            json!({}),
+            json!({"preview": 1}),
+            json!({"preview": "pv1", "port": 22}),
+            json!({"preview": "pv1", "host": "localhost"}),
+            json!({"preview": "pv1", "machine": "m2"}),
+            json!({"host": "localhost", "port": 5173}),
+        ] {
+            assert_eq!(
+                open_params(&bad, &r).unwrap_err().kind,
+                "forbidden",
+                "{bad}"
+            );
+        }
+        // Expired: refused like any device.
+        let mut old = review_device();
+        old.expires_at = Some(1);
+        assert!(authorize(&old).is_err());
+        // Owners may use the preview form too, unchanged otherwise.
+        assert_eq!(
+            open_params(&json!({"preview": "v4"}), &device()).unwrap(),
+            json!({"preview": "v4"})
+        );
+        assert!(open_params(&json!({"preview": ""}), &device()).is_err());
+    }
+
     #[test]
     fn open_passes_only_destination_params() {
+        let d = device();
+        let open_params = |p: &Value| open_params(p, &d);
         let t = open_params(
             &json!({"host": "localhost", "port": 5173, "machine": "devbox",
                                      "client_id": "x", "share": {}}),

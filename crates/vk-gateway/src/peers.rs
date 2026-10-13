@@ -43,6 +43,10 @@ pub fn invite(
         limit: None,
         label: None,
         owner: Some("self".into()),
+        access: None,
+        github: Vec::new(),
+        github_any: false,
+        review: None,
     };
     let (p, mut link) = crate::pair::create_with(
         state,
@@ -173,6 +177,12 @@ pub fn invitation_json(p: &Pairing) -> Value {
             (0, ttl) => Some(p.created_at.max(now_s()) + ttl),
             (until, _) => Some(until),
         }),
+        // Spec 20 §2.4: who may open it, how often, and for a review which preview.
+        "access": sh.filter(|s| s.redeemable()).map(|s| s.access.clone().unwrap_or_else(|| "link".into())),
+        "github": sh.filter(|s| s.github_access()).map(|s| if s.github_any { json!("*") } else { json!(s.github) }),
+        "uses": p.uses,
+        "redeemed": p.redemptions.len(),
+        "review": sh.and_then(|s| s.review.as_ref()).map(|r| json!({"preview": r.preview, "handle": r.handle, "label": r.label, "sid": r.sid, "notes": r.notes})),
     })
 }
 
@@ -188,6 +198,9 @@ pub fn device_json(d: &Device) -> Value {
         "sender": d.peer.as_ref().map(|p| json!({"host_name": p.host_name, "user": p.user})),
         "expires_at": d.expires_at,
         "limit": d.limit,
+        "github": d.github,
+        "invitation": d.invitation,
+        "review": d.review.as_ref().map(|r| json!({"preview": r.preview, "handle": r.handle, "label": r.label})),
     })
 }
 
@@ -215,21 +228,42 @@ pub fn invited_devices(devices: &[Device]) -> Vec<&Device> {
         .collect()
 }
 
+/// Invitations to list: pending ones, plus multi-use shares whose uses are all taken until they
+/// expire (their devices are grouped under them).
+pub fn listed(state: &StateDir) -> Vec<Pairing> {
+    let now = now_s();
+    state
+        .pairings()
+        .into_iter()
+        .filter(|p| {
+            p.exp > now
+                && match p.status {
+                    PairingStatus::Done { .. } => p.redeemable() && !p.redemptions.is_empty(),
+                    PairingStatus::Rejected => false,
+                    _ => true,
+                }
+        })
+        .collect()
+}
+
 /// `share.list`: pending invitations plus the devices invitations produced.
 pub fn share_list(state: &StateDir, devices: &[Device]) -> Value {
     json!({
-        "invitations": pending(state).iter().map(invitation_json).collect::<Vec<_>>(),
+        "invitations": listed(state).iter().map(invitation_json).collect::<Vec<_>>(),
         "devices": invited_devices(devices).into_iter().map(device_json).collect::<Vec<_>>(),
     })
 }
 
-/// Cancel a pending invitation by pairing id. `Ok(false)` when there is none (or it was used).
+/// Cancel an invitation by pairing id: a pending one, or a multi-use share whose uses are all
+/// taken. `Ok(false)` when there is none (or a single claim used it).
 pub fn cancel_invitation(state: &StateDir, pid: &str, by: &str) -> Result<bool> {
     let _lock = state.lock()?;
     let Ok(Some(p)) = state.pairing(pid) else {
         return Ok(false);
     };
-    if matches!(p.status, PairingStatus::Done { .. }) {
+    if matches!(p.status, PairingStatus::Done { .. })
+        && !(p.redeemable() && !p.redemptions.is_empty())
+    {
         return Ok(false);
     }
     state.remove_pairing(pid)?;
@@ -315,8 +349,28 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
             let id = s(p, "id")
                 .filter(|v| !v.is_empty())
                 .ok_or_else(|| ApiError::invalid("id is required"))?;
-            if cancel_invitation(&gw.state, id, &device.id).map_err(internal)? {
-                return Ok(json!({"cancelled": "invitation"}));
+            // `{id: <pid>}` revokes the invitation and every device that came from it
+            // (spec 20 §2.4); their redemptions stay spent.
+            let _ = gw.reload_devices();
+            let from: Vec<String> = gw
+                .devices()
+                .iter()
+                .filter(|d| d.invitation.as_deref() == Some(id))
+                .map(|d| d.id.clone())
+                .collect();
+            for d in &from {
+                gw.revoke(d).await.map_err(internal)?;
+            }
+            let cancelled = cancel_invitation(&gw.state, id, &device.id).map_err(internal)?;
+            if cancelled {
+                gw.revoke_pid_ticket(id);
+            }
+            if cancelled || !from.is_empty() {
+                let mut r = json!({"cancelled": "invitation"});
+                if !from.is_empty() {
+                    r["devices"] = json!(from.len());
+                }
+                return Ok(r);
             }
             match gw.device(id) {
                 Some(d) if d.kind != "device" => {
@@ -350,6 +404,10 @@ mod tests {
             limit: None,
             label: None,
             owner: owner.map(str::to_string),
+            access: None,
+            github: Vec::new(),
+            github_any: false,
+            review: None,
         }
     }
 

@@ -57,6 +57,12 @@ pub const ALLOWED: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    "handoff.link.create",
+    "handoff.link.status",
+    "handoff.link.list",
+    "handoff.link.revoke",
+    "handoff.link.redeem",
+    "handoff.link.cancel",
 ];
 
 /// Who the audit log names for these requests.
@@ -84,6 +90,9 @@ fn owner() -> Device {
         limit: None,
         peer: None,
         supports_clear: false,
+        github: None,
+        invitation: None,
+        review: None,
     }
 }
 
@@ -130,11 +139,13 @@ pub async fn execute(gw: &Arc<Gateway>, method: &str, p: &Value) -> ApiResult {
     let owner = owner();
     match method {
         "share.create" => match s(p, "kind") {
-            Some("handoff" | "share") => crate::api::share_create_as(gw, &owner, p),
+            Some("handoff" | "share" | "review") => {
+                crate::api::share_create_as(gw, &owner, p).await
+            }
             Some("peer") => crate::peers::dispatch(gw, &owner, "peer.invite", p).await,
             _ => Err(ApiError::new(
                 "forbidden",
-                "the server bridge carries share.create for handoff, share and peer invitations only",
+                "the server bridge carries share.create for handoff, share, review and peer invitations only",
             )),
         },
         "devices.list" => crate::api::devices_list_as(gw, &owner),
@@ -146,6 +157,10 @@ pub async fn execute(gw: &Arc<Gateway>, method: &str, p: &Value) -> ApiResult {
         "account.login.status" => login_status(gw, p),
         "account.login.cancel" => login_cancel(gw, p),
         "account.logout" => logout(gw).await,
+        // Continue links (spec 20 §4.5): the app API's code, as the owner.
+        m if m.starts_with("handoff.link.") => crate::handoff_link::dispatch(gw, &owner, m, p)
+            .await
+            .unwrap_or_else(|| Err(ApiError::new("method_not_found", m))),
         m => crate::peers::dispatch(gw, &owner, m, p).await,
     }
 }
@@ -381,6 +396,12 @@ mod tests {
                 "account.login.status",
                 "account.login.cancel",
                 "account.logout",
+                "handoff.link.create",
+                "handoff.link.status",
+                "handoff.link.list",
+                "handoff.link.revoke",
+                "handoff.link.redeem",
+                "handoff.link.cancel",
             ]
         );
     }

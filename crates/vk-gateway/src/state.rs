@@ -123,6 +123,61 @@ pub struct Device {
     /// (`push.subscribe {supports_clear}`); only such devices are sent one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_clear: bool,
+    /// The GitHub account that opened a GitHub-gated share (spec 20 §2.3), matched by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubId>,
+    /// The invitation (pairing id) this device came from, for grouping and revocation
+    /// (spec 20 §2.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<String>,
+    /// Set on review devices (spec 20 §3.2): the one preview this device reaches. Such a device
+    /// only ever passes `review::authorize`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Review>,
+}
+
+/// A GitHub account: `id` is what counts, `login` is for display.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GithubId {
+    pub id: u64,
+    pub login: String,
+}
+
+/// What a review share opens (spec 20 §3.2): one preview, its content origin label and how its
+/// notes reach the agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Review {
+    /// The preview id (resolved when the share was created).
+    pub preview: String,
+    /// 16 base32 characters: the content origin `<sid>.p.<app domain>` (spec 20 §3.6).
+    pub sid: String,
+    /// `direct` or `held` (spec 20 §3.3).
+    #[serde(default = "notes_held")]
+    pub notes: String,
+    /// The preview's handle (`v4`) and label, for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The preview's home, for display and notifications.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Who the reviewer waits for when notes are held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+fn notes_held() -> String {
+    "held".into()
+}
+
+impl Device {
+    /// A review device: reaches its one preview and nothing else.
+    pub fn is_review(&self) -> bool {
+        self.review.is_some()
+    }
 }
 
 /// Who a `peer` device is (spec 16 §15.3).
@@ -200,6 +255,9 @@ pub struct Limit {
     pub workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
+    /// Review devices (spec 20 §3.2): the preview they reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// Invitation details stored with a pending share/handoff pairing.
@@ -217,9 +275,32 @@ pub struct ShareSpec {
     /// `peer` invitations: `self` for the owner's own hosts. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// `link` (absent: whoever opens it first) or `github` (spec 20 §2.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// `access: github`: the accounts allowed, by id. Empty and not `github_any`: nobody.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub github: Vec<GithubId>,
+    /// `access: github` with `["*"]`: any GitHub account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub github_any: bool,
+    /// Review invitations (spec 20 §3.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Review>,
 }
 
 impl ShareSpec {
+    /// The opener must present a GitHub attestation.
+    pub fn github_access(&self) -> bool {
+        self.access.as_deref() == Some("github")
+    }
+
+    /// Invitations that create devices through redemptions (spec 20 §2.4): watch and review
+    /// shares. Peer and handoff invitations keep their own single claim.
+    pub fn redeemable(&self) -> bool {
+        matches!(self.kind.as_str(), "share" | "review")
+    }
+
     /// When the resulting device stops working; `None` for a peer invitation between the owner's
     /// own hosts (`ttl_s` and `until` both 0).
     pub fn device_expiry(&self) -> Option<u64> {
@@ -285,6 +366,59 @@ pub struct Pairing {
     /// Unix seconds the pairing was created (0 for pairings from older gateways).
     #[serde(default)]
     pub created_at: u64,
+    /// How many devices may redeem this invitation (spec 20 §2.4); 1 for older pairings.
+    #[serde(default = "one")]
+    pub uses: u32,
+    /// The devices that redeemed it, one per device static key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redemptions: Vec<Redemption>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// One device that redeemed a multi-use invitation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Redemption {
+    /// The device's X25519 static public key (base64url).
+    pub device_static: String,
+    pub device_id: String,
+    pub at: u64,
+    /// The device was revoked (alone or with its invitation). The use stays spent and a retry
+    /// with this key is refused with `revoked` (spec 20 §2.4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoked: bool,
+}
+
+impl Pairing {
+    /// A watch or review share whose devices come from redemptions (spec 20 §2.4).
+    pub fn redeemable(&self) -> bool {
+        self.no_confirm && self.share.as_ref().is_some_and(ShareSpec::redeemable)
+    }
+
+    /// Every use is taken.
+    pub fn exhausted(&self) -> bool {
+        self.redemptions.len() >= self.uses.max(1) as usize
+    }
+
+    /// The redemption by this device key, if any.
+    pub fn redemption_by(&self, device_static: &str) -> Option<&Redemption> {
+        self.redemptions
+            .iter()
+            .find(|r| r.device_static == device_static)
+    }
+
+    /// Whether the pairing handshake may start for this pairing (before the device's key is
+    /// known): a pending, unexpired pairing, or an exhausted multi-use one, which then admits
+    /// only a device that already redeemed it (an idempotent retry).
+    pub fn admits_handshake(&self, now: u64) -> bool {
+        self.exp > now
+            && (self.status == PairingStatus::Pending
+                || (self.redeemable()
+                    && !self.redemptions.is_empty()
+                    && matches!(self.status, PairingStatus::Done { .. })))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,6 +602,68 @@ impl StateDir {
             }
         }
         Ok((all, gone))
+    }
+
+    /// Make multi-use invitations and their devices agree after a crash between the two writes
+    /// (spec 20 §2.4): the device is written first, so a crash can leave a device that names an
+    /// invitation without its redemption; it is added back. A redemption whose device is gone
+    /// (revoked, expired) is kept: its use stays spent and its key stays refused, so revoking an
+    /// opener never reopens the link. The caller holds the registry lock. Returns the pairing ids
+    /// changed.
+    pub fn reconcile_redemptions(&self, _lock: &RegistryLock) -> Result<Vec<String>> {
+        let devices = self.devices()?;
+        let mut changed = Vec::new();
+        for mut p in self.pairings() {
+            if !p.redeemable() {
+                continue;
+            }
+            let mut added = false;
+            for d in devices
+                .iter()
+                .filter(|d| d.invitation.as_deref() == Some(p.pid.as_str()))
+            {
+                if !p.redemptions.iter().any(|r| r.device_id == d.id) {
+                    p.redemptions.push(Redemption {
+                        device_static: d.public.clone(),
+                        device_id: d.id.clone(),
+                        at: d.paired_at,
+                        revoked: false,
+                    });
+                    added = true;
+                }
+            }
+            if !added {
+                continue;
+            }
+            if p.exhausted()
+                && let Some(last) = p.redemptions.last()
+            {
+                p.status = PairingStatus::Done {
+                    device_id: last.device_id.clone(),
+                };
+            }
+            self.save_pairing(&p)?;
+            changed.push(p.pid.clone());
+        }
+        Ok(changed)
+    }
+
+    /// Mark the redemptions of `device_ids` revoked (tombstones: the uses stay spent). The caller
+    /// holds the registry lock.
+    pub fn tombstone_redemptions(&self, _lock: &RegistryLock, device_ids: &[String]) -> Result<()> {
+        for mut p in self.pairings() {
+            let mut changed = false;
+            for r in p.redemptions.iter_mut() {
+                if !r.revoked && device_ids.contains(&r.device_id) {
+                    r.revoked = true;
+                    changed = true;
+                }
+            }
+            if changed {
+                self.save_pairing(&p)?;
+            }
+        }
+        Ok(())
     }
 
     /// Hosts this gateway can hand work to (`peers.json`, 0600: it holds private keys).
@@ -799,6 +995,8 @@ mod tests {
             confirmed_claim: None,
             share: None,
             created_at: now_s(),
+            uses: 1,
+            redemptions: Vec::new(),
         };
         s.save_pairing(&p).unwrap();
         let back = s.pairing("abc").unwrap().unwrap();
@@ -902,6 +1100,9 @@ mod tests {
             limit: None,
             peer: None,
             supports_clear: false,
+            github: None,
+            invitation: None,
+            review: None,
         }
     }
 
@@ -934,6 +1135,10 @@ mod tests {
             limit: None,
             label: None,
             owner: Some("self".into()),
+            access: None,
+            github: Vec::new(),
+            github_any: false,
+            review: None,
         };
         assert_eq!(sp.device_expiry(), None);
         sp.until = 5;

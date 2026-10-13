@@ -5,8 +5,9 @@
 //! - `gateway.call {method, params?, timeout_ms? = 30000}` (full scope, never from a pane) keeps
 //!   a pending request, emits `gateway.request {id, method, params, client}` to the gateway and
 //!   waits for the answer. Only [`ALLOWED`] methods go through, and `share.create` only for the
-//!   kinds `handoff`, `peer` and `share` (a pane or workspace share for a colleague; the TUI's
-//!   People tab). The TUI's Devices view uses `devices.list` / `devices.revoke`
+//!   kinds `handoff`, `peer`, `review` (one preview for a designer, spec 20 §3) and `share` (a
+//!   pane or workspace share for a colleague; the TUI's People tab). Continue links
+//!   (`handoff.link.*`, spec 20 §4.5) are never a pane's. The TUI's Devices view uses `devices.list` / `devices.revoke`
 //!   (the app API's, as the owner) and the bridge-only `pair.create {scope?, ttl_s?}` =>
 //!   `{link, pid, open_by, scope}` and `pair.status {pid}` => `{status: pending | claimed |
 //!   done | rejected | gone, …}` (see `vk_gateway::bridge`); `share.revoke {id: pid}` cancels a
@@ -51,10 +52,23 @@ pub const PANE_FORBIDDEN: &[&str] = &["gateway.call", "gateway.reply"];
 /// [`PANE_FORBIDDEN`], and `auth.approve` carries only `approve::APPROVABLE_GATEWAY`.)
 pub const PANE_FORBIDDEN_CALLS: &[&str] = &[
     "share.create",
+    // Continue links export a session and hand it to someone else (spec 20 §4.5).
+    "handoff.link.create",
+    "handoff.link.status",
+    "handoff.link.list",
+    "handoff.link.revoke",
+    "handoff.link.redeem",
+    "handoff.link.cancel",
     "account.login.start",
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    "handoff.link.create",
+    "handoff.link.status",
+    "handoff.link.list",
+    "handoff.link.revoke",
+    "handoff.link.redeem",
+    "handoff.link.cancel",
 ];
 
 /// What `gateway.call` may run. The gateway checks this list again (`vk_gateway::bridge::ALLOWED`
@@ -79,7 +93,7 @@ pub const ALLOWED: &[&str] = &[
 ];
 
 /// The `share.create` kinds the bridge lets through.
-pub const SHARE_KINDS: &[&str] = &["handoff", "peer", "share"];
+pub const SHARE_KINDS: &[&str] = &["handoff", "peer", "review", "share"];
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MIN_TIMEOUT_MS: u64 = 100;
@@ -360,7 +374,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
 /// Schema registry entries (`api_schema` loads them next to its own tables).
 pub const SHAPES: &str = r##"
 # --- the server-to-gateway bridge (spec 16 §15.5): peer.*, share.*, devices.*, pair.* and account.* run in the host's gateway ---
-# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff, peer or share), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
+# full scope, never from a pane; method is one of peer.invite, peer.redeem, peer.list, peer.remove, share.create (kind handoff, peer, review or share), share.list, share.revoke, devices.list, devices.revoke, pair.create, pair.status, account.status, account.login.start, account.login.status, account.login.cancel, account.logout, handoff.link.create, handoff.link.status, handoff.link.list, handoff.link.revoke, handoff.link.redeem, handoff.link.cancel; answers with the gateway's result; remote_unavailable when no gateway is connected or it doesn't answer in time
 gateway.call :: {method: string, params?: object, timeout_ms?: int = 30000} => any
 # gateway clients only: the answer to a gateway.request event (result or error, not both)
 gateway.reply :: {id: string, result?: any, error?: {kind: string, message: string, details?: any}} => {}
@@ -401,6 +415,12 @@ mod tests {
                 "account.login.status",
                 "account.login.cancel",
                 "account.logout",
+                "handoff.link.create",
+                "handoff.link.status",
+                "handoff.link.list",
+                "handoff.link.revoke",
+                "handoff.link.redeem",
+                "handoff.link.cancel",
             ]
         );
         assert!(check_allowed("pair.create", &json!({})).is_ok());
@@ -411,7 +431,7 @@ mod tests {
 
     #[test]
     fn share_create_kinds() {
-        for k in ["handoff", "peer", "share"] {
+        for k in ["handoff", "peer", "review", "share"] {
             assert!(
                 check_allowed("share.create", &json!({"kind": k})).is_ok(),
                 "{k}"

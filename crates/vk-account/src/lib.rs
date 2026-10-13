@@ -39,6 +39,8 @@ pub enum Error {
     Protocol(String),
     /// Reading or writing the stored credential failed.
     Store(String),
+    /// GitHub has no user with that login (`/v1/github/users/{login}`, spec 20 §2.2).
+    UnknownUser,
 }
 
 impl std::fmt::Display for Error {
@@ -51,6 +53,7 @@ impl std::fmt::Display for Error {
             Error::Http(m) => write!(f, "account server: {m}"),
             Error::Protocol(m) => write!(f, "account server: unexpected answer: {m}"),
             Error::Store(m) => write!(f, "account credential: {m}"),
+            Error::UnknownUser => f.write_str("GitHub has no user with that login"),
         }
     }
 }
@@ -771,6 +774,9 @@ impl Account {
         self.store.delete(self.server())
     }
 }
+
+pub mod attest;
+pub use attest::GithubUser;
 
 #[cfg(any(test, feature = "fake-server"))]
 pub mod fake;

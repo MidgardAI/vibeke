@@ -584,6 +584,9 @@ mod tests {
                 }),
             }),
             supports_clear: false,
+            github: None,
+            invitation: None,
+            review: None,
         }
     }
 

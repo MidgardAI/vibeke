@@ -42,6 +42,13 @@ impl Drop for Bridge {
 }
 
 pub fn authorize(device: &Device) -> Result<(), ApiError> {
+    // A review device reaches one preview, never a terminal (spec 20 §3.2).
+    if device.is_review() {
+        return Err(ApiError::new(
+            "forbidden",
+            "The terminal is not available to a design review",
+        ));
+    }
     let full = device.kind == "device" && device.scope == Scope::Full && device.limit.is_none();
     let share = device.kind == "share"
         && device.expires_at.is_some()
@@ -504,6 +511,7 @@ mod tests {
         d.limit = Some(crate::state::Limit {
             pane: Some("p1".into()),
             workspace: None,
+            preview: None,
         });
         d.expires_at = Some(u64::MAX);
         for scope in [Scope::View, Scope::Approve, Scope::Full] {
@@ -512,5 +520,13 @@ mod tests {
         }
         d.expires_at = Some(1);
         assert!(authorize(&d).is_err());
+        // A review device is refused even with an otherwise valid share limit.
+        d.expires_at = Some(u64::MAX);
+        d.review = Some(crate::state::Review {
+            preview: "pv1".into(),
+            sid: "s".into(),
+            ..Default::default()
+        });
+        assert_eq!(authorize(&d).unwrap_err().kind, "forbidden");
     }
 }

@@ -3633,10 +3633,12 @@ name = "vk-account"
 version = "0.15.1"
 dependencies = [
  "axum",
+ "ed25519-dalek",
  "libc",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tracing",
