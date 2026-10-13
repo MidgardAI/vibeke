@@ -3587,7 +3587,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vibeke"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3630,7 +3630,7 @@ dependencies = [
 
 [[package]]
 name = "vk-account"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "ed25519-dalek",
@@ -3649,7 +3649,7 @@ dependencies = [
 
 [[package]]
 name = "vk-agents"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "regex",
@@ -3664,7 +3664,7 @@ dependencies = [
 
 [[package]]
 name = "vk-assist"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "libc",
@@ -3679,7 +3679,7 @@ dependencies = [
 
 [[package]]
 name = "vk-browser"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "vk-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "vk-cloud"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "vk-compat"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "libc",
  "regex",
@@ -3757,7 +3757,7 @@ dependencies = [
 
 [[package]]
 name = "vk-config"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "notify",
  "regex",
@@ -3770,7 +3770,7 @@ dependencies = [
 
 [[package]]
 name = "vk-conformance"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "font8x8",
@@ -3794,7 +3794,7 @@ dependencies = [
 
 [[package]]
 name = "vk-e2e"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "vk-fuzz"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "proptest",
  "serde",
@@ -3829,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "vk-gateway"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "vk-handoff"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -3883,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "vk-hold"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "hmac",
@@ -3900,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "vk-orchestrate"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "libc",
@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "vk-preview"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3943,7 +3943,7 @@ dependencies = [
 
 [[package]]
 name = "vk-proto"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "postcard",
  "serde",
@@ -3955,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "vk-redact"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -3963,7 +3963,7 @@ dependencies = [
 
 [[package]]
 name = "vk-relay"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3983,7 +3983,7 @@ dependencies = [
 
 [[package]]
 name = "vk-remote"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4003,7 +4003,7 @@ dependencies = [
 
 [[package]]
 name = "vk-review"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "libc",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "vk-sandbox"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "libc",
@@ -4033,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "vk-server"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4081,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "vk-store"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",
@@ -4098,7 +4098,7 @@ dependencies = [
 
 [[package]]
 name = "vk-tasks"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "blake3",
  "libc",
@@ -4112,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "vk-term"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4127,7 +4127,7 @@ dependencies = [
 
 [[package]]
 name = "vk-tui"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
