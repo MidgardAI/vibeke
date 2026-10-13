@@ -450,6 +450,7 @@ function SentNotes({ drafts, owner }: { drafts: AnnotationDraft[]; owner: string
               <Pill>{text}</Pill>
             </div>
             <div className="text-xs text-muted">{t.review.sentCount(notes.length + (d.page_note ? 1 : 0))}</div>
+            {d.state === 'queued' && <div className="text-xs text-muted">{t.review.waitingHint}</div>}
           </div>
         );
       })}

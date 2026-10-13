@@ -1051,7 +1051,7 @@ export interface AnnotationDraft {
   notes: AnnotationNote[];
   page_note?: string | null;
   state: AnnotationState;
-  via?: 'feedback' | 'typed' | 'prompt';
+  via?: 'feedback' | 'typed' | 'prompt' | 'hook';
   /** Why the last delivery did not go through, or why it is unconfirmed. */
   detail?: string;
   updated_at_ms: number;
@@ -1459,7 +1459,7 @@ export interface AppApi {
     result: { draft: AnnotationDraft | null; drafts?: AnnotationDraft[] };
   };
   /** Spec 20 §3.3: deliver a held reviewer draft to the agent (owner devices only). */
-  'browser.annotations_release': { params: { draft: string; agent?: string }; result: { state?: AnnotationState; draft?: AnnotationDraft; [k: string]: unknown } };
+  'browser.annotations_release': { params: { draft: string; agent?: string; force?: boolean }; result: { state?: AnnotationState; draft?: AnnotationDraft; [k: string]: unknown } };
   /** Spec 20 §3.3: delete a held reviewer draft (owner devices only). */
   'browser.annotations_discard': { params: { draft: string }; result: Record<string, unknown> };
   /** Spec 20 §3.2: the preview a review device reaches. */
@@ -1471,8 +1471,8 @@ export interface AppApi {
   'handoff.link.revoke': { params: { blob: string }; result: Record<string, unknown> };
   /** Types the notes into the agent's pane when that is safe, else queues them; `copy_only` just returns the text. */
   'browser.annotations_send': {
-    params: { draft: string; agent?: string; copy_only?: boolean };
-    result: { state?: AnnotationState; via?: 'feedback' | 'typed' | 'prompt'; agent_pane?: string | null; text: string };
+    params: { draft: string; agent?: string; copy_only?: boolean; force?: boolean };
+    result: { state?: AnnotationState; via?: 'feedback' | 'typed' | 'prompt' | 'hook'; agent_pane?: string | null; text: string };
   };
   /** Input needs this device's take-over (`conflict` otherwise). */
   'browser.click': {
