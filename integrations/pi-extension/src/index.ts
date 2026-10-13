@@ -21,6 +21,8 @@ export interface Options {
   runVibeke?: (args: string[]) => Promise<string>;
   /** Test hooks. */
   debounceMs?: number;
+  /** Poll interval for background work while some is running. Default 2000 ms. */
+  bgPollMs?: number;
   clientOverrides?: Partial<ConstructorParameters<typeof VibekeClient>[0]>;
 }
 
@@ -84,7 +86,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     token: env.VIBEKE_PANE_TOKEN,
     harness: () => host,
     version: EXTENSION_VERSION,
-    snapshot: () => ({
+    snapshot: (queueKept) => ({
       session_id: sessionId(),
       session_file: sessionFile(),
       is_streaming: streaming,
@@ -102,13 +104,14 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
         reason: a.reason,
       })),
       pending_dialogs: [...dialogs.values()],
+      ...bgAfterConnect(queueKept),
     }),
     ...opts.clientOverrides,
   });
   // harness is fixed at construction; keep a mutable view for later host upgrades
   const hostVersion = () => (typeof pi.version === "string" ? pi.version : undefined);
 
-  const HEADLESS_ALLOWED = new Set(["SessionStart", "ToolEnded", "Snapshot"]);
+  const HEADLESS_ALLOWED = new Set(["SessionStart", "ToolEnded", "Snapshot", "BgTasks"]);
   function emit(event: string, payload: Record<string, unknown> = {}): void {
     if (headlessOwner && !HEADLESS_ALLOWED.has(event)) return;
     try {
@@ -116,6 +119,162 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       client.signal(event, payload);
     } catch {
       /* never affect the host */
+    }
+  }
+
+  // ---- background work (PROTOCOL.md "Background work") ----
+  // Sub-agents and shells that keep running after the tool call that started them: omp's async
+  // jobs (`task` and `bash` with async on, read from `ctx.getAsyncJobSnapshot()`), and
+  // pi-subagents' async runs (its `subagent:async-started` / `subagent:async-complete` events on
+  // `pi.events`). A blocking task tool that returns when its child is done is a normal tool call.
+  const BG_EMPTY = "[]";
+  const BG_POLL_MS = opts.bgPollMs ?? 2000;
+  /** The last set sent (JSON), or null when it must be sent again. */
+  let lastBg: string | null = BG_EMPTY;
+  /** A non-empty set was sent once: turn ends then always resend the set. */
+  let bgSeen = false;
+  let bgTimer: ReturnType<typeof setTimeout> | null = null;
+  let shutDown = false;
+  /** omp job id -> the tool call that started it. */
+  const jobCalls = new Map<string, string>();
+  /** pi-subagents async runs by run id. */
+  const piRuns = new Map<string, { description: string; pid?: number; sessionId?: string }>();
+
+  interface BgEntry {
+    id: string;
+    type: string;
+    status: "running";
+    description: string;
+    tool_use_id?: string;
+  }
+
+  const ompJobsApi = () => typeof lastCtx?.getAsyncJobSnapshot === "function";
+
+  function ompJobs(): BgEntry[] {
+    if (!ompJobsApi()) return [];
+    const snap = safe(() => lastCtx!.getAsyncJobSnapshot!());
+    const running = snap && Array.isArray(snap.running) ? snap.running : [];
+    const out: BgEntry[] = [];
+    for (const j of running) {
+      if (!j || typeof j.id !== "string" || !j.id || (j.status !== undefined && j.status !== "running")) continue;
+      const call = jobCalls.get(j.id);
+      out.push({
+        id: j.id,
+        type: j.type === "task" ? "subagent" : j.type === "bash" ? "shell" : String(j.type ?? "task"),
+        status: "running",
+        description: typeof j.label === "string" ? j.label : "",
+        ...(call ? { tool_use_id: call } : {}),
+      });
+    }
+    return out;
+  }
+
+  function alive(pid: number | undefined): boolean {
+    if (pid === undefined) return true;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException)?.code === "EPERM";
+    }
+  }
+
+  function piRunTasks(): BgEntry[] {
+    const sid = sessionId();
+    const out: BgEntry[] = [];
+    for (const [id, r] of piRuns) {
+      // The runner died without a completion (killed, crashed): its work is gone.
+      if (!alive(r.pid)) {
+        piRuns.delete(id);
+        continue;
+      }
+      if (r.sessionId && sid && r.sessionId !== sid) continue; // another session's run
+      out.push({ id, type: "subagent", status: "running", description: r.description });
+    }
+    return out;
+  }
+
+  /** Send the current set when it changed (or `force`), and poll while it is not empty. */
+  function checkBg(force = false): void {
+    if (shutDown) return;
+    let list: BgEntry[];
+    try {
+      list = [...ompJobs(), ...piRunTasks()];
+    } catch {
+      return;
+    }
+    const key = JSON.stringify(list);
+    if (key !== lastBg || (force && (bgSeen || ompJobsApi()))) {
+      lastBg = key;
+      if (list.length) bgSeen = true;
+      // The kinds whose whole set this list carries (others may come from elsewhere).
+      const kinds = ompJobsApi() ? ["shell", "subagent"] : pi.events ? ["subagent"] : [];
+      emit("BgTasks", { background_tasks: list, kinds });
+    }
+    if (bgTimer) clearTimeout(bgTimer);
+    bgTimer = null;
+    if (list.length) {
+      // Jobs end while the host is idle, with no event: poll until the set is empty.
+      bgTimer = setTimeout(() => {
+        bgTimer = null;
+        checkBg();
+      }, BG_POLL_MS);
+      bgTimer.unref?.();
+    }
+  }
+
+  /** Called while building each (re)connect snapshot. When the queue was dropped (a reconnect),
+   * a set sent before may have been lost with it: send the current one right after the snapshot. */
+  function bgAfterConnect(queueKept: boolean): Record<string, never> {
+    if (!queueKept && bgSeen && lastBg !== null) {
+      lastBg = null;
+      const t = setTimeout(() => checkBg(), 0);
+      t.unref?.();
+    }
+    return {};
+  }
+
+  function rememberJobCalls(callId: string, result: any): void {
+    const d = result?.details;
+    const ids: string[] = [];
+    if (typeof d?.async?.jobId === "string") ids.push(d.async.jobId);
+    if (d?.async && Array.isArray(d.progress))
+      for (const p of d.progress) if (typeof p?.id === "string" && (p.status === "pending" || p.status === "running")) ids.push(p.id);
+    if (!ids.length) return;
+    if (jobCalls.size > 500) jobCalls.clear();
+    for (const id of ids) jobCalls.set(id, callId);
+  }
+
+  function subscribeSubagents(): void {
+    const bus = pi.events;
+    if (!bus || typeof bus.on !== "function") return;
+    try {
+      bus.on("subagent:async-started", (data: any) => {
+        try {
+          if (!data || typeof data.id !== "string" || !data.id) return;
+          const agents = Array.isArray(data.agents) ? data.agents.filter((a: unknown) => typeof a === "string") : [];
+          const who = typeof data.agent === "string" ? data.agent : agents.join(", ");
+          const what = typeof data.goal === "string" && data.goal ? data.goal : typeof data.task === "string" ? data.task : "";
+          piRuns.set(data.id, {
+            description: [who, what].filter(Boolean).join(": "),
+            ...(typeof data.pid === "number" ? { pid: data.pid } : {}),
+            ...(typeof data.sessionId === "string" ? { sessionId: data.sessionId } : {}),
+          });
+          checkBg();
+        } catch {
+          /* never affect the host */
+        }
+      });
+      bus.on("subagent:async-complete", (data: any) => {
+        try {
+          const id = typeof data?.runId === "string" ? data.runId : data?.id;
+          if (typeof id === "string" && piRuns.delete(id)) checkBg();
+        } catch {
+          /* never affect the host */
+        }
+      });
+    } catch {
+      /* a bus that refuses listeners: no pi-subagents reporting */
     }
   }
 
@@ -356,6 +515,8 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
       host_version: hostVersion(),
       extension_version: EXTENSION_VERSION,
     });
+    // The server forgets background work on SessionStart: the next check sends what is left.
+    lastBg = BG_EMPTY;
   }
 
   function cancelEnd(): void {
@@ -372,6 +533,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     const e = lastEnd;
     lastEnd = {};
     emit("TurnEnded", { ...(e.stop_reason ? { stop_reason: e.stop_reason } : {}), ...(e.last_message ? { last_message: e.last_message } : {}) });
+    checkBg(true);
   }
 
   function lastAssistant(event: any): { stop_reason?: string; last_message?: string } {
@@ -400,7 +562,9 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
             lastCtx = ctx;
             startControl(ctx);
           }
-          return fn(event, ctx);
+          const r = fn(event, ctx);
+          checkBg();
+          return r;
         } catch {
           return undefined;
         }
@@ -538,6 +702,7 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
     calls.delete(id);
     const tool = e.toolName ?? cached?.tool ?? "";
     const ok = !e.isError;
+    if (ok) rememberJobCalls(id, e.result);
     const fp = ok && cached ? fileChangePath(tool, cached.input, ctx?.cwd ?? lastCtx?.cwd) : undefined;
     emit("ToolEnded", { call_id: id, tool, ok, ...(fp ? { file_path: fp } : {}) });
     // Mid-turn: steer the running turn; the host shows it to the model before its next call.
@@ -633,12 +798,16 @@ export function createExtension(pi: HostApi, opts: Options = {}): Handle | undef
   on("session_shutdown", async (e) => {
     cancelEnd();
     endTurn();
+    shutDown = true;
+    if (bgTimer) clearTimeout(bgTimer);
+    bgTimer = null;
     emit("SessionEnded", { reason: e?.reason ?? "shutdown" });
     await client.flush(300);
     client.close();
   });
 
   registerShowImage();
+  subscribeSubagents();
 
   // Connect eagerly so the first Snapshot is sent at load.
   try {

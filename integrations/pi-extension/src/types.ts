@@ -28,7 +28,20 @@ export interface HostContext {
     getSessionFile?: () => string | undefined;
     getSessionId?: () => string | undefined;
   };
+  /** omp: the async jobs (background `bash` and `task`) this session owns. */
+  getAsyncJobSnapshot?: () => AsyncJobSnapshot | null | undefined;
   [k: string]: unknown;
+}
+
+export interface AsyncJobSnapshot {
+  running?: { id?: string; type?: string; status?: string; label?: string; startTime?: number }[];
+  [k: string]: unknown;
+}
+
+/** pi / omp in-process event bus shared by extensions (`pi.events`). */
+export interface EventBus {
+  on(channel: string, handler: (data: unknown) => void): unknown;
+  emit?: (channel: string, data: unknown) => void;
 }
 
 export interface HostModel {
@@ -46,5 +59,6 @@ export interface HostApi {
   /** pi / omp: switch the session's model; false when the provider has no credentials. */
   setModel?: (model: HostModel) => Promise<boolean>;
   getCommands?: () => { name?: string; description?: string }[];
+  events?: EventBus;
   [k: string]: unknown;
 }

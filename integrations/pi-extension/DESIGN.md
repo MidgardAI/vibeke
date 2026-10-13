@@ -112,7 +112,7 @@ function ensureWrapped(ui: ExtensionUIContext) {          // called on load, ses
 When Vibeke's `RpcAdapter` spawns `pi --mode rpc` / `omp --mode rpc-ui`, it sets `VIBEKE_HEADLESS_OWNER=1`:
 
 - The RPC stream already carries agent, turn, message and tool events, and extension UI requests (`select`/`confirm`/`input`/`editor`) which Vibeke turns into Interactions and answers natively (§4).
-- The extension then reports only identity (session file path) and `FileChanged`, so nothing is double-counted.
+- The extension then reports only identity (session file path), `FileChanged` and background work (`BgTasks`, which RPC does not carry), so nothing is double-counted.
 - The RPC client must split records on `\n` only, not with a Node `readline`-style splitter that breaks on U+2028/U+2029 (pi `rpc.md` §Framing). This is a requirement on the Rust `RpcAdapter`.
 
 ## 6. Packaging and install

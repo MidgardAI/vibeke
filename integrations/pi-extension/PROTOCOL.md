@@ -38,8 +38,24 @@ Connection behaviour: one persistent connection, queue cap 500 (overflow clears 
 | `ApprovalResolved` | `call_id, approved` |
 | `Snapshot` | `session_id, session_file, is_streaming, turn_index, model, host, host_version?, extension_version, pending_tool_calls: [{call_id, tool, input}], open_approvals: [{call_id, tool, reason}], pending_dialogs: [{dialog_id, method, title, message?, options?}]` (values null when unknown; `pending_dialogs` = wrapper dialogs whose native dialog is still open, same fields as their gate payload) |
 | `DialogResolved` | `dialog_id, by: "native", value` (the native dialog answered first) |
+| `BgTasks` | `background_tasks: [{id, type: "subagent"\|"shell", status: "running", description, tool_use_id?}]` (the whole current set, Claude hook shape), `kinds` (the kinds whose whole set the list carries). See "Background work". |
 
-With `VIBEKE_HEADLESS_OWNER=1` only `Snapshot`, `SessionStart` and `ToolEnded` are sent and the uiContext wrapper is off.
+With `VIBEKE_HEADLESS_OWNER=1` only `Snapshot`, `SessionStart`, `ToolEnded` and `BgTasks` are sent and the uiContext wrapper is off.
+
+## Background work
+
+Work that keeps running after the tool call that started it. A blocking sub-agent tool that returns when its child is done is a normal tool call and is not reported here.
+
+| Host | Source | `type` | `id` | `description` |
+| --- | --- | --- | --- | --- |
+| omp | `ctx.getAsyncJobSnapshot().running` (`task` and `bash` with `async.enabled`; `task` sub-agents run inside the omp process) | `task` -> `subagent`, `bash` -> `shell` | the job id (`bg_1`, the agent id) | the job label (agent id, or the command cut at 120 chars) |
+| pi | pi-subagents events on `pi.events`: `subagent:async-started` `{id, pid, sessionId, agent, agents, goal, task}` and `subagent:async-complete` `{runId \| id}` | `subagent` | the async run id | `agent: goal` |
+
+- `tool_use_id` (omp only) comes from the `tool_execution_end` result of the call that started the job (`details.async.jobId`, and `details.progress[].id` for pending task spawns).
+- pi-subagents runs of another session id are left out. A run whose runner `pid` no longer exists is dropped (it ended without a completion event).
+- `kinds`: `["shell", "subagent"]` with omp's job snapshot, `["subagent"]` on pi, else `[]`.
+- Sent when the set changes (checked after every host event), after `SessionStart` when the set is not empty (the server clears its set on `SessionStart`), and at every turn end once a source exists (omp) or a non-empty set was sent before. While the set is not empty the extension checks it every 2 s, because jobs end while the host is idle.
+- After a reconnect that dropped the queue, the set is sent again right after the `Snapshot` once a non-empty set was ever sent.
 
 ## Dialog bridge (uiContext wrapper, TUI mode only)
 

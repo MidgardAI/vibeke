@@ -10,8 +10,9 @@ export interface ClientOptions {
   token: string;
   harness: string | (() => string);
   version: string;
-  /** Builds the live-state snapshot; called on every (re)connect. */
-  snapshot: () => Record<string, unknown>;
+  /** Builds the live-state snapshot; called on every (re)connect. `queueKept` is true on the
+   * first connect, when the queued signals still follow the snapshot; otherwise they were dropped. */
+  snapshot: (queueKept: boolean) => Record<string, unknown>;
   queueCap?: number;
   backoffMinMs?: number;
   backoffMaxMs?: number;
@@ -200,7 +201,7 @@ export class VibekeClient {
         const trusted = this.connects === 1 && this.dropped === 0 && !this.everReady && this.queue.length > 0;
         let snap: Record<string, unknown> = {};
         try {
-          snap = this.o.snapshot();
+          snap = this.o.snapshot(trusted);
         } catch {
           /* send what we can */
         }

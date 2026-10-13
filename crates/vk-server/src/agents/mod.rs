@@ -1462,6 +1462,8 @@ fn on_extension_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str
             on_signal(server, pane, h, ev, p);
         }
         "SessionEnded" => on_signal(server, pane, h, "SessionEnd", p),
+        // The whole set of sub-agents and shells that outlive their tool call (Claude hook shape).
+        "BgTasks" => on_signal(server, pane, h, "BgTasks", p),
         "Usage" => {
             let run = bound_run(server, pane, h);
             usage::from_extension(server, &run, p);

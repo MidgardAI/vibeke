@@ -844,3 +844,137 @@ describe("ride-along messages", () => {
     await sleep(50);
   });
 });
+
+describe("background work", () => {
+  /** A fake in-process event bus (`pi.events`). */
+  function bus() {
+    const handlers = new Map<string, ((d: unknown) => void)[]>();
+    return {
+      on(ch: string, h: (d: unknown) => void) {
+        if (!handlers.has(ch)) handlers.set(ch, []);
+        handlers.get(ch)!.push(h);
+        return () => {};
+      },
+      emit(ch: string, d: unknown) {
+        for (const h of handlers.get(ch) ?? []) h(d);
+      },
+    };
+  }
+  const bgSignals = () => server.signals().filter((s) => s.event === "BgTasks");
+  const lastBg = () => bgSignals().at(-1)?.payload;
+
+  test("omp async jobs: reported as a set with their tool call, emptied when they end", async () => {
+    let running: any[] = [];
+    const { pi } = setup(server, "omp", { bgPollMs: 20 });
+    const c = makeCtx({ getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+    await pi.emit("session_start", {}, c);
+    await pi.emit("agent_start", {}, c);
+    await pi.emit("tool_execution_start", { toolCallId: "call-task", toolName: "task", args: {} }, c);
+    running = [
+      { id: "Scout", type: "task", status: "running", label: "Scout", startTime: 1 },
+      { id: "bg_1", type: "bash", status: "running", label: "pnpm test", startTime: 2 },
+    ];
+    await pi.emit(
+      "tool_execution_end",
+      {
+        toolCallId: "call-task",
+        toolName: "task",
+        isError: false,
+        result: { details: { async: { state: "running", jobId: "Scout", type: "task" }, progress: [{ id: "Scout", status: "pending" }] } },
+      },
+      c,
+    );
+    await waitFor(() => bgSignals().length >= 1, 3000, "BgTasks");
+    expect(lastBg()).toMatchObject({
+      background_tasks: [
+        { id: "Scout", type: "subagent", status: "running", description: "Scout", tool_use_id: "call-task" },
+        { id: "bg_1", type: "shell", status: "running", description: "pnpm test" },
+      ],
+      kinds: ["shell", "subagent"],
+    });
+    // The jobs end while the host is idle: the poll notices.
+    running = [];
+    await waitFor(() => lastBg()?.background_tasks.length === 0, 3000, "empty set");
+    const n = bgSignals().length;
+    await sleep(80);
+    expect(bgSignals().length).toBe(n); // unchanged: no repeats, no polling
+  });
+
+  test("omp: the set is sent again at each turn end", async () => {
+    const running = [{ id: "bg_2", type: "bash", status: "running", label: "sleep 60" }];
+    const { pi } = setup(server, "omp", { bgPollMs: 10_000 });
+    const c = makeCtx({ getAsyncJobSnapshot: () => ({ running }) });
+    await pi.emit("session_start", {}, c);
+    await pi.emit("agent_start", {}, c);
+    await waitFor(() => bgSignals().length === 1);
+    await pi.emit("agent_settled", {}, c);
+    await waitFor(() => bgSignals().length === 2, 3000, "turn-end resend");
+    const ev = server.events();
+    expect(ev.lastIndexOf("BgTasks")).toBeGreaterThan(ev.lastIndexOf("TurnEnded"));
+  });
+
+  test("pi-subagents async runs: started and completed events; other sessions and dead runners are left out", async () => {
+    const pi = new FakeHost();
+    const b = bus();
+    (pi as any).events = b;
+    createExtension(pi as any, {
+      env: { VIBEKE: "1", VIBEKE_SOCKET: server.path, VIBEKE_PANE_TOKEN: "tok" },
+      host: "pi",
+      control: false,
+      bgPollMs: 20,
+    });
+    const c = makeCtx();
+    await pi.emit("session_start", {}, c);
+    b.emit("subagent:async-started", { id: "run-1", pid: process.pid, sessionId: "sess-1", agent: "reviewer", goal: "Review the diff" });
+    await waitFor(() => bgSignals().length === 1);
+    expect(lastBg()).toEqual(
+      expect.objectContaining({
+        background_tasks: [{ id: "run-1", type: "subagent", status: "running", description: "reviewer: Review the diff" }],
+        kinds: ["subagent"],
+      }),
+    );
+    b.emit("subagent:async-started", { id: "run-other", sessionId: "sess-2", agent: "scout" });
+    b.emit("subagent:async-started", { id: "run-dead", pid: 2 ** 22 + 12345, sessionId: "sess-1", agent: "worker" });
+    await sleep(60);
+    expect(lastBg().background_tasks.map((t: any) => t.id)).toEqual(["run-1"]);
+    b.emit("subagent:async-complete", { runId: "run-1", sessionId: "sess-1" });
+    await waitFor(() => lastBg()?.background_tasks.length === 0, 3000, "empty set");
+  });
+
+  test("hosts without a background source send nothing", async () => {
+    const { pi } = setup(server, "pi");
+    const c = makeCtx();
+    await pi.emit("session_start", {}, c);
+    await pi.emit("agent_start", {}, c);
+    await pi.emit("agent_settled", {}, c);
+    await waitFor(() => server.events().includes("TurnEnded"));
+    await sleep(30);
+    expect(bgSignals()).toEqual([]);
+  });
+
+  test("a non-empty set is sent again after a reconnect", async () => {
+    const running = [{ id: "Worker", type: "task", status: "running", label: "Worker" }];
+    const { pi } = setup(server, "omp", { bgPollMs: 10_000 });
+    const c = makeCtx({ getAsyncJobSnapshot: () => ({ running }) });
+    await pi.emit("session_start", {}, c);
+    await waitFor(() => bgSignals().length === 1);
+    await server.kill();
+    await server.listen();
+    await pi.emit("tool_execution_start", { toolCallId: "t1", toolName: "read", args: {} }, c);
+    await waitFor(() => bgSignals().length === 2, 3000, "resend after reconnect");
+    expect(lastBg().background_tasks.map((t: any) => t.id)).toEqual(["Worker"]);
+  });
+
+  test("headless owner still reports background work", async () => {
+    const pi = new FakeHost();
+    createExtension(pi as any, {
+      env: { VIBEKE: "1", VIBEKE_SOCKET: server.path, VIBEKE_PANE_TOKEN: "t", VIBEKE_HEADLESS_OWNER: "1" },
+      host: "omp",
+      bgPollMs: 10_000,
+    });
+    const c = makeCtx({ getAsyncJobSnapshot: () => ({ running: [{ id: "bg_1", type: "bash", status: "running", label: "make" }] }) });
+    await pi.emit("session_start", {}, c);
+    await waitFor(() => server.events().includes("BgTasks"));
+    expect(server.events()).toEqual(["Snapshot", "SessionStart", "BgTasks"]);
+  });
+});

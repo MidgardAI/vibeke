@@ -294,7 +294,8 @@ pub(super) fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
 pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
     match event {
         // Claude `Stop`, and `BgTasks` from headless adapters (Claude stream-json
-        // `background_tasks_changed`, Codex `thread/backgroundTerminals/list`).
+        // `background_tasks_changed`, Codex `thread/backgroundTerminals/list`) and from the
+        // pi/omp extension (omp async jobs, pi-subagents async runs).
         "Stop" | "BgTasks" => {
             if let Some(list) = p.get("background_tasks").and_then(Value::as_array) {
                 replace(server, &run.id, from_claude(list));
