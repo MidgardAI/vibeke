@@ -7215,6 +7215,13 @@ ServerStatusResultHolders = TypedDict("ServerStatusResultHolders", {
     "orphaned": NotRequired[int],
 })
 
+ServerStatusResultRender = TypedDict("ServerStatusResultRender", {
+    "session_wakes": int,
+    "timer_wakes": int,
+    "row_projections": int,
+    "pane_frames": int,
+})
+
 ServerStatusResult = TypedDict("ServerStatusResult", {
     "pid": int,
     "version": str,
@@ -7232,6 +7239,7 @@ ServerStatusResult = TypedDict("ServerStatusResult", {
     "ephemeral": NotRequired[int],
     "preview": NotRequired[Dict[str, Any]],
     "timers": NotRequired[Dict[str, Any]],
+    "render": NotRequired["ServerStatusResultRender"],
     "gateway": NotRequired[Optional["GatewayStatus"]],
     "db_size": NotRequired[int],
     "rss": NotRequired[int],
@@ -11657,6 +11665,13 @@ SessionServerRestartedData = TypedDict("SessionServerRestartedData", {
     "prev_pid": NotRequired[int],
 })
 
+SessionShutdownUnflushedSubject: TypeAlias = Dict[str, Any]
+
+SessionShutdownUnflushedData = TypedDict("SessionShutdownUnflushedData", {
+    "reason": str,
+    "holders_retained": bool,
+})
+
 SessionStartedSubject: TypeAlias = Dict[str, Any]
 
 SessionStartedData = TypedDict("SessionStartedData", {
@@ -12523,6 +12538,7 @@ EVENT_TYPES = (
     "session.config_rejected",
     "session.config_reloaded",
     "session.server_restarted",
+    "session.shutdown_unflushed",
     "session.started",
     "session.stopped",
     "state.forgotten",

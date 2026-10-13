@@ -6709,6 +6709,12 @@ export type ServerStatusResult = {
   ephemeral?: number;
   preview?: Record<string, unknown>;
   timers?: Record<string, unknown>;
+  render?: {
+    session_wakes: number;
+    timer_wakes: number;
+    row_projections: number;
+    pane_frames: number;
+  };
   gateway?: GatewayStatus | null;
   db_size?: number;
   rss?: number;
@@ -11456,6 +11462,13 @@ export type SessionServerRestartedData = {
   prev_pid?: number;
 };
 
+export type SessionShutdownUnflushedSubject = Record<string, unknown>;
+
+export type SessionShutdownUnflushedData = {
+  reason: string;
+  holders_retained: boolean;
+};
+
 export type SessionStartedSubject = Record<string, unknown>;
 
 export type SessionStartedData = {
@@ -12316,6 +12329,7 @@ export interface EventMap {
   "session.config_rejected": { subject: SessionConfigRejectedSubject; data: SessionConfigRejectedData };
   "session.config_reloaded": { subject: SessionConfigReloadedSubject; data: SessionConfigReloadedData };
   "session.server_restarted": { subject: SessionServerRestartedSubject; data: SessionServerRestartedData };
+  "session.shutdown_unflushed": { subject: SessionShutdownUnflushedSubject; data: SessionShutdownUnflushedData };
   "session.started": { subject: SessionStartedSubject; data: SessionStartedData };
   "session.stopped": { subject: SessionStoppedSubject; data: SessionStoppedData };
   "state.forgotten": { subject: StateForgottenSubject; data: StateForgottenData };

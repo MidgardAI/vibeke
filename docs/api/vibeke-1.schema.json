@@ -27223,6 +27223,29 @@
           "timers": {
             "type": "object"
           },
+          "render": {
+            "type": "object",
+            "properties": {
+              "session_wakes": {
+                "type": "integer"
+              },
+              "timer_wakes": {
+                "type": "integer"
+              },
+              "row_projections": {
+                "type": "integer"
+              },
+              "pane_frames": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "session_wakes",
+              "timer_wakes",
+              "row_projections",
+              "pane_frames"
+            ]
+          },
           "gateway": {
             "anyOf": [
               {
@@ -41461,6 +41484,26 @@
             "type": "integer"
           }
         }
+      }
+    },
+    "session.shutdown_unflushed": {
+      "subject": {
+        "type": "object"
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "holders_retained": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reason",
+          "holders_retained"
+        ]
       }
     },
     "session.started": {
