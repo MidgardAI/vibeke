@@ -93,6 +93,36 @@ impl Env {
 }
 
 #[test]
+fn housekeeping_drains_a_backlog_larger_than_one_compression_batch() {
+    let e = Env::new();
+    // Make nine segments before the first pass, exceeding the 8 MiB copy budget.
+    let text = "x".repeat(1 << 20);
+    for n in 0..9 {
+        e.server.archive_rows(
+            "p",
+            vec![ArchivedRow {
+                n,
+                t: text.clone(),
+                w: false,
+            }],
+        );
+    }
+    e.server.housekeeping();
+    assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), 0);
+    assert!(e.server.fts_buf.lock().unwrap().is_empty());
+    assert_eq!(
+        e.server
+            .archive
+            .lock()
+            .unwrap()
+            .read("p", 0, 9)
+            .unwrap()
+            .len(),
+        9
+    );
+}
+
+#[test]
 fn retention_removes_segments_and_fts_rows_together() {
     let e = Env::new();
     e.fill("p1", 30);

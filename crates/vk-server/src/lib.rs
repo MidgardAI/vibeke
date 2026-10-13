@@ -1889,18 +1889,30 @@ impl Server {
         self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
         // Buffers remain visible to readers while compression runs. A purge or encryption
         // change may consume them in between; apply_flush detects and discards stale work.
-        let batches = self.archive.lock().unwrap().prepare_flush();
-        let batches: Vec<_> = batches
-            .into_iter()
-            .filter_map(|b| b.compress().ok())
-            .collect();
+        let mut remaining = self.archive.lock().unwrap().buffered_bytes();
+        while remaining > 0 {
+            let batches = self.archive.lock().unwrap().prepare_flush();
+            let bytes: usize = batches.iter().map(|b| b.bytes_len()).sum();
+            if bytes == 0 {
+                break;
+            }
+            let batches: Vec<_> = batches
+                .into_iter()
+                .filter_map(|b| b.compress().ok())
+                .collect();
+            let mut a = self.archive.lock().unwrap();
+            for batch in batches {
+                let _ = a.apply_flush(batch);
+            }
+            // Drain the backlog in bounded batches without sleeping between them. Bound
+            // the pass to the initial byte count so a continuous producer cannot starve
+            // indexing or shutdown. Failed writes are retried by a later pass.
+            remaining = remaining.saturating_sub(bytes);
+        }
         // The archive lock is held from the drain until the batch is indexed: `forget` and
         // retention purge under it, so a purge can't run between the two and have this batch
         // re-insert text it just deleted (leftovers review finding 7).
         let mut a = self.archive.lock().unwrap();
-        for batch in batches {
-            let _ = a.apply_flush(batch);
-        }
         if flush_all {
             let _ = a.flush();
         }

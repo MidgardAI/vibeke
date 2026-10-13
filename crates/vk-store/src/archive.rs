@@ -69,6 +69,10 @@ pub struct CompressedFlush {
 }
 
 impl FlushBatch {
+    pub fn bytes_len(&self) -> usize {
+        self.bytes.len()
+    }
+
     pub fn compress(self) -> Result<CompressedFlush> {
         let mut frame = zstd::encode_all(&self.bytes[..], 3)?;
         if let Some(c) = self.cipher {
@@ -370,6 +374,15 @@ impl Archive {
             }
         }
         batches
+    }
+
+    /// Uncompressed bytes waiting to be written, without copying the buffers.
+    pub fn buffered_bytes(&self) -> usize {
+        self.open
+            .values()
+            .chain(self.pending.values().flatten())
+            .map(|s| s.buf.len())
+            .sum()
     }
 
     /// Earliest row still buffered for each pane. The caller must not publish later rows
