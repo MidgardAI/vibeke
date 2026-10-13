@@ -4,8 +4,8 @@
 // (`peer.redeem`), so that host can send work to the teammate's host directly.
 
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Link2, QrCode, Server, ShieldCheck } from 'lucide-react';
-import { ChannelError, PairingError, hostKind, linkExpired, parseLink, transportOf, type PairingLink } from '@vibeke/core';
+import { CheckCircle2, ExternalLink, Link2, LogIn, QrCode, Server, ShieldCheck } from 'lucide-react';
+import { ChannelError, PairingError, hostKind, isReviewLink, linkData, linkExpired, linkRoute, needsAttestation, parseLink, transportOf, type AttestResult, type PairingLink } from '@vibeke/core';
 import { useAllHosts, useApp, usePrefs } from '../app/hooks';
 import { QrScanner, qrScanSupported } from '../components/qr-scanner';
 import { Button, Card, Dot, Notice, Spinner, TextField, cx } from '../components/ui';
@@ -14,6 +14,7 @@ import { errorMessage } from '../lib/answer';
 import { clockTime, whenText } from '../lib/format';
 import { isOwnFullHost } from '../lib/handoff-send';
 import { navigate } from '../router';
+import { startAttestation, takeAttestation } from '../lib/attest-flow';
 
 type Phase =
   | { k: 'form' }
@@ -22,11 +23,18 @@ type Phase =
   | { k: 'done'; host: string; id: string; terminal: boolean; kind: 'device' | 'share' }
   /** A handoff invitation redeemed by one of the user's hosts (`on`) for the teammate's `to`. */
   | { k: 'redeemed'; on: string; to: string }
-  | { k: 'error'; message: string };
+  | { k: 'error'; message: string; allowed?: string[] }
+  /** Leaving for the GitHub sign-in (spec 20 §2.3). */
+  | { k: 'signin' };
+
+/** One read of a returned attestation per invitation, also under React's double effects. */
+const attestations = new Map<string, AttestResult | null>();
 
 /** Map a pairing failure to the user-facing reason. */
 export function pairingErrorMessage(e: unknown): string {
   if (e instanceof PairingError) {
+    const refusal = e.refusal;
+    if (refusal && t.pair.refusals[refusal]) return t.pair.refusals[refusal]!;
     switch (e.code) {
       case 'expired':
         return t.pair.errors.expired;
@@ -91,6 +99,27 @@ export function PairScreen({ d }: { d: string | null }) {
   }, [raw]);
   const link = parsed.link;
   const expired = link ? linkExpired(link, app.platform.clock.now()) : false;
+  const github = !!link && needsAttestation(link);
+
+  // Review and continue links have their own screens (a pasted one lands here first).
+  useEffect(() => {
+    if (!raw) return;
+    const kind = linkRoute(raw);
+    if (kind === 'continue') navigate({ name: 'continue', d: linkData(raw) }, { replace: true });
+    else if (link && isReviewLink(link)) navigate({ name: 'review', d: linkData(raw) }, { replace: true });
+  }, [raw, link]);
+
+  // Back from the GitHub sign-in: pair with the attestation, or say why it did not work.
+  useEffect(() => {
+    if (!link || !github || app.platform.engine) return;
+    if (!attestations.has(link.pid)) attestations.set(link.pid, takeAttestation(app, link.pid));
+    const a = attestations.get(link.pid);
+    if (!a) return;
+    attestations.delete(link.pid);
+    if (a.ok) void start(a.token);
+    else setPhase({ k: 'error', message: t.pair.github.failed(a.error) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [link?.pid, github]);
   const existing = link ? hosts.find((h) => h.record.host_id === link.host) : undefined;
   const known = !!existing;
   const share = link?.share;
@@ -103,19 +132,30 @@ export function PairScreen({ d }: { d: string | null }) {
   const unreachable = local && !app.platform.localTransport;
   const Panel = app.platform.extensions?.pairPanel;
 
-  const start = async () => {
+  const signIn = async () => {
+    if (!link || !raw) return;
+    app.prefs.patch({ deviceName: name.trim() || app.platform.defaultDeviceName });
+    setPhase({ k: 'signin' });
+    try {
+      await startAttestation(app, link, linkData(raw), 'pair');
+    } catch (e) {
+      setPhase({ k: 'error', message: (e as Error).message });
+    }
+  };
+
+  const start = async (attest?: string) => {
     if (!link) return;
     app.prefs.patch({ deviceName: name.trim() || app.platform.defaultDeviceName });
     setPhase({ k: 'connecting' });
     try {
-      const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (f) => setPhase({ k: 'pending', fingerprint: f }));
+      const rec = await app.pair(link, name.trim() || app.platform.defaultDeviceName, (f) => setPhase({ k: 'pending', fingerprint: f }), attest);
       app.haptic('success');
       setPhase({ k: 'done', host: rec.name, id: rec.host_id, terminal: rec.kind === 'share' || (rec.scope === 'full' && !rec.limit && !rec.until), kind: rec.kind ?? 'device' });
       setRaw(null);
 
     } catch (e) {
       app.haptic('error');
-      setPhase({ k: 'error', message: pairingErrorMessage(e) });
+      setPhase({ k: 'error', message: pairingErrorMessage(e), allowed: e instanceof PairingError ? e.allowed : undefined });
     }
   };
 
@@ -189,14 +229,41 @@ export function PairScreen({ d }: { d: string | null }) {
               </div>
             )}
 
-            {phase.k === 'form' || phase.k === 'error' ? (
+            {github && app.platform.engine ? (
               <>
-                <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
-                {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
-                <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
-                  {share ? t.pair.accept : t.pair.start}
+                {/* The desktop app keeps keys in its main process: the GitHub round trip runs in the browser app. */}
+                <Notice>{t.pair.github.desktop}</Notice>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  block
+                  icon={<ExternalLink className="size-5" />}
+                  onClick={() => app.platform.openExternal(`${(app.platform.browserAppUrl ?? 'https://app.vibeke.dev').replace(/\/+$/, '')}/#/pair?d=${linkData(raw ?? '')}`)}
+                >
+                  {t.pair.github.openInBrowser}
                 </Button>
               </>
+            ) : phase.k === 'form' || phase.k === 'error' ? (
+              <>
+                <TextField label={t.pair.deviceName} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
+                {github && phase.k === 'form' && <Notice>{t.pair.github.needed}</Notice>}
+                {phase.k === 'error' && <Notice tone="danger">{phase.message}</Notice>}
+                {phase.k === 'error' && phase.allowed && phase.allowed.length > 0 && <Notice>{t.pair.github.linkFor(phase.allowed)}</Notice>}
+                {github ? (
+                  <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<LogIn className="size-5" />} onClick={() => void signIn()}>
+                    {phase.k === 'error' ? t.pair.github.signInAgain : t.pair.github.signIn}
+                  </Button>
+                ) : (
+                  <Button variant="primary" size="lg" block disabled={expired || unreachable || replacesOwn} icon={<ShieldCheck className="size-5" />} onClick={() => void start()}>
+                    {share ? t.pair.accept : t.pair.start}
+                  </Button>
+                )}
+              </>
+            ) : phase.k === 'signin' ? (
+              <div className="flex items-start gap-3 text-sm">
+                <Spinner className="mt-0.5" />
+                <span>{t.pair.github.signingIn}</span>
+              </div>
             ) : (
               <div className="flex items-start gap-3 text-sm">
                 <Spinner className="mt-0.5" />
@@ -263,7 +330,7 @@ function ShareHeader({ link }: { link: PairingLink }) {
     <div className="space-y-1">
       <div className="text-base font-semibold">{t.pair.shareFrom(link.name, what)}</div>
       <div className="text-sm text-muted">
-        {[t.pair.shareScope[s.scope] ?? s.scope, t.pair.shareUntil(whenText(s.until * 1000, now))].join(' · ')}
+        {[t.pair.shareScope[s.scope] ?? s.scope, t.pair.shareUntil(whenText(s.until * 1000, now)), ...(s.uses && s.uses > 1 ? [t.pair.usesLeft(s.uses)] : [])].join(' · ')}
       </div>
     </div>
   );

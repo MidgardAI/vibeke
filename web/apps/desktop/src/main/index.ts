@@ -25,7 +25,7 @@ import {
 import { systemClock, type Lifecycle, type Platform } from '@vibeke/core';
 import { EVENT, INVOKE, type BootInfo, type ChooseVibekeResult, type DesktopSettings, type LocalConnectResult, type WireResult } from '../shared/contract';
 import { EventSubscriptions, forwardableEvent, type HostEventPayload } from '../shared/host-events';
-import { deepLinkFromArgv, deepLinkToHash, PROTOCOL } from './deeplink';
+import { deepLinkAction, deepLinkFromArgv, PROTOCOL } from './deeplink';
 import { Engine } from './engine';
 import { registerIpc } from './ipc';
 import { checkExecutable, discoverVibeke, gatewaySocket, runPairLocal, socketAlive, startGateway, vibekeVersion, waitForSocket } from './local-pair';
@@ -71,10 +71,12 @@ if (!app.requestSingleInstanceLock()) {
 let pendingLink: string | null = deepLinkFromArgv(process.argv);
 let ready = false;
 const openLink = (raw: string) => {
-  const hash = deepLinkToHash(raw);
-  if (!hash) return log(`ignored deep link`);
+  const action = deepLinkAction(raw);
+  if (!action) return log(`ignored deep link`);
+  // Review links and GitHub-gated pair links belong to the browser app (spec 20 §7.3).
+  if (action.kind === 'external') return void shell.openExternal(action.url).catch(() => {});
   if (!ready) pendingLink = raw;
-  else windows.showMain(hash);
+  else windows.showMain(action.hash);
 };
 app.on('open-url', (e, url) => {
   e.preventDefault();
@@ -555,8 +557,10 @@ app.whenReady().then(() => {
 
   const hiddenStart = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin);
   ready = true;
-  const link = pendingLink ? deepLinkToHash(pendingLink) : null;
+  const pending = pendingLink ? deepLinkAction(pendingLink) : null;
   pendingLink = null;
+  const link = pending?.kind === 'route' ? pending.hash : null;
+  if (pending?.kind === 'external') void shell.openExternal(pending.url).catch(() => {});
   if (link) windows.showMain(link);
   else if (!hiddenStart) windows.showMain();
   log(`ready ${version} (${typeof __BUILD_HASH__ === 'string' ? __BUILD_HASH__ : 'dev'})`);

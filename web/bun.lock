@@ -59,6 +59,16 @@
         "workbox-window": "^7.4.1",
       },
     },
+    "apps/review-content": {
+      "name": "@vibeke/review-content",
+      "version": "0.1.0",
+      "dependencies": {
+        "@vibeke/core": "workspace:*",
+      },
+      "devDependencies": {
+        "vite": "*",
+      },
+    },
     "apps/site": {
       "name": "@vibeke/site",
       "version": "0.1.0",
@@ -686,6 +696,8 @@
     "@vibeke/desktop": ["@vibeke/desktop@workspace:apps/desktop"],
 
     "@vibeke/pwa": ["@vibeke/pwa@workspace:apps/pwa"],
+
+    "@vibeke/review-content": ["@vibeke/review-content@workspace:apps/review-content"],
 
     "@vibeke/site": ["@vibeke/site@workspace:apps/site"],
 

@@ -1025,8 +1025,20 @@ export interface AnnotationPick {
   covers?: { selector: string; text?: string }[];
 }
 
-/** `sending`: a prompt or paste is in flight. `unconfirmed`: it may have reached the agent; it is never sent again without the user. */
-export type AnnotationState = 'open' | 'queued' | 'sending' | 'delivered' | 'unconfirmed';
+/**
+ * `sending`: a prompt or paste is in flight. `unconfirmed`: it may have reached the agent; it is
+ * never sent again without the user. `held`: a reviewer sent it, and it waits for the owner to
+ * release or discard it (spec 20 §3.3).
+ */
+export type AnnotationState = 'open' | 'queued' | 'sending' | 'delivered' | 'unconfirmed' | 'held';
+
+/** Who wrote a draft (spec 20 §3.4); absent for the owner's own drafts. */
+export interface AnnotationAuthor {
+  kind: 'github' | 'share';
+  id: string;
+  /** `@alice` or the share's label, for display. */
+  label: string;
+}
 
 export interface AnnotationDraft {
   id: string;
@@ -1044,6 +1056,34 @@ export interface AnnotationDraft {
   detail?: string;
   updated_at_ms: number;
   delivered_at_ms?: number;
+  /** A reviewer's draft (spec 20 §3.4). */
+  author?: AnnotationAuthor | null;
+}
+
+/** `review.info` (spec 20 §3.2): the one preview a review device reaches. */
+export interface ReviewInfo {
+  preview: { id: string; handle?: string | null; label?: string | null; url: string; status?: string; port?: number; path?: string | null };
+  /** The owner's display name ("waiting for <owner>"). */
+  owner: string;
+  notes: 'direct' | 'held';
+  sid: string;
+  /** Unix seconds. */
+  expires_at?: number | null;
+}
+
+/** A continue-link job (`handoff.link.status`, spec 20 §4.5). */
+export interface HandoffLinkJob {
+  job: string;
+  kind?: 'create' | 'redeem';
+  state: 'exporting' | 'uploading' | 'downloading' | 'importing' | 'done' | 'failed';
+  progress?: number | null;
+  error?: string | { code?: string; message?: string } | null;
+  link?: string | null;
+  markdown?: string | null;
+  blob?: string | null;
+  expires_at?: number | null;
+  /** Redeem jobs: the incoming handoff the receiving host created (its id, or the record). */
+  incoming?: string | { id: string; [k: string]: unknown } | null;
 }
 
 /** One input event for `browser.input`; coordinates are CSS pixels of the page's viewport. */
@@ -1405,16 +1445,30 @@ export interface AppApi {
       viewport?: { w: number; h: number; dpr?: number; device?: string };
       image_b64?: string;
       note?: string;
+      /** Spec 20 §3.6: no image; the host renders a crop in a confined session when it can. */
+      capture?: boolean;
     };
     result: { draft: AnnotationDraft; note: AnnotationNote };
   };
   'browser.annotation_update': { params: { draft: string; n?: number; note?: string; page_note?: string }; result: { draft: AnnotationDraft } };
   'browser.annotation_remove': { params: { draft: string; n: number }; result: { draft: AnnotationDraft } };
   'browser.annotations_clear': { params: { draft: string }; result: { cleared: boolean } };
+  /** `drafts`: every draft on the target with its author (owner devices, newer hosts). */
   'browser.annotations': {
     params: { pane?: string; session?: string; preview?: string; draft?: string };
-    result: { draft: AnnotationDraft | null };
+    result: { draft: AnnotationDraft | null; drafts?: AnnotationDraft[] };
   };
+  /** Spec 20 §3.3: deliver a held reviewer draft to the agent (owner devices only). */
+  'browser.annotations_release': { params: { draft: string; agent?: string }; result: { state?: AnnotationState; draft?: AnnotationDraft; [k: string]: unknown } };
+  /** Spec 20 §3.3: delete a held reviewer draft (owner devices only). */
+  'browser.annotations_discard': { params: { draft: string }; result: Record<string, unknown> };
+  /** Spec 20 §3.2: the preview a review device reaches. */
+  'review.info': { params: Record<string, never>; result: ReviewInfo };
+  /** Spec 20 §4.5: continue links (owner devices). */
+  'handoff.link.create': { params: { pane: string; access: 'link' | 'github'; github?: string[]; ttl_s?: number; interrupt?: boolean }; result: { job: string } };
+  'handoff.link.status': { params: { job: string }; result: HandoffLinkJob };
+  'handoff.link.redeem': { params: { link: string }; result: { job: string } };
+  'handoff.link.revoke': { params: { blob: string }; result: Record<string, unknown> };
   /** Types the notes into the agent's pane when that is safe, else queues them; `copy_only` just returns the text. */
   'browser.annotations_send': {
     params: { draft: string; agent?: string; copy_only?: boolean };
@@ -1431,7 +1485,8 @@ export interface AppApi {
   };
   'browser.press': { params: { session: string; key: string }; result: { session: string; key: string } };
   'browser.navigate': {
-    params: { session: string; url?: string; path?: string; wait?: string; timeout_ms?: number };
+    /** `action`: history steps; confined review sessions accept only these (spec 20 §3.7). */
+    params: { session: string; url?: string; path?: string; action?: 'back' | 'forward' | 'reload'; wait?: string; timeout_ms?: number };
     result: { session: string; status: number | null; final_url: string; title: string };
   };
   /**
@@ -1439,7 +1494,7 @@ export interface AppApi {
    * Full-scope devices without a limit only. Data arrives as `tunnel.data` notifications; the
    * gateway stops reading while `TUNNEL_ACK_WINDOW` bytes are unacknowledged.
    */
-  'tunnel.open': { params: TunnelOpenParams; result: { stream: string } };
+  'tunnel.open': { params: TunnelOpenParams | TunnelOpenPreviewParams; result: { stream: string } };
   /** At most `TUNNEL_SEND_MAX` decoded bytes; the response comes after the write (backpressure). */
   'tunnel.send': { params: { stream: string; data_b64?: string; eof?: boolean }; result: Record<string, never> };
   'tunnel.ack': { params: { stream: string; bytes: number }; result: Record<string, never> };
@@ -1475,6 +1530,11 @@ export interface TunnelOpenParams {
   /** A loopback name or address on that machine (`localhost`, `*.localhost`, 127/8, ::1). */
   host: string;
   port: number;
+}
+
+/** Spec 20 §3.6: a stream to a preview's port, resolved by the host (review devices use only this). */
+export interface TunnelOpenPreviewParams {
+  preview: string;
 }
 
 /** `tunnel.data`: up to 48 KiB of stream data (unpadded base64url), in order. */

@@ -2,7 +2,7 @@
 // OS-specific sits behind this interface; screens only use these capabilities.
 
 import type { ComponentType } from 'react';
-import type { AnnotationPick, HostManagerApi, HostRecord, HostStore, PairingLink, Platform } from '@vibeke/core';
+import type { AnnotationPick, CookieJarStore, HostManagerApi, HostRecord, HostStore, PairingLink, Platform, ReviewStore } from '@vibeke/core';
 import type { Segment } from './lib/ansi';
 import type { CachedDashboard } from './lib/offline-cache';
 import type { KV } from './lib/prefs';
@@ -164,6 +164,29 @@ export interface UiPlatform extends Platform {
   mac?: boolean;
   /** Dev-server previews embedded as native browser views over the host's tunnel (desktop). */
   previewView?: PreviewViewApi;
+  /**
+   * Design reviews (spec 20 §3.6, browser app only): review connections stored apart from host
+   * records, and the controller's cookie jars keyed by review `sid`. Without them the app cannot
+   * open review links (the desktop app sends them to the system browser).
+   */
+  review?: ReviewCapability;
+  /** Account server for GitHub sign-in (spec 20 §2.3); default `https://cloud.vibeke.dev`. */
+  accountServer?: string;
+  /**
+   * The browser app's public URL, for links this shell cannot open itself (desktop: GitHub-gated
+   * pair links and review links go to the system browser). Default `https://app.vibeke.dev`.
+   */
+  browserAppUrl?: string;
+}
+
+export interface ReviewCapability {
+  store: ReviewStore;
+  cookies: CookieJarStore;
+  /**
+   * The content origin pattern (`http://{sid}.p.localhost:5174`), for local development and
+   * self-hosting. Absent: `https://<sid>.p.<registrable domain of the app>`.
+   */
+  contentOriginPattern?: string;
 }
 
 /** A preview view's navigation state, pushed by the shell. */

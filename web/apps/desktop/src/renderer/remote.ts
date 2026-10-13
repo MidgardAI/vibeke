@@ -28,7 +28,12 @@ export function fromWire(e: WireError): Error {
     case 'not_connected':
       return new NotConnectedError(e.hostId);
     case 'pairing': {
-      const cause = e.channelCode ? new ChannelError(e.channelCode as never, e.message, { closeCode: e.closeCode }) : undefined;
+      // `refused`: the host's error kind (spec 20 §2.4) comes back as the RpcError it was.
+      const cause = e.channelCode
+        ? new ChannelError(e.channelCode as never, e.message, { closeCode: e.closeCode })
+        : typeof e.refusal === 'string'
+          ? new RpcError('pair.claim', { code: -32000, message: e.message, data: { kind: e.refusal } })
+          : undefined;
       return new PairingError(e.code as never, e.message, cause);
     }
     default:

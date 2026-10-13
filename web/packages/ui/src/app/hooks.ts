@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { groupBatches, rankInbox, type Batch, type HostState, type InboxItem } from '@vibeke/core';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { groupBatches, rankInbox, type Batch, type HostConnectionApi, type HostState, type InboxItem } from '@vibeke/core';
 import { useStore } from '../lib/store';
 import { buildTree, runForPane, type PaneTree } from '../lib/tree';
 import { overlayHosts, type HostView } from '../lib/offline-cache';
@@ -12,6 +12,19 @@ export function useApp(): AppModel {
   const app = useContext(AppContext);
   if (!app) throw new Error('useApp outside <VibekeApp>');
   return app;
+}
+
+/**
+ * Connections that are not host records (a review connection, spec 20 §7.2): components inside
+ * this provider (the phone preview, the notes hooks) talk to it instead of `app.conn`.
+ */
+export const ConnOverrideContext = createContext<((hostId: string) => HostConnectionApi | undefined) | null>(null);
+
+/** Look up a host's connection, honouring `ConnOverrideContext`. */
+export function useConnOf(): (hostId: string) => HostConnectionApi | undefined {
+  const app = useApp();
+  const override = useContext(ConnOverrideContext);
+  return useCallback((hostId: string) => override?.(hostId) ?? app.conn(hostId), [app, override]);
 }
 
 /** Every paired host. */

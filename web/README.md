@@ -8,6 +8,7 @@ The phone/desktop apps of [spec 16](../spec/16-gateway-relay-and-apps.md). Bun w
 | `packages/ui` (`@vibeke/ui`) | Every screen and component (React 19, Tailwind v4, lucide). Depends only on core and a `UiPlatform` handed to `<VibekeApp platform={…}/>`. |
 | `apps/pwa` (`@vibeke/pwa`) | The PWA shell: Vite, `vite-plugin-pwa` (injectManifest, `src/sw.ts`), IndexedDB key/host store, WebSocket transport, Web Push, install prompt, speech. |
 | `apps/desktop` (`@vibeke/desktop`) | The Electron shell: connections and keys in the main process (safeStorage vault, relay + local Unix-socket transports), menu-bar quick approvals, native notifications, deep links, pop-out pane windows, electron-builder packaging. See [apps/desktop/README.md](apps/desktop/README.md). |
+| `apps/review-content` (`@vibeke/review-content`) | The static bundle for design-review content origins `*.p.<app domain>` (spec 20 §3.6): the bridge page, the service worker and the injected page script. It holds no secrets. |
 | `apps/site` (`@vibeke/site`) | Public product website and searchable documentation. TanStack Start, React, and Tailwind; prerenders the canonical `docs/site/src/` Markdown. See [apps/site/README.md](apps/site/README.md). |
 
 No product code lives in shells: they implement `UiPlatform` and bootstrap.
@@ -52,6 +53,17 @@ Useful flags: `--session NAME` on `run` picks the server session; `pair --no-con
 - replace `http://localhost:8787` with `http://localhost:5173` in the printed link.
 
 Keys and hosts live in the origin's IndexedDB, so a device paired on `:5173` is a different device from one paired on `:8787`. The service worker (push, offline shell) only runs in the production build (`vite build` + relay `--app-dir`, or `bun run preview`).
+
+### Design reviews locally
+
+A review link shows the preview from its own content origin (spec 20 §3.6). Locally, serve the content bundle on `*.p.localhost` and tell both sides about each other:
+
+```sh
+VITE_APP_ORIGINS=http://localhost:5173 bun run dev:review                  # http://<sid>.p.localhost:5174
+VITE_REVIEW_CONTENT_ORIGIN='http://{sid}.p.localhost:5174' bun run dev      # the app
+```
+
+Browsers treat `*.localhost` as a secure context, so the service worker runs without TLS.
 
 ## Web Push and iOS
 

@@ -1,7 +1,7 @@
 // The PWA's UiPlatform: IndexedDB keys and hosts, WebSocket transport, Web Push through the
 // service worker, install prompt capture, Web Speech / MediaRecorder, haptics.
 
-import { b64, systemClock, type Dashboard, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
+import { b64, reviewKey, systemClock, type CookieJarData, type ReviewRecord, type ReviewStore, type Dashboard, type HostRecord, type HostStore, type KeyStore, type Lifecycle, type PushSubscriptionInfo, type PushSupport } from '@vibeke/core';
 import type { InstallCapability, NotificationsCapability, PermissionState, SharedItem, SpeechCapability, UiPlatform } from '@vibeke/ui';
 import { idbAll, idbDelete, idbGet, idbGetOrCreate, idbSet, persist } from './idb';
 import { connectWebSocket } from './ws-socket';
@@ -47,6 +47,22 @@ const hostStore: HostStore = {
   put: (r) => idbSet('hosts', r.host_id, r),
   remove: (id) => idbDelete('hosts', id),
 };
+
+const reviewStore: ReviewStore = {
+  list: () => idbAll<ReviewRecord>('reviews'),
+  put: (r) => idbSet('reviews', reviewKey(r.host_id, r.pid), r),
+  remove: (host, pid) => idbDelete('reviews', reviewKey(host, pid)),
+};
+
+const cookieJars = {
+  get: async (sid: string) => (await idbGet<CookieJarData>('cookies', sid)) ?? null,
+  set: (sid: string, data: CookieJarData) => idbSet('cookies', sid, data),
+  remove: (sid: string) => idbDelete('cookies', sid),
+};
+
+/** `VITE_REVIEW_CONTENT_ORIGIN` (e.g. `http://{sid}.p.localhost:5174`) for local development. */
+const reviewContentPattern = (import.meta.env?.VITE_REVIEW_CONTENT_ORIGIN as string | undefined) || undefined;
+const accountServer = (import.meta.env?.VITE_ACCOUNT_SERVER as string | undefined) || undefined;
 
 const lifecycle: Lifecycle = {
   onVisible(cb) {
@@ -364,5 +380,7 @@ export function createPwaPlatform(update?: AppUpdate): UiPlatform {
     tui: __WASM_TUI_MODULE_URL__ ? { moduleUrl: __WASM_TUI_MODULE_URL__ } : undefined,
     build: { version: __APP_VERSION__, hash: __BUILD_HASH__, origin: location.origin },
     client: { client: 'vibeke-pwa', version: __APP_VERSION__ },
+    review: { store: reviewStore, cookies: cookieJars, contentOriginPattern: reviewContentPattern },
+    accountServer,
   };
 }

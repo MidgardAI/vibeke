@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { ArrowLeft, ArrowRight, Keyboard, Maximize2, MessageSquarePlus, Minimize2, RotateCw } from 'lucide-react';
 import { RpcError, type BrowserSession } from '@vibeke/core';
-import { useApp } from '../app/hooks';
+import { useApp, useConnOf } from '../app/hooks';
 import { t } from '../i18n';
 import { LONG_PRESS_MS, dragged, pickParams, regionStyle, useAnnotations, type Pt } from '../lib/annotations';
 import { errorMessage } from '../lib/answer';
@@ -31,15 +31,19 @@ export function PhonePreview({
   onClose,
   expanded,
   onExpand,
+  confined,
 }: {
   hostId: string;
   preview: { id: string; machine?: string };
+  /** A review's confined session (spec 20 §3.7): the address is read-only. */
+  confined?: boolean;
   onClose?: () => void;
   /** Shown in the centre instead of the panel (the Expand / Collapse button). */
   expanded?: boolean;
   onExpand?: () => void;
 }) {
   const app = useApp();
+  const connOf = useConnOf();
   const visible = useStore(app.visible);
   const stage = useRef<HTMLDivElement>(null);
   const hidden = useRef<HTMLInputElement>(null);
@@ -104,7 +108,7 @@ export function PhonePreview({
   const flush = useCallback(() => {
     raf.current = null;
     const id = session.current;
-    const conn = app.conn(hostId);
+    const conn = connOf(hostId);
     if (!id || !conn || inFlight.current || !batcher.current.pending) return;
     const events = batcher.current.take();
     inFlight.current = true;
@@ -134,7 +138,7 @@ export function PhonePreview({
 
   // ---- the session: open, long-poll frames, and close when we are done ----
   useEffect(() => {
-    const conn = app.conn(hostId);
+    const conn = connOf(hostId);
     if (!conn || !visible || size.width < 8 || size.height < 8) return;
     let live = true;
     let seq = 0;
@@ -220,7 +224,7 @@ export function PhonePreview({
     session.current = null;
     setSid(null);
     batcher.current.clear();
-    if (id) void app.conn(hostId)?.request('browser.session_close', { session: id }).catch(() => {});
+    if (id) void connOf(hostId)?.request('browser.session_close', { session: id }).catch(() => {});
   }, [app, hostId]);
   // Hidden for a while: close the session (the next show opens a new one). Leaving: close now.
   useEffect(() => {
@@ -253,7 +257,7 @@ export function PhonePreview({
     let live = true;
     const poll = async () => {
       try {
-        const r = await app.conn(hostId)?.request('browser.list', {});
+        const r = await connOf(hostId)?.request('browser.list', {});
         const s = r?.sessions.find((x) => x.session === session.current);
         if (live && s && !editingRef.current) setUrl(s.url);
       } catch {
@@ -397,11 +401,11 @@ export function PhonePreview({
   const navigate = async () => {
     const target = normalizeUrl(address);
     const id = session.current;
-    if (!target || !id) return;
+    if (!target || !id || confined) return;
     setEditing(false);
     setUrl(target);
     try {
-      const r = await app.conn(hostId)?.request('browser.navigate', { session: id, url: target });
+      const r = await connOf(hostId)?.request('browser.navigate', { session: id, url: target });
       if (r?.final_url) setUrl(r.final_url);
     } catch (e) {
       app.toast(errorMessage(e), 'error');
@@ -444,6 +448,7 @@ export function PhonePreview({
             onBlur={() => setEditing(false)}
             onChange={(e) => setAddress(e.target.value)}
             disabled={!ready}
+            readOnly={confined}
             inputMode="url"
             enterKeyHint="go"
             autoCapitalize="none"

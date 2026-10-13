@@ -12,6 +12,12 @@ import {
   normalizeInteraction,
   pair as corePair,
   pairingKey,
+  isDefinitiveRefusal,
+  isReviewLink,
+  reviewKey,
+  reviewRecord,
+  ReviewConnection,
+  type ReviewRecord,
   type Batch,
   type Decision,
   type HostConnectionApi,
@@ -140,6 +146,8 @@ export class AppModel {
     this.offs = [];
     this._push?.stop();
     this._manager?.stop();
+    for (const c of this.reviews.values()) c.stop();
+    this.reviews.clear();
   }
 
   /** This device's key fingerprint (`abcd-efgh`), shown during pairing. */
@@ -153,7 +161,17 @@ export class AppModel {
     return this._manager?.get(hostId);
   }
 
-  async pair(link: PairingLink, deviceName: string, onPending: (fp: string) => void): Promise<HostRecord> {
+  /**
+   * The private key an invitation pairs with (made once and kept across a GitHub sign-in, whose
+   * nonce binds this key, spec 20 §2.3). Null in shells that keep keys elsewhere (desktop).
+   */
+  async invitationKey(link: PairingLink): Promise<Uint8Array | null> {
+    if (this.platform.engine || !this.devicePrivate) return null;
+    const p = this.platform;
+    return (await pairingKey(p.keystore, link, this.devicePrivate, (n) => p.random(n))).devicePrivate;
+  }
+
+  async pair(link: PairingLink, deviceName: string, onPending: (fp: string) => void, attest?: string): Promise<HostRecord> {
     if (this.platform.engine) return this.platform.engine.pair(link, deviceName, onPending);
     if (!this.devicePrivate || !(this._manager instanceof HostManager)) throw new Error('app not started');
     // Invitations get their own key: the host keeps them apart from this device's own pairing.
@@ -161,15 +179,67 @@ export class AppModel {
     const { devicePrivate, keyName } = await pairingKey(p.keystore, link, this.devicePrivate, (n) => p.random(n));
     let record: HostRecord;
     try {
-      record = await corePair({ link, platform: p, devicePrivate, keyName, deviceName, onPending });
+      record = await corePair({ link, platform: p, devicePrivate, keyName, deviceName, onPending, attest });
     } catch (e) {
-      if (keyName) await p.keystore.delete(keyName).catch(() => {});
+      // Keep the key after a transient failure, so a retry after a lost response is the same
+      // device (spec 20 §2.4); drop it only when the host refused it for good.
+      if (keyName && isDefinitiveRefusal(e)) await p.keystore.delete(keyName).catch(() => {});
       throw e;
+    }
+    if (isReviewLink(link)) {
+      // Review connections live apart from host records (spec 20 §7.2).
+      const store = p.review?.store;
+      if (!store) throw new Error('this app cannot open review links');
+      const rec = reviewRecord(record, link);
+      await store.put(rec);
+      this.reviews.get(reviewKey(rec.host_id, rec.pid))?.stop();
+      this.reviews.delete(reviewKey(rec.host_id, rec.pid));
+      return rec;
     }
     const old = this._manager.get(record.host_id)?.getSnapshot().record.key;
     await this._manager.add(record);
     if (old && old !== record.key) await p.keystore.delete(old).catch(() => {});
     return record;
+  }
+
+  // ---- reviews (spec 20 §3) -------------------------------------------------------------------
+
+  private reviews = new Map<string, ReviewConnection>();
+
+  /** The stored review for an invitation, if this device opened it before. */
+  async findReview(hostId: string, pid: string): Promise<ReviewRecord | null> {
+    const list = await this.platform.review?.store.list().catch(() => []);
+    return list?.find((r) => r.host_id === hostId && r.pid === pid) ?? null;
+  }
+
+  /** The live review connection for a record (started on first use, one per `(host, pid)`). */
+  reviewConnection(rec: ReviewRecord): ReviewConnection {
+    const key = reviewKey(rec.host_id, rec.pid);
+    let c = this.reviews.get(key);
+    if (!c) {
+      if (!this.devicePrivate) throw new Error('app not started');
+      const p = this.platform;
+      c = new ReviewConnection(rec, {
+        platform: p,
+        devicePrivate: this.devicePrivate,
+        client: p.client,
+        persist: (r) => p.review?.store.put(r) ?? Promise.resolve(),
+      });
+      this.reviews.set(key, c);
+      c.start();
+    }
+    return c;
+  }
+
+  /** Forget a review: its connection, record, key and cookie jar. */
+  async forgetReview(rec: ReviewRecord): Promise<void> {
+    const key = reviewKey(rec.host_id, rec.pid);
+    this.reviews.get(key)?.stop();
+    this.reviews.delete(key);
+    const r = this.platform.review;
+    await r?.store.remove(rec.host_id, rec.pid).catch(() => {});
+    await r?.cookies.remove(rec.sid).catch(() => {});
+    if (rec.key) await this.platform.keystore.delete(rec.key).catch(() => {});
   }
 
   async forgetHost(hostId: string): Promise<void> {

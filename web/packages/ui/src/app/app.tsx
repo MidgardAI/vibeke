@@ -13,6 +13,9 @@ import { InboxScreen } from '../screens/inbox';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
+import { ReviewScreen } from '../screens/review';
+import { AttestScreen } from '../screens/attest';
+import { ContinueScreen } from '../screens/continue';
 import { SandboxesScreen } from '../screens/sandboxes';
 import { ReloadPrompt } from '../components/updates';
 import { ShareInScreen } from '../screens/share-in';
@@ -185,7 +188,11 @@ function Main() {
 
   return (
     <>
-      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} workspace={route.workspace} pane={route.pane} /></Suspense> : <Layout route={route}>
+      {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} workspace={route.workspace} pane={route.pane} /></Suspense>
+        // A reviewer sees the review only: no host list, no sidebar (spec 20 §7.2).
+        : route.name === 'review' ? <ReviewScreen d={route.d} />
+        : route.name === 'attest' ? <AttestScreen query={route.query} />
+        : <Layout route={route}>
         <ConnectionBanner />
         <BusyBar />
         <ReloadPrompt />
@@ -196,7 +203,7 @@ function Main() {
       <Toasts />
       <IdleLockOverlay />
       {hosts.some((h) => (h.info?.kind ?? h.record.kind ?? 'device') === 'device') && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
-      {route.name !== 'tui' && <KeyboardLayer surface="full" />}
+      {route.name !== 'tui' && route.name !== 'review' && <KeyboardLayer surface="full" />}
     </>
   );
 }
@@ -218,6 +225,16 @@ function Screen({ route }: { route: Route }) {
           <PairScreen d={route.d} />
         </Framed>
       );
+    case 'continue':
+      return (
+        <Framed title={t.continueLink.title} width="narrow">
+          <ContinueScreen d={route.d} />
+        </Framed>
+      );
+    case 'review':
+    case 'attest':
+      // Rendered outside the layout (Main).
+      return null;
     case 'settings':
       return (
         <Framed title={t.settings.title} width="narrow">

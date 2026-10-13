@@ -200,7 +200,7 @@ export type WireError =
   | { type: 'rpc'; method: string; code: number; message: string; data?: Record<string, unknown> }
   | { type: 'unknown'; method: string; mutating: boolean; opId?: string; reason: 'timeout' | 'closed' }
   | { type: 'not_connected'; hostId: string }
-  | { type: 'pairing'; code: string; message: string; channelCode?: string; closeCode?: number }
+  | { type: 'pairing'; code: string; message: string; channelCode?: string; closeCode?: number; refusal?: string }
   | { type: 'error'; message: string; code?: string };
 
 export type WireResult<T> = { ok: true; value: T } | { ok: false; error: WireError };

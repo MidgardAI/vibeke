@@ -1,0 +1,19 @@
+{
+  "name": "@vibeke/review-content",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && VK_ENTRY=sw vite build && VK_ENTRY=inject vite build",
+    "dev": "bun run build && vite preview --port 5174 --strictPort",
+    "preview": "vite preview --port 5174 --strictPort",
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.sw.json --noEmit"
+  },
+  "dependencies": {
+    "@vibeke/core": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "*"
+  }
+}
