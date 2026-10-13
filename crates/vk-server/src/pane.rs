@@ -177,6 +177,34 @@ impl PaneRt {
         }
     }
 
+    /// [`Self::input`] for input from outside Vibeke (the API: the app's terminal controls,
+    /// `vibeke pane send-*`, other agents): it waits in the automation hold while Vibeke types a
+    /// prompt into this pane, like a client's keys (spec 19 §4.2), so it never lands between
+    /// the paste and the Enter.
+    pub async fn input_held(
+        self: &Arc<Self>,
+        holds: &crate::input_hold::Holds,
+        id: u64,
+        bytes: Vec<u8>,
+    ) -> InputStatus {
+        let (tx, rx) = oneshot::channel();
+        *self.last_input.lock().unwrap() = Some(Instant::now());
+        holds.send(
+            &self.id,
+            self,
+            PaneCmd::Input {
+                id,
+                bytes,
+                ack: Some(tx),
+            },
+        );
+        tokio::time::timeout(INPUT_ACK_TIMEOUT, rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or(InputStatus::Unconfirmed)
+    }
+
     pub async fn input(&self, id: u64, bytes: Vec<u8>) -> InputStatus {
         let (tx, rx) = oneshot::channel();
         *self.last_input.lock().unwrap() = Some(Instant::now());

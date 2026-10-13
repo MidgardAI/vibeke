@@ -1645,7 +1645,15 @@ async fn send(server: &Server, ctx: &Ctx, pane: &str, bytes: Vec<u8>) -> Result<
         crate::sync_input::mirror(server, pane, &bytes);
     }
     let id = server.next_internal_input_id();
-    match render::write_and_ack(server, pane, id, bytes).await {
+    let Some(rt) = server.pane_rt(pane) else {
+        return Err(err(ErrorKind::Conflict, "pane process exited"));
+    };
+    // A person (no pane scope: the CLI, the app's terminal controls) typing counts for the
+    // "someone is typing" gate of deliveries; another agent's input does not.
+    if ctx.pane_scope.is_none() {
+        *rt.last_typed.lock().unwrap() = Some(std::time::Instant::now());
+    }
+    match rt.input_held(&server.input_hold, id, bytes).await {
         vk_proto::holder::InputStatus::ChildExited => {
             Err(err(ErrorKind::Conflict, "pane process exited"))
         }

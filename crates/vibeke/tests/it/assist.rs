@@ -288,7 +288,12 @@ fn off_by_default_consent_and_preview_before_send() {
     assert!(pv["user"].as_str().unwrap().contains("<sources>"));
     assert_eq!(pv["model"], "claude-haiku-4-5-20251001");
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(fake.count(), 0, "a preview must not contact the provider");
+    assert_eq!(
+        fake.count(),
+        0,
+        "a preview must not contact the provider: {:?}",
+        fake.requests()
+    );
 
     // Wrong digest: refused, still nothing sent.
     let e = s
