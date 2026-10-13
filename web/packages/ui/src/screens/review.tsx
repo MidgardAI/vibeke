@@ -17,6 +17,7 @@ import {
   previewPath,
   reviewContentOrigin,
   reviewKey,
+  reviewSid,
   type AnnotationDraft,
   type AttestResult,
   type HostConnectionApi,
@@ -182,10 +183,10 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   const conn: ReviewConnection = useMemo(() => app.reviewConnection(record), [app, record]);
   const state = useSyncExternalStore(conn.subscribe, conn.getSnapshot);
   const info = state.review;
-  // The content origin and the cookie jar never come from the link alone: the origin uses the
-  // sid the host reports over the authenticated channel, and the jar is keyed by the paired
-  // invitation (host + pid), so an edited link cannot reach another review's cookies.
-  const sid = info && info.sid.toLowerCase() === record.sid ? info.sid.toLowerCase() : null;
+  // The content origin and the cookie jar never come from the link or the host: both derive from
+  // the paired invitation (the host's pinned key, its id and the pid), so neither an edited link
+  // nor a hostile host can reach another review's origin or cookies.
+  const sid = reviewSid(record.hk, record.host_id, record.pid);
   const jarKey = reviewKey(record.host_id, record.pid);
   const contentOrigin = useMemo(
     () => (typeof window === 'undefined' || !sid ? null : reviewContentOrigin(window.location.origin, sid, app.platform.review?.contentOriginPattern)),
@@ -194,7 +195,6 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   const [mode, setMode] = useState<'content' | 'screencast'>(supportsContentOrigin() ? 'content' : 'screencast');
   // A host that reports another sid than the link carries gets the screencast, never a content origin.
   useEffect(() => {
-    if (info && !sid) setMode('screencast');
     // The tunnel speaks plain HTTP to the dev server: an HTTPS preview uses the host browser.
     if (info && /^https:/i.test(info.preview.url ?? '')) setMode('screencast');
   }, [info, sid]);

@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { base32 } from './keys';
 // Review connections (spec 20 §3.2, §7.2). A review device does not use the normal host
 // bootstrap: it never calls `dashboard.get` or `events.subscribe`. It connects, says `hello`,
 // reads `review.info`, then polls `browser.annotations {preview}` every 3 s for the state of its
@@ -26,6 +28,17 @@ export interface ReviewRecord extends HostRecord {
 }
 
 export const reviewKey = (hostId: string, pid: string): string => `${hostId}/${pid}`;
+
+/**
+ * The label of a review's content origin (`<sid>.p.<domain>`), derived here from what the
+ * pairing authenticated: the host's pinned Noise key, its relay id and the invitation. A host
+ * cannot choose it, so a hostile host can never share another review's origin (its cookies,
+ * service worker and channels). 16 lowercase base32 characters.
+ */
+export function reviewSid(hk: string, hostId: string, pid: string): string {
+  const msg = new TextEncoder().encode(`vibeke-review-origin/1\0${hk}\0${hostId}\0${pid}`);
+  return base32(sha256(msg)).slice(0, 16);
+}
 
 /** Persistence for review records (IndexedDB in the PWA), apart from `HostStore`. */
 export interface ReviewStore {

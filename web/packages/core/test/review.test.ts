@@ -125,3 +125,16 @@ describe('tunnel client', () => {
     expect(t.size).toBe(0);
   });
 });
+
+describe('review content origin', () => {
+  test('the sid comes from the paired host and invitation, not from the host', async () => {
+    const { reviewSid } = await import('../src/review');
+    const a = reviewSid('hk-a', 'host1', 'pid1');
+    expect(a).toMatch(/^[a-z2-7]{16}$/);
+    expect(reviewSid('hk-a', 'host1', 'pid1')).toBe(a);
+    // Another host key, host or invitation never shares the origin.
+    expect(reviewSid('hk-b', 'host1', 'pid1')).not.toBe(a);
+    expect(reviewSid('hk-a', 'host2', 'pid1')).not.toBe(a);
+    expect(reviewSid('hk-a', 'host1', 'pid2')).not.toBe(a);
+  });
+});

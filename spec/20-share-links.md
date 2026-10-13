@@ -225,8 +225,11 @@ adds `preview {id, label, url}` and `sid`.
 *controller*: it pairs, holds the keys, the Noise channel and the cookie jar, and shows the
 toolbar and the notes.
 The preview itself runs on a separate *content origin*, `https://<sid>.p.<app domain>`, in a
-full-window cross-origin iframe. Every review link has its own content origin, so cookies and
-storage never mix between links. The preview's code cannot reach the controller's storage or
+full-window cross-origin iframe. The client derives `sid` from what the pairing authenticated:
+the first 16 base32 characters of sha256(`"vibeke-review-origin/1\0" ‖ hk ‖ "\0" ‖ host id ‖
+"\0" ‖ pid`). Neither the link nor the host chooses it, so a hostile host can never share another
+review's origin. Every review link has its own content origin, so cookies and storage never mix
+between links. The preview's code cannot reach the controller's storage or
 keys, because the origins differ.
 
 **Content origin bundle.** `web/apps/review-content` is a small static bundle served for
