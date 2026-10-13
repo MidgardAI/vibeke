@@ -19,11 +19,17 @@ const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 /** Navigation responses may be framed only by the review controller's origins. */
 const FRAME_ANCESTORS = `frame-ancestors ${__VK_APP_ORIGINS__.join(' ')}`;
 
-let port: MessagePort | null = null;
+/**
+ * One channel per review tab, keyed by that tab's bridge client. Every tab of one review reaches
+ * the same preview, so any live channel can serve a request; a tab that closes drops only its own.
+ */
+const ports = new Map<string, MessagePort>();
 let waiters: ((p: MessagePort | null) => void)[] = [];
 let nextId = 1;
 
 interface Pending {
+  /** The channel the request went out on. */
+  port: MessagePort;
   head(m: Extract<ToWorker, { t: 'fetch.head' }>): void;
   data(b: ArrayBuffer): void;
   end(): void;
@@ -38,19 +44,26 @@ self.addEventListener('message', (e) => {
   const d = e.data as { p?: unknown; t?: unknown } | null;
   const p = e.ports[0];
   if (d?.p !== REVIEW_PROTO || d.t !== 'channel' || !p) return;
-  setPort(p);
+  const source = e.source as Client | null;
+  setPort(source?.id ?? `anon-${nextId++}`, p);
 });
 
-function setPort(p: MessagePort): void {
-  // Requests in flight on the old channel cannot finish any more.
-  if (port && port !== p) {
-    for (const [id, h] of pending) {
-      h.error('the review reconnected');
-      pending.delete(id);
-    }
-    port.close();
+/** Requests in flight on channel `p` cannot finish any more. */
+function failOn(p: MessagePort, message: string): void {
+  for (const [id, h] of pending) {
+    if (h.port !== p) continue;
+    h.error(message);
+    pending.delete(id);
   }
-  port = p;
+}
+
+function setPort(client: string, p: MessagePort): void {
+  const old = ports.get(client);
+  if (old && old !== p) {
+    failOn(old, 'the review reconnected');
+    old.close();
+  }
+  ports.set(client, p);
   p.onmessage = (ev) => onPortMessage(ev.data);
   p.start();
   const w = waiters;
@@ -82,9 +95,15 @@ const isBridge = (url: string): boolean => {
   return p === '/__vk/bridge' || p === '/__vk/bridge.html';
 };
 
-/** The channel to the controller: the current one, or a fresh one from the bridge (≤ 10 s). */
+/** A live channel to a controller: one whose bridge tab is still open, or a fresh one (≤ 10 s). */
 async function channel(): Promise<MessagePort | null> {
-  if (port) return port;
+  for (const [client, p] of [...ports]) {
+    if (await self.clients.get(client)) return p;
+    // That tab closed: its channel is dead.
+    ports.delete(client);
+    failOn(p, 'the review tab closed');
+    p.close();
+  }
   const wait = new Promise<MessagePort | null>((resolve) => {
     waiters.push(resolve);
     setTimeout(() => resolve(null), CHANNEL_WAIT_MS);
@@ -134,6 +153,7 @@ async function forward(req: Request): Promise<Response> {
       } else controller?.error(new Error(message));
     };
     pending.set(id, {
+      port: p,
       head(m) {
         if (settled) return;
         settled = true;

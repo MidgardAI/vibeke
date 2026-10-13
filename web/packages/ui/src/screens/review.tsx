@@ -195,6 +195,8 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   // A host that reports another sid than the link carries gets the screencast, never a content origin.
   useEffect(() => {
     if (info && !sid) setMode('screencast');
+    // The tunnel speaks plain HTTP to the dev server: an HTTPS preview uses the host browser.
+    if (info && /^https:/i.test(info.preview.url ?? '')) setMode('screencast');
   }, [info, sid]);
   const [annotating, setAnnotating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);

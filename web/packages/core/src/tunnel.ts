@@ -171,7 +171,10 @@ export class TunnelClient {
         if (this.streams.get(id) === x) this.streams.delete(id);
       });
       if (this.closed) {
-        c.linkClosed();
+        // Disposed while the open was pending: if the connection still works, give the host its
+        // stream slot back; otherwise the host dropped the stream with the connection.
+        if (this.link.closed) c.linkClosed();
+        else c.close();
         throw new TunnelClosedError('disconnected');
       }
       this.streams.set(id, c);
