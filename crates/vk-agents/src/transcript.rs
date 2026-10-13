@@ -221,6 +221,9 @@ pub struct Parser {
     seen_tools: HashSet<String>,
     seen_bg_start: HashSet<String>,
     seen_bg_end: HashSet<String>,
+    /// omp job id → (the id it was reported under, how many jobs used it): a resumed process
+    /// numbers its jobs from `bg_1` again, and each reuse is reported as `bg_1#2`, `bg_1#3`…
+    omp_ids: HashMap<String, (String, u32)>,
     /// Tool call id to what it ran (a command or description), for background labels.
     inputs: HashMap<String, String>,
     seen_turns: HashSet<String>,
@@ -266,6 +269,7 @@ impl Parser {
             seen_tools: HashSet::new(),
             seen_bg_start: HashSet::new(),
             seen_bg_end: HashSet::new(),
+            omp_ids: HashMap::new(),
             inputs: HashMap::new(),
             seen_turns: HashSet::new(),
             seen_msgs: HashSet::new(),
@@ -1212,7 +1216,7 @@ impl Parser {
                         .flatten()
                     {
                         if let Some(id) = j.get("jobId").and_then(Value::as_str) {
-                            self.bg_ended(id, "completed", ts, out);
+                            self.omp_job_ended(id, "completed", ts, out);
                         }
                     }
                 }
@@ -1348,7 +1352,7 @@ impl Parser {
                     j.get("id").and_then(Value::as_str),
                     j.get("status").and_then(Value::as_str),
                 ) {
-                    self.bg_ended(id, st, ts, out);
+                    self.omp_job_ended(id, st, ts, out);
                 }
             }
         }
@@ -1365,10 +1369,31 @@ impl Parser {
         ts: Option<i64>,
         out: &mut Vec<Event>,
     ) {
-        if self.seen_bg_end.remove(id) {
-            self.seen_bg_start.remove(id);
-        }
-        self.bg_started(id, kind, call, label, ts, out);
+        // A distinct id per job: the server remembers recent ends by id, and a replay brings an
+        // old end and the new start close together.
+        let emitted = match self.omp_ids.get_mut(id) {
+            Some((e, n)) if self.seen_bg_end.contains(e.as_str()) => {
+                *n += 1;
+                *e = format!("{id}#{n}");
+                e.clone()
+            }
+            Some((e, _)) => e.clone(),
+            None => {
+                self.omp_ids.insert(id.to_string(), (id.to_string(), 1));
+                id.to_string()
+            }
+        };
+        self.bg_started(&emitted, kind, call, label, ts, out);
+    }
+
+    /// An omp job ended (`id` as omp names it).
+    fn omp_job_ended(&mut self, id: &str, status: &str, ts: Option<i64>, out: &mut Vec<Event>) {
+        let emitted = self
+            .omp_ids
+            .get(id)
+            .map(|(e, _)| e.clone())
+            .unwrap_or_else(|| id.to_string());
+        self.bg_ended(&emitted, status, ts, out);
     }
 
     /// The omp process ended: every job still open ended with it.
@@ -1887,15 +1912,17 @@ mod tests {
             json!({"type":"custom","customType":"session_exit","timestamp":"2026-08-11T12:01:00Z","data":{"reason":"dispose","kind":"normal"}}),
             // A resumed process numbers its jobs from bg_1 again.
             start("bg_1", "c3", "2026-08-11T13:00:00Z"),
+            json!({"type":"custom_message","customType":"async-result","timestamp":"2026-08-11T13:00:05Z","details":{"jobs":[{"jobId":"bg_1","type":"bash"}]}}),
         ]));
         let b = bg(&ev);
-        assert_eq!(b.len(), 5, "{b:?}");
+        assert_eq!(b.len(), 6, "{b:?}");
+        assert!(matches!(b[5], Event::BgEnded { id, .. } if id == "bg_1#2"));
         assert!(matches!(b[2], Event::BgEnded { id, .. } if id == "bg_1"));
         assert!(
             matches!(b[3], Event::BgEnded { id, status, .. } if id == "bg_2" && status == "stopped")
         );
         assert!(
-            matches!(b[4], Event::BgStarted { id, tool_use_id, .. } if id == "bg_1" && tool_use_id.as_deref() == Some("c3"))
+            matches!(b[4], Event::BgStarted { id, tool_use_id, .. } if id == "bg_1#2" && tool_use_id.as_deref() == Some("c3"))
         );
     }
 

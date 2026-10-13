@@ -277,14 +277,18 @@ fn norm(chord: &str) -> String {
 pub fn claude_send_now_keys(file: Option<&str>) -> Result<Binding, String> {
     let mut user: Vec<Binding> = vec![];
     let mut taken: Vec<String> = vec![];
+    // Each key's last binding: (normalised key, key as written, bound to `chat:sendNow`).
+    let mut final_action: Vec<(String, String, bool)> = vec![];
     if let Some(text) = file
         && let Ok(v) = serde_json::from_str::<Value>(text)
     {
-        let blocks = v
+        let mut blocks = v
             .get("bindings")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        // Chat bindings override Global ones: read Global first (a stable sort keeps file order).
+        blocks.sort_by_key(|b| b.get("context").and_then(Value::as_str) != Some("Global"));
         for b in blocks {
             let ctx = b.get("context").and_then(Value::as_str).unwrap_or("Chat");
             if !matches!(ctx, "Chat" | "Global") {
@@ -294,16 +298,21 @@ pub fn claude_send_now_keys(file: Option<&str>) -> Result<Binding, String> {
                 continue;
             };
             for (key, action) in map {
-                match action.as_str() {
-                    Some(CLAUDE_SEND_NOW) => {
-                        if let Some(b) = binding_of(key) {
-                            user.push(b);
-                        }
-                    }
-                    // Unbound, or the key now does something else.
-                    _ => taken.push(norm(key)),
-                }
+                // A later binding of the same key replaces an earlier one.
+                let k = norm(key);
+                final_action.retain(|(n, _, _)| *n != k);
+                final_action.push((k, key.clone(), action.as_str() == Some(CLAUDE_SEND_NOW)));
             }
+        }
+    }
+    for (k, key, send_now) in final_action {
+        if send_now {
+            if let Some(b) = binding_of(&key) {
+                user.push(b);
+            }
+        } else {
+            // Unbound, or the key now does something else.
+            taken.push(k);
         }
     }
     let defaults = CLAUDE_SEND_NOW_DEFAULT
@@ -363,7 +372,14 @@ async fn send_now(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             .iter()
             .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
     });
-    if open || dialog_on_pane(server, &run).is_some() {
+    // A dialog the screen shows but no interaction records yet (just drawn): look now.
+    let drawn = Harness::from_id(&run.harness).is_some_and(|h| {
+        server.pane_rt(&run.pane).is_some_and(|rt| {
+            let text = rt.screen.lock().unwrap().engine.screen_text();
+            screen::evaluate(h, &text).dialog.is_some()
+        })
+    });
+    if open || drawn || dialog_on_pane(server, &run).is_some() {
         return Err(err(
             ErrorKind::Conflict,
             "the agent is showing a dialog; answer or cancel it first",
@@ -476,6 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_steer_block_is_not_a_dialog() {
+        // Send now refuses while a dialog is drawn; the pending-steer block must not count.
+        let text = "› Run this single shell command in the foreground and wait for it: sleep 8;\n  \
+             echo nine\n\n• Working (2s • esc to interrupt)\n\n\
+             • Messages to be submitted after next tool call (press esc to interrupt and send\n  \
+             immediately)\n  ↳ then echo ten\n\n› Ask Codex to do anything\n\n  \
+             GPT-6-Astra xhigh · ~/code/vibeke · Run sequential shell commands\n  \
+             ← for agents · ? for shortcuts\n";
+        let h = Harness::from_id("codex").unwrap();
+        assert!(screen::evaluate(h, text).dialog.is_none());
+    }
+
+    #[test]
     fn codex_pending_ignores_follow_ups_and_missing_block() {
         let lines = screen(
             "• Working (3s • esc to interrupt)\n\n• Queued follow-up messages\n  ↳ later\n    ⌥ + ↑ edit\n\n› ",
@@ -532,6 +561,23 @@ mod tests {
             claude_send_now_keys(Some(f)).unwrap().keys,
             vec!["ctrl+k", "ctrl+n"]
         );
+    }
+
+    #[test]
+    fn claude_send_now_follows_the_last_binding_of_a_key() {
+        // A later Chat block gives the chord to chat:submit: Send now must not press it.
+        let f = r#"{"bindings":[
+            {"context":"Chat","bindings":{"ctrl+k ctrl+n":"chat:sendNow"}},
+            {"context":"Chat","bindings":{"ctrl+k ctrl+n":"chat:submit"}}]}"#;
+        assert_eq!(
+            claude_send_now_keys(Some(f)).unwrap().keys,
+            vec!["ctrl+x", "ctrl+s"]
+        );
+        // Chat wins over Global whatever the order in the file.
+        let f = r#"{"bindings":[
+            {"context":"Chat","bindings":{"ctrl+x ctrl+s":"chat:submit"}},
+            {"context":"Global","bindings":{"ctrl+x ctrl+s":"chat:sendNow"}}]}"#;
+        assert!(claude_send_now_keys(Some(f)).is_err());
     }
 
     #[test]
