@@ -27,12 +27,24 @@ pub const HOOK_ACK_MS: i64 = 30_000;
 pub const QUEUED_MAX_MS: i64 = 24 * 3600 * 1000;
 /// Refused prompts before a delivery is held (§4.2).
 const MAX_REFUSALS: u32 = 2;
-/// While a TUI client focuses the recipient pane, no keystroke may have reached the pane for
-/// this long before an envelope is typed: the user may be about to type.
-pub const QUIET_INPUT: Duration = Duration::from_secs(5);
+/// No keystroke, paste or click may have reached the recipient pane for this long before
+/// anything is typed into it: someone is typing there. Focus alone never blocks a delivery (a
+/// terminal left open on the pane, or in the background, is not someone typing); the empty
+/// input box is the real check.
+pub const QUIET_INPUT: Duration = Duration::from_secs(3);
 
-/// Why typing into `pane` now could mix with the user's input, if it could: the input box is
-/// not provably empty, or a TUI client focuses the pane and input reached it recently.
+/// How long until `pane` has had no input from people for [`QUIET_INPUT`]; `None` when it is
+/// quiet now.
+pub(crate) fn typing_wait(server: &Server, pane: &str) -> Option<Duration> {
+    let rt = server.pane_rt(pane)?;
+    let last = (*rt.last_input.lock().unwrap())?;
+    QUIET_INPUT
+        .checked_sub(last.elapsed())
+        .filter(|d| !d.is_zero())
+}
+
+/// Why typing into `pane` now could mix with the user's input, if it could: someone typed into
+/// it in the last [`QUIET_INPUT`], or the input box is not provably empty.
 /// For Claude and Codex, whose box Vibeke knows, an unreadable input box counts as unsafe and a
 /// placeholder as empty ([`super::input_box`]); other harnesses only refuse a box that visibly
 /// holds text.
@@ -42,22 +54,10 @@ pub(crate) fn input_unsafe(
     harness: Option<Harness>,
 ) -> Option<&'static str> {
     let strict = has_mention_hooks(harness);
-    let Some(rt) = server.pane_rt(pane) else {
+    if server.pane_rt(pane).is_none() {
         return Some("pane_gone");
-    };
-    let focused = server
-        .clients
-        .lock()
-        .unwrap()
-        .values()
-        .any(|cl| cl.kind == "tui" && cl.focus.pane.as_deref() == Some(pane));
-    if focused
-        && rt
-            .last_input
-            .lock()
-            .unwrap()
-            .is_some_and(|t| t.elapsed() < QUIET_INPUT)
-    {
+    }
+    if typing_wait(server, pane).is_some() {
         return Some("recent_input");
     }
     match super::input_box::of_pane(server, pane, harness) {

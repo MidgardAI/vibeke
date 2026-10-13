@@ -43,7 +43,7 @@ pub fn before_signal(
         // Messages that arrived during the turn keep it going, so the agent reads them before
         // it goes idle; otherwise the reminder for an unanswered one.
         "Stop" => own_agent(server, pane, p)
-            .then(|| ride_along(server, pane))
+            .then(|| waiting_for(server, pane))
             .flatten()
             .map(block)
             .or_else(|| stop_reminder(server, pane)),
@@ -70,7 +70,7 @@ pub fn after_signal(
     // Queued messages ride along on the prompt or the tool result (§4.3).
     let queued = match event {
         "UserPromptSubmit" | "PostToolUse" if own_agent(server, pane, p) => {
-            ride_along(server, pane)
+            waiting_for(server, pane)
         }
         _ => None,
     };
@@ -358,6 +358,17 @@ pub(crate) fn take(server: &Arc<Server>, pane: &str) -> Option<(String, Vec<Stri
     drop(c);
     server.mentions.poke();
     Some((text, ids))
+}
+
+/// Everything that waits for the agent in `pane` and may reach it on this hook: queued
+/// messages ([`ride_along`]) and queued page notes
+/// ([`crate::browser_pane::annotate::take_for_hook`]), messages first.
+fn waiting_for(server: &Arc<Server>, pane: &str) -> Option<String> {
+    let notes = crate::browser_pane::annotate::take_for_hook(server, pane);
+    match (ride_along(server, pane), notes) {
+        (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Constant-time comparison of two nonces.

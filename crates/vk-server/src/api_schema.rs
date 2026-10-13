@@ -513,7 +513,7 @@ AnnotationRect = {x: number, y: number, w: number, h: number}
 AnnotationNote = {n: int, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image?: string, note: string}
 AnnotationAuthor = {kind: github|share, id: string, label: string}
 AnnotationAuthorParam = {kind: github|share, id: string|int, label?: string}
-AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, author?: AnnotationAuthor, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|held|queued|sending|delivered|unconfirmed, via?: feedback|typed|prompt, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
+AnnotationDraft = {id: string, workspace?: string, target: AnnotationTarget, author?: AnnotationAuthor, agent_pane?: string|null, url: string, title?: string, viewport?: {w: int, h: int, dpr?: number, device?: string}, notes: [AnnotationNote], page_note?: string|null, state: open|held|queued|sending|delivered|unconfirmed, via?: feedback|typed|prompt|hook, detail?: string, updated_at_ms: int, delivered_at_ms?: int}
 "##;
 
 /// `method :: params => result`. Methods whose spec 07 §2 row exists follow it; the rest follow
@@ -841,9 +841,9 @@ browser.annotations_clear :: {draft: string, author?: AnnotationAuthorParam} => 
 # by target: draft is the caller's current draft (the owner's own, or author's); drafts lists every draft of the target (only author's with author)
 browser.annotations :: {pane?: Target, session?: string, preview?: string, draft?: string, author?: AnnotationAuthorParam} => {draft: AnnotationDraft|null, drafts?: [AnnotationDraft]}
 # copy_only returns the prompt and changes nothing (state is then the draft's own); hold parks the draft as held for the owner (spec 20 §3.3)
-browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool, hold?: bool, author?: AnnotationAuthorParam} => {state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+browser.annotations_send :: {draft: string, agent?: Target, copy_only?: bool, hold?: bool, force?: bool, author?: AnnotationAuthorParam} => {state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|hook|null, agent_pane?: string|null, detail?: string, text: string}
 # the owner delivers a held draft through the normal path (refused for panes and for calls with author)
-browser.annotations_release :: {draft: string, agent?: Target} => {state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}
+browser.annotations_release :: {draft: string, agent?: Target, force?: bool} => {state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|hook|null, agent_pane?: string|null, detail?: string, text: string}
 # the owner deletes a held draft and its screenshots (refused for panes and for calls with author)
 browser.annotations_discard :: {draft: string} => {discarded: bool}
 # the agent side: the oldest queued draft for the caller's pane (or a pane it created); wait is seconds

@@ -17,9 +17,14 @@
 //!   (`api::blob_put`, the pane inbox, one file per draft and note) and named by path.
 //! - **Delivery** (`browser.annotations_send`): a waiting `browser.feedback` call of the agent
 //!   pane gets the draft first; a headless run gets it as a follow-up prompt; a terminal run gets
-//!   it typed (paste and Enter) only when `tracking::prompt_input_safety` passes. Otherwise the
-//!   draft is `queued`, and is retried when the run becomes idle (`agent.state_changed`, and at
-//!   startup) or picked up by `vibeke browser feedback`. A prompt or paste is reserved as
+//!   it typed (paste and Enter) only when `tracking::prompt_input_safety` passes (idle, nobody
+//!   typed into the pane in the last few seconds, empty input box). Otherwise the draft is
+//!   `queued` with a `detail` saying why, and reaches the agent on the first of: the agent's
+//!   next Claude or Codex hook ([`take_for_hook`]: a tool result, a submitted prompt or the end
+//!   of a turn, `via: "hook"`, never typed), a retry when typing stops ([`retry_when_quiet`]),
+//!   when the run becomes idle (`agent.state_changed`, and at startup), or `vibeke browser
+//!   feedback`. The owner's `force` ("send now") types it at once, skipping the idle, typing and
+//!   input-box checks; reviewers cannot. A prompt or paste is reserved as
 //!   `sending` first ([`reserve`]: compare and set on state, revision and recipient, returning
 //!   the draft it reserved, from which the prompt is built); a send whose outcome is unknown (a
 //!   timeout, no matching turn, a restart meanwhile) ends `unconfirmed` and is never sent again
@@ -112,6 +117,8 @@ pub struct State {
     write: Mutex<()>,
     retry_started: AtomicBool,
     last_sweep: AtomicI64,
+    /// Agent panes with a retry waiting for people to stop typing ([`retry_when_quiet`]).
+    quiet_wait: Mutex<HashSet<String>>,
 }
 
 #[derive(Default)]
@@ -358,7 +365,8 @@ pub struct Draft {
     /// or prompted, not confirmed yet) | `delivered` | `unconfirmed` (it may have reached the
     /// agent; never sent again without the user).
     pub state: String,
-    /// How it was delivered: `feedback` | `typed` | `prompt`.
+    /// How it was delivered: `feedback` | `typed` | `prompt` | `hook` (with a tool result, a
+    /// submitted prompt or the end of a turn: never typed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
     /// Why the last delivery attempt did not go through.
@@ -1406,11 +1414,18 @@ fn hand_to_waiter(server: &Server, d: &Draft) -> bool {
 /// `unconfirmed`, for the user to check and send again. Whatever cannot be delivered now stays
 /// queued.
 pub async fn deliver(server: &Arc<Server>, id: &str) -> Outcome {
+    deliver_with(server, id, false).await
+}
+
+/// [`deliver`]; `force` is the owner's "send now": typed at once, without waiting for the agent
+/// to be idle, for typing to stop or for an empty input box
+/// ([`crate::tracking::prompt_input_check`]).
+async fn deliver_with(server: &Arc<Server>, id: &str, force: bool) -> Outcome {
     let st = &server.browser.annotate;
     if !st.inflight.lock().unwrap().insert(id.to_string()) {
         return outcome_of(server, id);
     }
-    let mut out = Box::pin(deliver_inner(server, id)).await;
+    let mut out = Box::pin(deliver_inner(server, id, force)).await;
     st.inflight.lock().unwrap().remove(id);
     if out.state == "queued" {
         // A `browser.feedback` may have taken it meanwhile.
@@ -1425,7 +1440,7 @@ pub async fn deliver(server: &Arc<Server>, id: &str) -> Outcome {
     out
 }
 
-async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
+async fn deliver_inner(server: &Arc<Server>, id: &str, force: bool) -> Outcome {
     let Some(d) = get(server, id).filter(|d| d.state == "queued") else {
         return outcome_of(server, id);
     };
@@ -1513,8 +1528,9 @@ async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
         );
         return queued(agent);
     }
-    if let Err(why) = crate::tracking::prompt_input_safety(server, &run.id, &conv) {
-        set_detail(server, id, format!("waiting: {why}"));
+    if let Err(why) = crate::tracking::prompt_input_check(server, &run.id, &conv, force) {
+        set_detail(server, id, wait_detail(&run, &why));
+        retry_when_quiet(server, &pane);
         return queued(agent);
     }
     // `sending` before the paste: no retry or `browser.feedback` takes it meanwhile, and a
@@ -1530,15 +1546,15 @@ async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
         // One typed delivery per agent pane, held through the confirmation, and the input is
         // checked again under it (another draft may have just been typed into it).
         let _typing = typing.lock().await;
-        if let Err(why) = crate::tracking::prompt_input_safety(&server2, &run_id, &conv) {
-            transition(
-                &server2,
-                &id2,
-                &["sending"],
-                "queued",
-                None,
-                Some(format!("waiting: {why}")),
-            );
+        if let Err(why) = crate::tracking::prompt_input_check(&server2, &run_id, &conv, force) {
+            let run = server2.with_core(|c| c.run(&run_id).cloned());
+            let detail = run
+                .as_ref()
+                .map_or(format!("waiting: {why}"), |r| wait_detail(r, &why));
+            transition(&server2, &id2, &["sending"], "queued", None, Some(detail));
+            if let Some(r) = run {
+                retry_when_quiet(&server2, &r.pane);
+            }
             ensure_retry(&server2);
             return;
         }
@@ -1573,6 +1589,80 @@ async fn deliver_inner(server: &Arc<Server>, id: &str) -> Outcome {
         }
     });
     outcome_of(server, id)
+}
+
+/// The `detail` of a draft that waits: why, in the words the notes panels show.
+fn wait_detail(run: &vk_proto::model::AgentRun, why: &str) -> String {
+    let hooks = crate::mentions::delivery::has_mention_hooks(
+        crate::agents::harness::Harness::from_id(&run.harness),
+    );
+    if why == crate::tracking::TYPING {
+        format!("waiting: {why}")
+    } else if run.execution.value != Execution::Idle && hooks {
+        "waiting: the agent is working; it gets the notes with its next step or when it finishes"
+            .into()
+    } else {
+        format!("waiting: {why}")
+    }
+}
+
+/// Someone is typing in `pane`: try its queued drafts again once the typing stops
+/// ([`crate::mentions::delivery::QUIET_INPUT`]), instead of at the next idle or tick. One
+/// waiter per pane; it waits as long as the typing goes on.
+fn retry_when_quiet(server: &Arc<Server>, pane: &str) {
+    if crate::mentions::delivery::typing_wait(server, pane).is_none()
+        || tokio::runtime::Handle::try_current().is_err()
+        || !server
+            .browser
+            .annotate
+            .quiet_wait
+            .lock()
+            .unwrap()
+            .insert(pane.to_string())
+    {
+        return;
+    }
+    let (weak, pane) = (Arc::downgrade(server), pane.to_string());
+    tokio::spawn(async move {
+        loop {
+            let Some(server) = weak.upgrade() else { return };
+            let Some(left) = crate::mentions::delivery::typing_wait(&server, &pane) else {
+                server
+                    .browser
+                    .annotate
+                    .quiet_wait
+                    .lock()
+                    .unwrap()
+                    .remove(&pane);
+                retry(&server, Some(&pane)).await;
+                return;
+            };
+            drop(server);
+            tokio::time::sleep(left + Duration::from_millis(100)).await;
+        }
+    });
+}
+
+/// Hook delivery (spec 19 §4.3 ride-along, for notes): the queued drafts addressed to `pane`,
+/// handed to its agent on a hook it runs anyway (a tool result, a prompt the user submitted,
+/// the end of a turn), so they never wait for an idle agent and are never typed into the input
+/// box. Each is reserved like any delivery ([`reserve`]: exactly one path wins) and becomes
+/// `delivered` `via: "hook"`. Returns the prompts, oldest first, or `None`.
+pub(crate) fn take_for_hook(server: &Arc<Server>, pane: &str) -> Option<String> {
+    let mut ready: Vec<Draft> = all(server)
+        .into_iter()
+        .filter(|d| d.state == "queued" && d.agent_pane.as_deref() == Some(pane))
+        .collect();
+    if ready.is_empty() {
+        return None;
+    }
+    ready.sort_by_key(|d| d.updated_at_ms);
+    let texts: Vec<String> = ready
+        .iter()
+        .filter_map(|d| reserve(server, d, "delivered", "hook"))
+        .map(|d| crate::sandbox::paste_text(server, pane, prompt(&d)))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n\n"))
 }
 
 /// Startup: a delivery cut off by a restart (`sending`) becomes `unconfirmed`: it may have
@@ -1676,6 +1766,7 @@ async fn queue_and_deliver(
     agent: Option<String>,
     check: &(dyn Fn(&Draft) -> Result<(), RpcError> + Sync),
     text: String,
+    force: bool,
 ) -> R {
     {
         let _w = server.browser.annotate.write.lock().unwrap();
@@ -1692,15 +1783,20 @@ async fn queue_and_deliver(
         d.updated_at_ms = now();
         put(server, &d, changed(&d))?;
     }
-    let out = deliver(server, id).await;
+    let out = deliver_with(server, id, force).await;
     let mut v = json!({"state": out.state, "agent_pane": out.agent_pane, "text": text});
+    if out.state == "queued"
+        && let Some(detail) = get(server, id).and_then(|d| d.detail)
+    {
+        v["detail"] = json!(detail);
+    }
     if let Some(via) = out.via {
         v["via"] = json!(via);
     }
     Ok(v)
 }
 
-/// `browser.annotations_send {draft, agent?, copy_only?, hold?, author?}`.
+/// `browser.annotations_send {draft, agent?, copy_only?, hold?, force?, author?}`.
 async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value, author: Option<&Author>) -> R {
     let id = req(p, "draft")?;
     let d = get_for(server, id, author)?;
@@ -1714,6 +1810,7 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value, author: Option<&Author
         return Err(invalid("nothing to send: the draft has no notes"));
     }
     let for_author = author.is_some();
+    let force = force_of(p, for_author)?;
     check_sendable(&d, for_author)?;
     let (ws, agent) = recipient(server, ctx, &d, s(p, "agent"))?;
     if b(p, "hold") == Some(true) {
@@ -1726,8 +1823,21 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, p: &Value, author: Option<&Author
         agent,
         &|d: &Draft| check_sendable(d, for_author),
         text,
+        force,
     )
     .await
+}
+
+/// `force: true` ("send now"): the owner's decision only, never a reviewer's (spec 20 §3.3).
+fn force_of(p: &Value, for_author: bool) -> Result<bool, RpcError> {
+    let force = b(p, "force") == Some(true);
+    if force && for_author {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "only the owner can send notes now; they reach the agent when it is free",
+        ));
+    }
+    Ok(force)
 }
 
 /// `annotations_send {hold: true}` (spec 20 §3.3): the draft waits as `held` for the owner, who
@@ -1800,7 +1910,7 @@ fn notify_held(server: &Server, d: &Draft) {
     );
 }
 
-/// `browser.annotations_release {draft, agent?}` (spec 20 §3.3): deliver a held draft through
+/// `browser.annotations_release {draft, agent?, force?}` (spec 20 §3.3): deliver a held draft through
 /// the normal path. The owner's only (refused for panes and for calls with `author`).
 async fn release(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let id = req(p, "draft")?;
@@ -1816,9 +1926,10 @@ async fn release(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         }
     };
     held(&d)?;
+    let force = force_of(p, false)?;
     let (ws, agent) = recipient(server, ctx, &d, s(p, "agent"))?;
     let text = prompt(&d);
-    queue_and_deliver(server, id, ws, agent, &held, text).await
+    queue_and_deliver(server, id, ws, agent, &held, text, force).await
 }
 
 /// `browser.annotations_discard {draft}` (spec 20 §3.3): delete a held draft and its

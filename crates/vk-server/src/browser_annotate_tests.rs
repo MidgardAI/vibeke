@@ -1371,3 +1371,190 @@ async fn a_reviewer_cannot_edit_notes_after_sending() {
     let d = get(&e.server, &id).unwrap();
     assert_eq!(d.notes[0].note, "bigger please");
 }
+
+fn working_run(e: &Env) {
+    let mut c = e.server.core.lock().unwrap();
+    let mut r = crate::agents::new_run(
+        &mut c,
+        "pane-a",
+        crate::agents::harness::Harness::Claude,
+        "hooks",
+        StateSource::Structured,
+        1.0,
+    );
+    r.execution.value = Execution::Working;
+    r.harness_session_id = Some("conv-1".into());
+    let mut tx = Tx::new();
+    tx.run(r);
+    e.server.commit(&mut c, tx).unwrap();
+}
+
+/// A working agent gets queued notes on its next hook (a tool result, a prompt, the end of the
+/// turn): never typed, delivered once, `via: "hook"`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_working_agent_gets_queued_notes_on_its_next_hook() {
+    let e = Env::new();
+    browser_pane(&e, "BP1");
+    working_run(&e);
+    let user = ctx(None);
+    let d = add_note(&e, "BP1", "make it bigger").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    let sent = ok(&e
+        .call(&user, "browser.annotations_send", json!({"draft": id}))
+        .await);
+    assert_eq!(sent["state"], "queued", "{sent}");
+    assert!(
+        sent["detail"]
+            .as_str()
+            .unwrap()
+            .contains("with its next step"),
+        "{sent}"
+    );
+    // The end of the turn: the Stop hook keeps the agent going with the notes.
+    let out = crate::mentions::hooks::before_signal(
+        &e.server,
+        "pane-a",
+        crate::agents::harness::Harness::Claude,
+        "Stop",
+        &json!({"session_id": "conv-1"}),
+    )
+    .expect("the notes ride on the stop");
+    assert_eq!(out["decision"], "block");
+    assert!(
+        out["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Note: make it bigger"),
+        "{out}"
+    );
+    let d = get(&e.server, &id).unwrap();
+    assert_eq!(
+        (d.state.as_str(), d.via.as_deref()),
+        ("delivered", Some("hook"))
+    );
+    // Delivered once: the next hook has nothing.
+    assert!(take_for_hook(&e.server, "pane-a").is_none());
+    // A tool result carries a newer one as context; a subagent's hook does not take it.
+    let d = add_note(&e, "BP1", "and blue").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    ok(&e
+        .call(&user, "browser.annotations_send", json!({"draft": id}))
+        .await);
+    let sub = crate::mentions::hooks::after_signal(
+        &e.server,
+        "pane-a",
+        crate::agents::harness::Harness::Claude,
+        "PostToolUse",
+        &json!({"session_id": "conv-1", "agent_id": "sub-1"}),
+    );
+    assert!(sub.is_none(), "{sub:?}");
+    let out = crate::mentions::hooks::after_signal(
+        &e.server,
+        "pane-a",
+        crate::agents::harness::Harness::Claude,
+        "PostToolUse",
+        &json!({"session_id": "conv-1"}),
+    )
+    .expect("the notes ride on the tool result");
+    assert!(
+        out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("Note: and blue"),
+        "{out}"
+    );
+    assert_eq!(get(&e.server, &id).unwrap().via.as_deref(), Some("hook"));
+    // Held drafts never ride: they wait for the owner.
+    put_preview(&e, "pv-1", "v1", vk_proto::model::PreviewStatus::Up);
+    let d = review_note(&e, Some(alice()), "from a reviewer").await;
+    let held = d["draft"]["id"].as_str().unwrap().to_string();
+    ok(&e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": held, "hold": true, "author": alice()}),
+        )
+        .await);
+    assert!(take_for_hook(&e.server, "pane-a").is_none());
+    assert_eq!(get(&e.server, &held).unwrap().state, "held");
+}
+
+/// Send now (`force`) is the owner's: a reviewer is refused, and it never types into an open
+/// question.
+#[tokio::test(flavor = "multi_thread")]
+async fn send_now_is_the_owners_and_never_answers_a_question() {
+    use vk_proto::model::PreviewStatus;
+    let e = Env::new();
+    put_preview(&e, "pv-1", "v1", PreviewStatus::Up);
+    let user = ctx(None);
+    let d = review_note(&e, Some(alice()), "bigger please").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    let r = e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": id, "force": true, "author": alice()}),
+        )
+        .await;
+    assert!(denied(&r), "{r}");
+    assert_eq!(get(&e.server, &id).unwrap().state, "open");
+    // The owner forces a draft while a question is open: it still waits, with the reason.
+    browser_pane(&e, "BP1");
+    idle_run_with_question(&e);
+    let d = add_note(&e, "BP1", "now").await;
+    let id = d["draft"]["id"].as_str().unwrap().to_string();
+    let sent = ok(&e
+        .call(
+            &user,
+            "browser.annotations_send",
+            json!({"draft": id, "force": true}),
+        )
+        .await);
+    assert_eq!(sent["state"], "queued", "{sent}");
+    assert!(
+        sent["detail"]
+            .as_str()
+            .unwrap()
+            .contains("question or approval"),
+        "{sent}"
+    );
+}
+
+/// Focus alone never blocks typing: a terminal left open on the agent pane is not someone
+/// typing (only input in the last few seconds is: `mentions::delivery::typing_wait`).
+#[tokio::test(flavor = "multi_thread")]
+async fn focus_alone_never_blocks_typing() {
+    let e = Env::new();
+    e.server.clients.lock().unwrap().insert(
+        "c1".into(),
+        crate::ClientState {
+            kind: "tui".into(),
+            focus: crate::ClientFocus {
+                pane: Some("pane-a".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert!(crate::mentions::delivery::typing_wait(&e.server, "pane-a").is_none());
+    let mut c = e.server.core.lock().unwrap();
+    let mut r = crate::agents::new_run(
+        &mut c,
+        "pane-a",
+        crate::agents::harness::Harness::Claude,
+        "hooks",
+        StateSource::Structured,
+        1.0,
+    );
+    r.execution.value = Execution::Idle;
+    r.harness_session_id = Some("conv-1".into());
+    let run = r.id.clone();
+    let mut tx = Tx::new();
+    tx.run(r);
+    e.server.commit(&mut c, tx).unwrap();
+    drop(c);
+    // No pane runtime in this test, so the input box check is what refuses now, not focus.
+    let why = crate::tracking::prompt_input_safety(&e.server, &run, "conv-1").unwrap_err();
+    assert!(!why.contains("focused"), "{why}");
+    assert_ne!(why, crate::tracking::TYPING);
+}

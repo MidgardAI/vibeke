@@ -1643,21 +1643,34 @@ fn send_safety(server: &Server, m: &TaskMessage) -> Result<(), String> {
 }
 
 /// The task-independent part of [`send_safety`] (15 §9), shared with the drafts composer: the
-/// run is live, still in `conversation`, idle, has no open interaction, no attached client
-/// focuses its pane, and its input box is provably empty.
+/// run is live, still in `conversation`, idle, has no open interaction, nobody typed into its
+/// pane in the last few seconds ([`crate::mentions::delivery::QUIET_INPUT`]), and its input box
+/// is provably empty.
+/// Why a delivery waits while someone types (see [`prompt_input_check`]).
+pub(crate) const TYPING: &str = "someone is typing in that pane; it is sent when the typing stops";
+
 pub(crate) fn prompt_input_safety(
     server: &Server,
     run_id: &str,
     conversation: &str,
+) -> Result<(), String> {
+    prompt_input_check(server, run_id, conversation, false)
+}
+
+/// [`prompt_input_safety`]; `force` (the owner's "send now") skips the idle, typing and empty
+/// input checks, never the ones that would send to the wrong place: an ended run, another
+/// conversation, or an open question or approval (typed text would answer it).
+pub(crate) fn prompt_input_check(
+    server: &Server,
+    run_id: &str,
+    conversation: &str,
+    force: bool,
 ) -> Result<(), String> {
     let run = server
         .with_core(|c| c.run(run_id).cloned())
         .ok_or("the target run has ended")?;
     if run.harness_session_id.as_deref() != Some(conversation) {
         return Err("the run is in a different conversation now".into());
-    }
-    if run.execution.value != Execution::Idle {
-        return Err(format!("the agent is {:?}, not idle", run.execution.value).to_lowercase());
     }
     if server.with_core(|c| {
         c.model
@@ -1667,14 +1680,14 @@ pub(crate) fn prompt_input_safety(
     }) {
         return Err("a question or approval is open in that pane".into());
     }
-    if server
-        .clients
-        .lock()
-        .unwrap()
-        .values()
-        .any(|cl| cl.focus.pane.as_deref() == Some(run.pane.as_str()) && cl.kind == "tui")
-    {
-        return Err("an attached client is focused on that pane (the user may be typing)".into());
+    if force {
+        return Ok(());
+    }
+    if run.execution.value != Execution::Idle {
+        return Err(format!("the agent is {:?}, not idle", run.execution.value).to_lowercase());
+    }
+    if crate::mentions::delivery::typing_wait(server, &run.pane).is_some() {
+        return Err(TYPING.into());
     }
     // Claude and Codex draw a faint placeholder in an empty box: read with styles (spec 19
     // §4.2), so the placeholder does not count as a draft.
