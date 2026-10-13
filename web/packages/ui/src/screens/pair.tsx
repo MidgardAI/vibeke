@@ -13,7 +13,7 @@ import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
 import { clockTime, whenText } from '../lib/format';
 import { isOwnFullHost } from '../lib/handoff-send';
-import { navigate } from '../router';
+import { navigate, workspaceRoute } from '../router';
 import { startAttestation, takeAttestation } from '../lib/attest-flow';
 
 type Phase =
@@ -164,12 +164,15 @@ export function PairScreen({ d }: { d: string | null }) {
     }
   };
 
+  // A shared pane or workspace opens in the app's own view (an agent's conversation first); the
+  // workspace screen offers **Open terminal** for the in-browser terminal.
   useEffect(() => {
-    if (phase.k !== 'done' || phase.kind !== 'share' || !app.platform.tui) return;
+    if (phase.k !== 'done' || phase.kind !== 'share') return;
     const host = hosts.find((h) => h.record.host_id === phase.id);
-    if (host?.status === 'online' && host.info?.features.includes('wasm_tui_share')) {
-      navigate({ name: 'tui', host: phase.id, workspace: host.record.limit?.workspace, pane: host.record.limit?.pane }, { replace: true });
-    }
+    if (host?.status !== 'online') return;
+    const limit = host.record.limit;
+    if (limit?.workspace) navigate(workspaceRoute(phase.id, limit.workspace, { pane: limit.pane ?? null }), { replace: true });
+    else if (limit?.pane) navigate({ name: 'pane', host: phase.id, pane: limit.pane, view: 'term' }, { replace: true });
   }, [phase, hosts, app]);
 
   const canOpenTerminal = app.platform.tui && phase.k === 'done' && phase.terminal
@@ -183,13 +186,18 @@ export function PairScreen({ d }: { d: string | null }) {
           <div className="text-lg font-medium">
             {phase.kind === 'share' ? t.pair.doneShare(phase.host) : t.pair.done(phase.host)}
           </div>
-          {canOpenTerminal && <Button variant="primary" block size="lg" onClick={() => {
+          {/* A share starts in the app's view; its terminal is an option. Own hosts keep the terminal first. */}
+          {canOpenTerminal && phase.kind !== 'share' && <Button variant="primary" block size="lg" onClick={() => {
             app.prefs.patch({ preferredTuiHost: phase.kind === 'device' ? phase.id : null });
             navigate({ name: 'tui', host: phase.id });
           }}>Open terminal</Button>}
-          <Button variant={canOpenTerminal ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
+          <Button variant={canOpenTerminal && phase.kind !== 'share' ? 'secondary' : 'primary'} block size="lg" onClick={() => { app.prefs.patch({ preferredTuiHost: null }); navigate({ name: 'home' }); }}>
             {t.pair.openApp}
           </Button>
+          {canOpenTerminal && phase.kind === 'share' && <Button variant="secondary" block size="lg" onClick={() => {
+            app.prefs.patch({ preferredTuiHost: null });
+            navigate({ name: 'tui', host: phase.id });
+          }}>Open terminal</Button>}
         </Card>
       ) : phase.k === 'redeemed' ? (
         <Card className="space-y-4 p-5 text-center">
