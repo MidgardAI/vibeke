@@ -1,9 +1,108 @@
 //! Bounded read work for a render connection. Mutations and input stay in wire order.
 use super::*;
 
-pub(super) const MAX_READS: usize = 8;
+const MAX_READS: usize = 8;
+const MAX_QUEUED_READS: usize = 128;
+// Keep slots available for scrollback while slow repository calls are in flight.
+const MAX_COMMAND_READS: usize = 6;
+
+pub(super) struct ReadOutput {
+    pub frame: ServerFrame,
+    history_generation: Option<u64>,
+}
+
+pub(super) enum ReadJob {
+    Command { req: u64, json: String, ctx: Ctx },
+    History(HistoryRead),
+}
+impl ReadJob {
+    async fn run(self, server: Arc<Server>) -> Result<ReadOutput> {
+        Ok(match self {
+            Self::Command { req, json, ctx } => ReadOutput {
+                frame: ServerFrame::CommandResult {
+                    req,
+                    json: api::handle_line(&server, &ctx, &json).await,
+                },
+                history_generation: None,
+            },
+            Self::History(history) => {
+                tokio::task::spawn_blocking(move || history.finish(&server)).await?
+            }
+        })
+    }
+}
 
 impl Session {
+    pub(super) fn start_reads(&mut self) {
+        while self.reads.len() < MAX_READS {
+            let Some(index) = self.pending_reads.iter().position(|job| {
+                self.read_commands < MAX_COMMAND_READS || matches!(job, ReadJob::History(_))
+            }) else {
+                break;
+            };
+            let job = self.pending_reads.remove(index).unwrap();
+            if matches!(job, ReadJob::Command { .. }) {
+                self.read_commands += 1;
+            }
+            self.reads.spawn(job.run(self.server.clone()));
+        }
+    }
+
+    pub(super) async fn queue_read<W: AsyncWrite + Unpin>(
+        &mut self,
+        job: ReadJob,
+        wr: &mut W,
+    ) -> Result<bool> {
+        if self.pending_reads.len() < MAX_QUEUED_READS {
+            self.pending_reads.push_back(job);
+            self.start_reads();
+            return Ok(true);
+        }
+        // Bound queued work without inventing errors or disconnecting a busy client.
+        // Extreme floods retain the original serialized behavior until capacity returns.
+        let frame = job.run(self.server.clone()).await?;
+        self.write_read(frame, wr).await
+    }
+
+    pub(super) async fn write_read<W: AsyncWrite + Unpin>(
+        &self,
+        result: ReadOutput,
+        wr: &mut W,
+    ) -> Result<bool> {
+        if let Err(reason) = self.auth_ok() {
+            asyncio::write_frame(wr, &ServerFrame::Goodbye { reason }).await?;
+            wr.flush().await?;
+            return Ok(false);
+        }
+        let mut frame = result.frame;
+        // A forget/retention/close after capture invalidates even rows already decoded.
+        // This lock-free check is the read's final visibility point before queueing output.
+        if let ServerFrame::History {
+            pane,
+            start,
+            total,
+            lines,
+            ..
+        } = &mut frame
+            && (result.history_generation != Some(self.server.archive_read_fence.generation())
+                || self.server.pane_rt(pane).is_none())
+        {
+            *start = 0;
+            *total = 0;
+            lines.clear();
+        }
+        let allowed = match (&self.auth.share, &frame) {
+            (Some(share), ServerFrame::History { pane, .. }) => {
+                self.server.with_core(|c| share.allows(&c.model, pane))
+            }
+            _ => true,
+        };
+        if allowed {
+            asyncio::write_frame(wr, &frame).await?;
+        }
+        Ok(true)
+    }
+
     /// Only opt in handlers whose work is read-only and whose target can be frozen here.
     /// The normal API handler remains responsible for authorization and validation.
     pub(super) fn prepare_read(&self, json: &str) -> Option<String> {
@@ -46,6 +145,7 @@ impl Session {
             total: 0,
             archive_end: start,
             memory: vec![],
+            generation: self.server.archive_read_fence.generation(),
         };
         let Some(rt) = self.server.pane_rt(pane) else {
             return history;
@@ -83,17 +183,22 @@ pub(super) struct HistoryRead {
     total: u32,
     archive_end: u32,
     memory: Vec<Row>,
+    generation: u64,
 }
 impl HistoryRead {
-    pub(super) fn finish(self, server: &Server) -> ServerFrame {
+    pub(super) fn finish(self, server: &Server) -> ReadOutput {
         let mut lines = Vec::new();
-        if self.start < self.archive_end {
-            let rows = server
-                .archive
-                .lock()
-                .unwrap()
-                .read(&self.pane, self.start as u64, self.archive_end as u64)
-                .unwrap_or_default();
+        if self.start < self.archive_end
+            && self.generation == server.archive_read_fence.generation()
+        {
+            let prepared = server.archive.lock().unwrap().prepare_read(
+                &self.pane,
+                self.start as u64,
+                self.archive_end as u64,
+            );
+            // File descriptors and buffered prefixes were captured under the mutex.
+            // File I/O and decompression run after releasing it.
+            let rows = prepared.and_then(|read| read.finish()).unwrap_or_default();
             let mut map: HashMap<u64, Row> = rows
                 .into_iter()
                 .map(|r| {
@@ -115,12 +220,15 @@ impl HistoryRead {
             }
         }
         lines.extend(self.memory);
-        ServerFrame::History {
-            pane: self.pane,
-            req: self.req,
-            start: self.start,
-            total: self.total,
-            lines,
+        ReadOutput {
+            frame: ServerFrame::History {
+                pane: self.pane,
+                req: self.req,
+                start: self.start,
+                total: self.total,
+                lines,
+            },
+            history_generation: Some(self.generation),
         }
     }
 }

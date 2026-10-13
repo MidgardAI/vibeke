@@ -95,7 +95,9 @@ pub struct Session {
     images_sent: std::collections::HashSet<String>,
     /// The authenticated caller of the connection that attached (09 §3.2).
     auth: Auth,
-    reads: tokio::task::JoinSet<ServerFrame>,
+    reads: tokio::task::JoinSet<Result<read::ReadOutput>>,
+    read_commands: usize,
+    pending_reads: std::collections::VecDeque<read::ReadJob>,
 }
 
 /// Who a render session runs as: the control connection's authenticated context. An elevated
@@ -350,6 +352,8 @@ where
         images_sent: Default::default(),
         auth,
         reads: tokio::task::JoinSet::new(),
+        pending_reads: Default::default(),
+        read_commands: 0,
     };
     let mut push = EventPush::default();
     let hello = ServerFrame::Hello {
@@ -418,14 +422,10 @@ where
                 break;
             }
             if let Some(result) = read_result {
-                let frame = result?;
-                // A share can lose access while its archive read is running.
-                let allowed = match (&s.auth.share, &frame) {
-                    (Some(share), ServerFrame::History { pane, .. }) =>
-                        server.with_core(|c| share.allows(&c.model, pane)),
-                    _ => true,
-                };
-                if allowed { asyncio::write_frame(&mut wr, &frame).await?; }
+                let result = result??;
+                if matches!(result.frame, ServerFrame::CommandResult { .. }) { s.read_commands -= 1; }
+                if !s.write_read(result, &mut wr).await? { break; }
+                s.start_reads();
             }
             if let Some((types, after)) = s.pending_sub.take() {
                 let backlog = push.subscribe(&s.server, types, after);
@@ -906,48 +906,15 @@ impl Session {
                 start,
                 count,
             } => {
-                if self.reads.len() >= MAX_READS {
-                    asyncio::write_frame(
-                        wr,
-                        &ServerFrame::Goodbye {
-                            reason: "too many pending history reads".into(),
-                        },
-                    )
-                    .await?;
-                    return Ok(false);
-                }
                 let history = self.capture_history(req, &pane, start, count);
-                let server = self.server.clone();
-                self.reads.spawn_blocking(move || history.finish(&server));
+                return self.queue_read(read::ReadJob::History(history), wr).await;
             }
             ClientFrame::Command { req, json } => {
                 let ctx = self.ctx();
                 if let Some(json) = self.prepare_read(&json) {
-                    if self.reads.len() >= MAX_READS {
-                        let request: vk_proto::rpc::Request = serde_json::from_str(&json)?;
-                        let response = vk_proto::rpc::Response::err(
-                            request.id.unwrap_or_default(),
-                            api::err(
-                                vk_proto::rpc::ErrorKind::RateLimited,
-                                "too many pending reads",
-                            ),
-                        );
-                        asyncio::write_frame(
-                            wr,
-                            &ServerFrame::CommandResult {
-                                req,
-                                json: serde_json::to_string(&response)?,
-                            },
-                        )
-                        .await?;
-                    } else {
-                        let server = self.server.clone();
-                        self.reads.spawn(async move {
-                            let json = api::handle_line(&server, &ctx, &json).await;
-                            ServerFrame::CommandResult { req, json }
-                        });
-                    }
-                    return Ok(true);
+                    return self
+                        .queue_read(read::ReadJob::Command { req, json, ctx }, wr)
+                        .await;
                 }
                 let resp = api::handle_line(&self.server, &ctx, &json).await;
                 asyncio::write_frame(wr, &ServerFrame::CommandResult { req, json: resp }).await?;
@@ -1318,7 +1285,6 @@ mod push_tests;
 
 #[path = "render_read.rs"]
 mod read;
-use read::MAX_READS;
 
 #[cfg(test)]
 #[path = "render_perf_tests.rs"]

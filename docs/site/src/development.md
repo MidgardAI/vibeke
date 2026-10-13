@@ -25,6 +25,25 @@ Run `mise run test` for tests and `mise run ci` for the full local checks.
 `mise run dist` creates unsigned development artifacts and updates the local remote-install cache.
 See [releases and reproducible builds](reference/releases.md) before using these artifacts remotely.
 
+## Measure terminal performance
+
+Run the native terminal latency probe from a source build:
+
+```sh
+vibeke debug tui-latency --n 200 --json
+```
+
+The probe starts an isolated server and the native TUI in a pseudo-terminal.
+It measures the time from a key to visible output through the full client path.
+It reports latency percentiles and changes in render counters.
+Compare runs from the same build profile on the same machine.
+Use `--binary /path/to/another/vibeke` to measure another build with the same probe.
+
+`vibeke server status --json` includes render wakeups, timer wakeups, row projections,
+and pane frame counts under `render`.
+Row projections count full visible-row conversions made by render sessions.
+Other readers can populate the shared row cache first.
+
 ## Web and desktop development
 
 See the [web guide](../../../web/README.md) and [desktop development guide](../../../web/apps/desktop/README.md).

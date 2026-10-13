@@ -74,6 +74,8 @@ fn session(server: Arc<Server>) -> Session {
         images_sent: Default::default(),
         auth: Auth::default(),
         reads: tokio::task::JoinSet::new(),
+        pending_reads: Default::default(),
+        read_commands: 0,
     }
 }
 
@@ -181,7 +183,7 @@ async fn history_captures_memory_before_ring_rollover() {
         .unwrap()
         .engine
         .feed(b"\r\nsix\r\nseven\r\neight\r\nnine", &mut vec![]);
-    let ServerFrame::History { lines, .. } = history.finish(&s.server) else {
+    let ServerFrame::History { lines, .. } = history.finish(&s.server).frame else {
         panic!()
     };
     assert_eq!(lines, expected);
@@ -212,17 +214,19 @@ async fn slow_archive_read_does_not_block_ping_on_the_same_connection() {
         let _ = release_rx.recv();
     });
     ready_rx.await.unwrap();
-    asyncio::write_frame(
-        &mut wr,
-        &ClientFrame::FetchHistory {
-            req: 1,
-            pane: "P".into(),
-            start: 0,
-            count: 1,
-        },
-    )
-    .await
-    .unwrap();
+    for req in 1..=12 {
+        asyncio::write_frame(
+            &mut wr,
+            &ClientFrame::FetchHistory {
+                req,
+                pane: "P".into(),
+                start: 0,
+                count: 1,
+            },
+        )
+        .await
+        .unwrap();
+    }
     asyncio::write_frame(&mut wr, &ClientFrame::Ping { nonce: 42 })
         .await
         .unwrap();
@@ -234,6 +238,7 @@ async fn slow_archive_read_does_not_block_ping_on_the_same_connection() {
             {
                 ServerFrame::Pong { nonce: 42, .. } => break,
                 ServerFrame::History { .. } => panic!("archive should still be blocked"),
+                ServerFrame::Goodbye { reason } => panic!("queued reads disconnected: {reason}"),
                 _ => {}
             }
         }
@@ -242,6 +247,23 @@ async fn slow_archive_read_does_not_block_ping_on_the_same_connection() {
     .unwrap();
     release_tx.send(()).unwrap();
     blocker.await.unwrap();
+    let mut replies = std::collections::HashSet::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while replies.len() != 12 {
+            match asyncio::read_frame::<_, ServerFrame>(&mut rd)
+                .await
+                .unwrap()
+            {
+                ServerFrame::History { req, .. } => {
+                    assert!(replies.insert(req));
+                }
+                ServerFrame::Goodbye { reason } => panic!("queued reads disconnected: {reason}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
     asyncio::write_frame(&mut wr, &ClientFrame::Detach)
         .await
         .unwrap();
@@ -338,4 +360,100 @@ async fn two_clients_share_projection_but_keep_independent_frame_revisions() {
     second.send_panes(&mut tokio::io::sink()).await.unwrap();
     assert_eq!(first.views["P"].rows, second.views["P"].rows);
     assert_eq!(rt.screen.lock().unwrap().engine.row_projection_builds(), 2);
+}
+
+#[tokio::test]
+async fn history_keeps_capacity_when_command_workers_are_busy() {
+    let (_d, server) = server();
+    let mut s = session(server);
+    runtime(&mut s);
+    // Model six repository handlers waiting on I/O, without relying on filesystem timing.
+    for _ in 0..6 {
+        s.reads
+            .spawn(std::future::pending::<Result<read::ReadOutput>>());
+    }
+    s.read_commands = 6;
+    let mut out = Vec::new();
+    s.on_client(
+        ClientFrame::Command {
+            req: 99,
+            json: serde_json::json!({"jsonrpc":"2.0","id":99,"method":"fs.browse","params":{}})
+                .to_string(),
+        },
+        &mut out,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s.pending_reads.len(), 1);
+    s.on_client(
+        ClientFrame::FetchHistory {
+            req: 100,
+            pane: "P".into(),
+            start: 0,
+            count: 0,
+        },
+        &mut out,
+    )
+    .await
+    .unwrap();
+    s.on_client(ClientFrame::Ping { nonce: 101 }, &mut out)
+        .await
+        .unwrap();
+    let mut bytes = out.as_slice();
+    assert!(matches!(
+        asyncio::read_frame::<_, ServerFrame>(&mut bytes)
+            .await
+            .unwrap(),
+        ServerFrame::Pong { nonce: 101, .. }
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(5), s.reads.join_next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        result.frame,
+        ServerFrame::History { req: 100, .. }
+    ));
+    assert_eq!(
+        s.pending_reads.len(),
+        1,
+        "queued commands do not consume history capacity"
+    );
+}
+
+#[tokio::test]
+async fn forgotten_or_closed_history_is_not_emitted_after_capture() {
+    for forget_before_finish in [false, true] {
+        let (_d, server) = server();
+        let mut s = session(server);
+        let rt = runtime(&mut s);
+        rt.screen.lock().unwrap().engine.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\nten\r\neleven", &mut vec![]);
+        let captured = s.capture_history(7, "P", 0, 20);
+        if forget_before_finish {
+            s.server.archive.lock().unwrap().remove_pane("P");
+        }
+        let result = captured.finish(&s.server);
+        if !forget_before_finish {
+            s.server.archive.lock().unwrap().remove_pane("P");
+        }
+        let mut out = Vec::new();
+        s.write_read(result, &mut out).await.unwrap();
+        let mut bytes = out.as_slice();
+        assert!(
+            matches!(asyncio::read_frame::<_, ServerFrame>(&mut bytes).await.unwrap(),
+            ServerFrame::History { req: 7, total: 0, lines, .. } if lines.is_empty())
+        );
+        // Closing the pane also invalidates captured styled memory, independently of archive purge.
+        let captured = s.capture_history(8, "P", 0, 20).finish(&s.server);
+        s.server.panes.lock().unwrap().remove("P");
+        out.clear();
+        s.write_read(captured, &mut out).await.unwrap();
+        let mut bytes = out.as_slice();
+        assert!(
+            matches!(asyncio::read_frame::<_, ServerFrame>(&mut bytes).await.unwrap(),
+            ServerFrame::History { req: 8, total: 0, lines, .. } if lines.is_empty())
+        );
+    }
 }

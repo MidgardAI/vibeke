@@ -185,6 +185,7 @@ pub struct Server {
     /// `restart_error`); this image keeps serving. Cleared by the next restart.
     pub restart_error: Mutex<Option<String>>,
     pub archive: Mutex<Archive>,
+    pub archive_read_fence: vk_store::archive::ReadFence,
     /// Rows waiting for the next FTS flush. Lock order: `archive` → `core` → `fts_buf`; the
     /// batch is drained and indexed under the archive lock, which purges also hold.
     pub fts_buf: Mutex<Vec<(String, u64, i64, String)>>,
@@ -312,8 +313,11 @@ impl Server {
         let (model_rev, _) = watch::channel(1);
         let (events, _) = broadcast::channel(4096);
         let (ui, _) = broadcast::channel(256);
+        let archive = Archive::new(&paths.scrollback());
+        let archive_read_fence = archive.read_fence();
         let server = Arc::new(Server {
-            archive: Mutex::new(Archive::new(&paths.scrollback())),
+            archive: Mutex::new(archive),
+            archive_read_fence,
             paths,
             opts,
             core: Mutex::new(core),
