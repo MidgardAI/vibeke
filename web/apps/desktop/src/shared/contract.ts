@@ -76,6 +76,10 @@ export const EVENT = {
  */
 export const RENDERER_METHODS = [
   'dashboard.get',
+  'browser.annotations_release',
+  'browser.annotations_discard',
+  'handoff.link.redeem',
+  'handoff.link.status',
   'pane.read',
   'pane.send_text',
   'pane.send_keys',

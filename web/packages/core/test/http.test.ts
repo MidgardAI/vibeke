@@ -121,7 +121,7 @@ describe('response parser', () => {
 
   test('upgrade hands over the rest of the bytes', () => {
     const p = new ResponseParser();
-    const ev = p.push(bytes('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n\x81\x02hi'));
+    const ev = p.push(new Uint8Array([...bytes('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n'), 0x81, 0x02, 0x68, 0x69]));
     expect(ev).toHaveLength(1);
     const u = ev[0] as Extract<ResponseEvent, { type: 'upgrade' }>;
     expect(u.type).toBe('upgrade');
