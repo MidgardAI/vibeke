@@ -236,6 +236,9 @@ pub struct Parser {
     /// This Codex thread's agent path (`/root`, or the one its `session_meta` names).
     codex_self: String,
     codex_agents: HashMap<String, CodexAgent>,
+    /// Collaboration calls that already started a child run: activity items and the call's
+    /// output both report a spawn, in either order.
+    codex_start_calls: HashSet<String>,
     codex_calls: HashMap<String, CodexCall>,
     /// The rollout has `SubAgentActivity` items, which say when sub-agents start and end;
     /// inter-agent messages are then not used as ends.
@@ -274,6 +277,7 @@ impl Parser {
             last_codex_total: None,
             codex_self: CODEX_ROOT.to_string(),
             codex_agents: HashMap::new(),
+            codex_start_calls: HashSet::new(),
             codex_calls: HashMap::new(),
             codex_activity: false,
             activity: None,
@@ -1135,6 +1139,11 @@ impl Parser {
         ts: Option<i64>,
         out: &mut Vec<Event>,
     ) {
+        if let Some(c) = call_id
+            && !self.codex_start_calls.insert(c.to_string())
+        {
+            return;
+        }
         let a = self.codex_agents.entry(key.to_string()).or_default();
         if a.base.is_empty() {
             a.base = thread.unwrap_or(key).to_string();
@@ -2256,6 +2265,36 @@ mod tests {
                 "end t2#2 completed",
                 "end t1 completed",
             ]
+        );
+    }
+
+    #[test]
+    fn codex_subagent_ended_before_its_spawn_output_is_not_started_again() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            codex_call(
+                "2026-01-01T00:00:01Z",
+                "c1",
+                "spawn_agent",
+                json!({"task_name": "quick", "message": "gAAAAx"}),
+            ),
+            codex_activity("2026-01-01T00:00:01Z", "c1", "started", "t1", "/root/quick"),
+            codex_activity(
+                "2026-01-01T00:00:02Z",
+                "subagent-completed-q",
+                "completed",
+                "t1",
+                "/root/quick",
+            ),
+            codex_out(
+                "2026-01-01T00:00:03Z",
+                "c1",
+                r#"{"task_name":"/root/quick"}"#,
+            ),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            ["start t1 subagent quick c1", "end t1 completed"]
         );
     }
 

@@ -63,6 +63,10 @@ pub struct Codex {
     agents: BTreeMap<String, (String, Option<String>)>,
     /// This thread's sub-agent threads, with their last label.
     children: HashMap<String, String>,
+    /// Items of this thread that give a child a new task (`followup_task`, `send_input`): their
+    /// `interacted` activity starts a run of the child. A shared app-server does not route the
+    /// child's own `turn/started` to this client.
+    followups: std::collections::HashSet<String>,
 }
 
 fn id_str(id: &Value) -> String {
@@ -97,6 +101,7 @@ impl Codex {
             terminals: vec![],
             agents: BTreeMap::new(),
             children: HashMap::new(),
+            followups: Default::default(),
         }
     }
 
@@ -271,7 +276,11 @@ impl Codex {
             "started" => self.agent_running(cx, &thread, label, item_id),
             // A message or a new task: the child's own `turn/started` says whether it runs.
             "interacted" => {
-                self.children.entry(thread).or_default();
+                if item_id.as_ref().is_some_and(|i| self.followups.remove(i)) {
+                    self.agent_running(cx, &thread, label, item_id);
+                } else {
+                    self.children.entry(thread).or_default();
+                }
             }
             "completed" | "interrupted" | "errored" | "failed" | "shutdown" | "closed" => {
                 self.agent_ended(cx, &thread)
@@ -741,6 +750,17 @@ impl Adapter for Codex {
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        let name = ["tool", "name"]
+                            .iter()
+                            .find_map(|k| item.get(*k).and_then(Value::as_str))
+                            .unwrap_or("");
+                        let base = name.rsplit(['.', ':', '/']).next().unwrap_or(name);
+                        if matches!(base, "followup_task" | "send_input") && !iid.is_empty() {
+                            if self.followups.len() >= 256 {
+                                self.followups.clear();
+                            }
+                            self.followups.insert(iid.clone());
+                        }
                         if let Some((tool, input)) = Self::tool_of(&item) {
                             cx.tool_start(&iid, harness::tool_summary(&tool, &input));
                             cx.signal(

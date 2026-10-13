@@ -64,6 +64,15 @@ fn allowed(scope: &ReadScope, pane: &str, ws: Option<&str>) -> bool {
     }
 }
 
+/// Whether `ctx` may read the content of `pane` (`security.pane_scope.read`).
+pub fn pane_readable(server: &Server, ctx: &Ctx, pane: &str) -> bool {
+    if ctx.pane_scope.is_none() {
+        return true;
+    }
+    let ws = server.with_core(|c| c.pane(pane).map(|p| p.workspace.clone()));
+    allowed(&read_scope(server, ctx), pane, ws.as_deref())
+}
+
 /// Read-scope check for content reads of other panes (called from `api::authorize`).
 pub fn authorize_read(server: &Server, ctx: &Ctx, method: &str, p: &Value) -> Result<(), RpcError> {
     if ctx.pane_scope.is_none() || !matches!(method, "pane.read" | "pane.wait_output") {

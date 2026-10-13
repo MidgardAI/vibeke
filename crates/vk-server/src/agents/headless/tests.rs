@@ -2220,3 +2220,47 @@ fn codex_isolated_args_and_relay_argv() {
         ]
     );
 }
+
+/// A shared app-server never routes a child's `turn/started` to the parent's client: the
+/// parent's own `followup_task` call and its `interacted` activity start the child's next run.
+#[test]
+fn codex_followup_task_runs_the_child_again_without_its_turn_notifications() {
+    let mut r = rec(Kind::AppServer, Some("th-1"));
+    r.processed = 1;
+    let mut a = codex::Codex::new(&r);
+    step(
+        &mut a,
+        json!({"method": "turn/started", "params": {"threadId": "th-1", "turn": {"id": "tu-1"}}}),
+    );
+    step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "subAgentActivity", "id": "call-1", "kind": "started", "agentThreadId": "ch-1", "agentPath": "/root/review"}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "subAgentActivity", "id": "done-1", "kind": "completed", "agentThreadId": "ch-1", "agentPath": "/root/review"}}}),
+    );
+    assert!(last_bg(&cx).is_empty());
+    // A message to the child is not a new task.
+    step(
+        &mut a,
+        json!({"method": "item/started", "params": {"threadId": "th-1", "item": {"type": "dynamicToolCall", "id": "call-2", "tool": "send_message"}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "subAgentActivity", "id": "call-2", "kind": "interacted", "agentThreadId": "ch-1", "agentPath": "/root/review"}}}),
+    );
+    assert!(cx.signals.iter().all(|(e, _)| e != "BgTasks"));
+    step(
+        &mut a,
+        json!({"method": "item/started", "params": {"threadId": "th-1", "item": {"type": "dynamicToolCall", "id": "call-3", "tool": "followup_task"}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "subAgentActivity", "id": "call-3", "kind": "interacted", "agentThreadId": "ch-1", "agentPath": "/root/review"}}}),
+    );
+    assert_eq!(
+        last_bg(&cx),
+        [("ch-1".into(), "subagent".into(), "review".into())]
+    );
+}

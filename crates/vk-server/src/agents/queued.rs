@@ -185,15 +185,12 @@ pub fn codex_pending(lines: &[String]) -> Option<Vec<String>> {
         if !l.starts_with(char::is_whitespace) {
             break;
         }
-        match items.last_mut() {
-            Some(last) => {
-                if !last.is_empty() {
-                    last.push('\n');
-                }
-                last.push_str(t);
+        // Before the first item: the rest of a header that wrapped on a narrow pane.
+        if let Some(last) = items.last_mut() {
+            if !last.is_empty() {
+                last.push('\n');
             }
-            // The rest of a header that wrapped on a narrow pane (`immediately)`).
-            None => {}
+            last.push_str(t);
         }
     }
     if items.is_empty() {
@@ -314,15 +311,14 @@ pub fn claude_send_now_keys(file: Option<&str>) -> Result<Binding, String> {
         .filter(|d| !taken.contains(&norm(d)))
         .filter_map(|d| binding_of(d));
     let all: Vec<Binding> = user.into_iter().chain(defaults).collect();
-    all.iter()
-        .find(|b| b.pty_safe)
-        .or(all.first())
-        .cloned()
-        .ok_or_else(|| {
-            "Claude Code has no key for chat:sendNow: bind one in ~/.claude/keybindings.json \
+    // A key that legacy encoding turns into Enter (`ctrl+enter`) would submit the person's
+    // draft instead: only keys that survive any terminal are used.
+    all.into_iter().find(|b| b.pty_safe).ok_or_else(|| {
+        "Claude Code has no key for chat:sendNow that works in every terminal: bind one in \
+             ~/.claude/keybindings.json \
              (for example \"ctrl+x ctrl+s\": \"chat:sendNow\" in the Chat context)"
-                .to_string()
-        })
+            .to_string()
+    })
 }
 
 fn claude_keybindings() -> Option<String> {
@@ -335,6 +331,14 @@ fn claude_keybindings() -> Option<String> {
 /// `agent.queued`.
 async fn queued(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let run = resolve_run(server, ctx, s(p, "target"))?;
+    // Queued text is pane content: the same read scope as `pane.read`.
+    if !crate::search::pane_readable(server, ctx, &run.pane) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "agent.queued: pane is outside your read scope (security.pane_scope.read)",
+        )
+        .details(json!({"scope": "pane"})));
+    }
     let items: Vec<Value> = list(&run).iter().map(Queued::to_json).collect();
     Ok(json!({"run": run.id, "items": items}))
 }
@@ -352,7 +356,14 @@ async fn send_now(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
     let nothing = || {
         err(ErrorKind::Conflict, "nothing is queued").details(json!({"reason": "nothing_queued"}))
     };
-    if dialog_on_pane(server, &run).is_some() {
+    // Keys sent into an approval, question or picker could answer it.
+    let open = server.with_core(|c| {
+        c.model
+            .interactions
+            .iter()
+            .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
+    });
+    if open || dialog_on_pane(server, &run).is_some() {
         return Err(err(
             ErrorKind::Conflict,
             "the agent is showing a dialog; answer or cancel it first",
@@ -513,10 +524,9 @@ mod tests {
 
     #[test]
     fn claude_send_now_prefers_keys_that_survive_a_pty() {
+        // Only `ctrl+enter` is left: legacy encoding sends it as Enter, so it is refused.
         let f = r#"{"bindings":[{"context":"Chat","bindings":{"ctrl+x ctrl+s":null}}]}"#;
-        let b = claude_send_now_keys(Some(f)).unwrap();
-        assert_eq!(b.keys, vec!["ctrl+enter"]);
-        assert!(!b.pty_safe);
+        assert!(claude_send_now_keys(Some(f)).is_err());
         let f = r#"{"bindings":[{"context":"Chat","bindings":{"cmd+s":"chat:sendNow","ctrl+k ctrl+n":"chat:sendNow"}}]}"#;
         assert_eq!(
             claude_send_now_keys(Some(f)).unwrap().keys,
