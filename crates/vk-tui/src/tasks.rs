@@ -779,6 +779,10 @@ impl IntentForm {
             (IntentField::Criterion(i), _) if ctrl(ev, 'r') => {
                 self.criteria[i].required = !self.criteria[i].required
             }
+            // As in the Track form: the text has no cursor, so ←/→ flip the required flag.
+            (IntentField::Criterion(i), Key::Named(NamedKey::Left | NamedKey::Right)) => {
+                self.criteria[i].required = !self.criteria[i].required
+            }
             (IntentField::Criterion(i), _) if ctrl(ev, 'd') => self.remove(i),
             (IntentField::Criterion(i), Key::Named(NamedKey::Backspace))
                 if self.criteria[i].text.is_empty() =>
@@ -2839,7 +2843,7 @@ fn sub_lines(app: &App, v: &TaskView, w: usize) -> Option<(String, Lines)> {
                 sel(f.field == IntentField::Objective),
             ));
             l.push((
-                "Criteria   (ctrl+r required/optional, ctrl+d remove)".into(),
+                "Criteria   (←/→ or ctrl+r required/optional, ctrl+d remove)".into(),
                 t.dim(),
             ));
             for (i, c) in f.criteria.iter().enumerate() {
@@ -3333,7 +3337,7 @@ pub fn draw_track(app: &App, g: &mut Grid) {
         t.dim(),
     );
     b.line(
-        "tab/↑↓ move · ←/→ change (turn, required, stop point) · ctrl+s track · ctrl+g Suggest · esc cancel",
+        "↑/↓ or tab move · ←/→ change · ctrl+s track · ctrl+g Suggest task details · esc cancel",
         t.dim(),
     );
 }
@@ -3371,6 +3375,19 @@ mod tests {
             f.key(&ch(c));
         }
     }
+    /// The Edit intent form flips a criterion's required flag with ←/→, as the Track form does.
+    #[test]
+    fn intent_criteria_flip_required_with_arrows() {
+        let intent = json!({"revision": 1, "title": "t", "objective": "o",
+                            "criteria": [{"id": "c1", "text": "Tests pass", "required": true}]});
+        let mut f = IntentForm::from_intent(&intent, "k".into());
+        f.field = IntentField::Criterion(0);
+        f.key(&key(Key::Named(NamedKey::Right)));
+        assert!(!f.criteria[0].required);
+        f.key(&key(Key::Named(NamedKey::Left)));
+        assert!(f.criteria[0].required);
+    }
+
     fn commands(rx: &mut tokio::sync::mpsc::UnboundedReceiver<ClientFrame>) -> Vec<(u64, Value)> {
         let mut v = Vec::new();
         while let Ok(f) = rx.try_recv() {

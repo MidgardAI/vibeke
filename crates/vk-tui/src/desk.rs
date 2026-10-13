@@ -1190,7 +1190,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     } else {
         a.footer(
             &format!(
-                "j/k · ↑ at the top: filters · enter open · o/r/c actions · F forget · R/h/D filters · / search · {} · esc",
+                "{} · j/k move · enter open · ↑ filters · / search · o/r/c actions · F forget · R/h/D filters · esc",
                 formkeys::LIST_TABS_HINT
             ),
             t.dim(),

@@ -343,8 +343,9 @@ pub fn ask_key(app: &mut App, ev: KeyEvent, popup: Popup) {
         }
         Some(_) => app.toast("paste cancelled"),
         None => {
-            // shift+tab goes back (formkeys).
-            let sel = match crate::formkeys::step(crate::formkeys::nav(&ev, false)) {
+            // shift+tab goes back (formkeys). Only the named keys move the highlight: this popup
+            // asks for consent, and typed text (letters, space) must never change the choice.
+            let sel = match crate::formkeys::step(crate::formkeys::nav(&ev, true)) {
                 Some(by) => crate::formkeys::wrap(sel, by, 3),
                 None => sel,
             };

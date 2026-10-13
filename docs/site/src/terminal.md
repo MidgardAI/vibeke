@@ -68,6 +68,20 @@ See [agents and interactions](concepts/agents.md).
 
 Press `prefix+alt+i` to view new images. The sidebar also lists recent images. See [previews and browsers](concepts/previews.md#images-in-the-terminal-interface).
 
+## Keys in forms and tabbed views
+
+Every form, dialog and tabbed view uses the same keys:
+
+| Key | What it does |
+| --- | --- |
+| `left`, `right` | Change the selected option: the previous or next value, or a toggle on or off |
+| `space` | Change the selected option too |
+| `up`, `down`, `tab`, `shift+tab` | Move between the fields |
+| `enter` | Confirm |
+| `esc` | Go back |
+
+In a view with tabs, `tab` and `shift+tab` switch tabs from a list. In a form, they move between the fields instead. To switch tabs from a form, press `up` from the top row. The tab strip is then selected: use `left` and `right` to switch tabs, and `down` to go back. The letter shortcuts that a view shows still work.
+
 ## Drafts, notes and the session desk
 
 **Drafts and Notes** (`:drafts`, `:notes` in the command palette) are two tabs. **Results and Sessions** in the session desk (`:desk`) are two tabs too. Switch tabs with `tab` and `shift+tab`. You can also press `up` from the top row, then use `left` and `right`. Press `down`, `enter` or `esc` to go back into the tab.

@@ -1791,7 +1791,7 @@ pub fn draw(app: &App, g: &mut Grid) {
     } else {
         a.footer(
             &format!(
-                "j/k move · n new · e edit · J/K reorder · space select · m combine · x delete · s send · R reconcile · {} · esc close",
+                "{} · j/k move · n new · e edit · s send · space select · m combine · J/K reorder · x delete · R reconcile · esc close",
                 formkeys::LIST_TABS_HINT
             ),
             t.dim(),
@@ -1964,7 +1964,7 @@ fn draw_notes(app: &App, v: &DraftsView, a: &mut Area) {
                     formkeys::STRIP_HINT.to_string()
                 } else {
                     format!(
-                        "e edit · r reload · {} · esc close",
+                        "{} · e edit · r reload · esc close",
                         formkeys::LIST_TABS_HINT
                     )
                 },

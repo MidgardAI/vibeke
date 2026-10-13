@@ -147,6 +147,9 @@ pub fn switch(app: &mut App, from: Tab, to: Tab) {
 /// enter or esc go back into the tab. Otherwise tab / shift+tab switch tabs, except in a form,
 /// where they move between its fields; anything else is the tab's.
 pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
+    // The popup dispatcher clears the mode before a key; each tab's handler sets it again. The
+    // strip handles some keys itself, so it keeps the view open the same way.
+    let keep = |app: &mut App| app.mode = Mode::Popup(popup_of(tab));
     if app.ux.connections.strip && ev.kind != KeyKind::Release {
         let mut strip = Strip { focused: true };
         match strip.key(&ev) {
@@ -154,17 +157,17 @@ pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
                 switch(app, tab, tab.step(by));
                 strip.focused = true;
             }
-            StripKey::Leave | StripKey::None => {}
+            StripKey::Leave | StripKey::None => keep(app),
         }
         app.ux.connections.strip = strip.focused;
         app.dirty = true;
         return;
     }
-    if let Some(by) = tab_step(&ev) {
-        if !in_form(app, tab) {
-            switch(app, tab, tab.step(by));
-            return;
-        }
+    if let Some(by) = tab_step(&ev)
+        && !in_form(app, tab)
+    {
+        switch(app, tab, tab.step(by));
+        return;
     }
     // Up from the top of the Handoffs list: the tab strip.
     if tab == Tab::Handoffs
@@ -174,6 +177,7 @@ pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
         && matches!(ev.key, Key::Named(NamedKey::Up) | Key::Char('k'))
         && app.ux.handoff.list_sel == 0
     {
+        keep(app);
         app.ux.connections.strip = true;
         app.dirty = true;
         return;
@@ -183,6 +187,17 @@ pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
         Tab::People => crate::people::key(app, ev),
         Tab::Hosts => crate::sharing::key(app, ev),
         Tab::Handoffs => crate::handoff::handoffs_key(app, ev),
+    }
+}
+
+/// The popup that shows `tab`.
+fn popup_of(tab: Tab) -> crate::app::Popup {
+    use crate::app::Popup;
+    match tab {
+        Tab::Devices => Popup::Devices,
+        Tab::People => Popup::People,
+        Tab::Hosts => Popup::Sharing,
+        Tab::Handoffs => Popup::Handoffs,
     }
 }
 
