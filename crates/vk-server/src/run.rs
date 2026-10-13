@@ -77,17 +77,14 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             tokio::select! {
                 _ = hk.housekeeping_wake.notified() => {
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    hk.housekeeping();
+                    housekeeping(&hk, false).await;
                     if hk.degraded.lock().unwrap().is_some() {
                         // Keep probing storage once a second until it recovers.
                         hk.housekeeping_wake.notify_one();
                     }
                 }
                 _ = tokio::time::sleep_until(prune_at) => {
-                    hk.housekeeping();
-                    crate::hardening::sweep(&hk);
-                    hk.archive_retention();
-                    crate::assist::sweep(&hk);
+                    housekeeping(&hk, true).await;
                     prune_at += hour;
                 }
             }
@@ -127,11 +124,7 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             .expect("sigint");
         tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
         // Graceful stop: holders keep running; snapshot first so the next server replays little.
-        for rt in sd.panes.lock().unwrap().values() {
-            rt.send(crate::pane::PaneCmd::Snapshot);
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        sd.housekeeping();
+        flush_for_shutdown(&sd).await;
         crate::gateway_supervisor::shutdown(&sd).await;
         crate::machines::stopped(&sd, "signal");
         let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
@@ -159,6 +152,45 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             }
         });
     }
+}
+
+/// Disk I/O, compression and indexing must not occupy an async runtime thread. The caller
+/// awaits each pass, and Server serializes passes from shutdown and the normal scheduler.
+async fn housekeeping(server: &Arc<Server>, prune: bool) {
+    let server = server.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        server.housekeeping();
+        if prune {
+            crate::hardening::sweep(&server);
+            server.archive_retention();
+            crate::assist::sweep(&server);
+        }
+    })
+    .await;
+}
+
+/// Wait for snapshots requested by this stop/restart. Unreachable holders retain their
+/// journals, so a bounded wait can fall back to replay instead of hanging shutdown forever.
+pub(crate) async fn flush_for_shutdown(server: &Arc<Server>) {
+    let replies: Vec<_> = server
+        .panes
+        .lock()
+        .unwrap()
+        .values()
+        .map(|rt| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            rt.send(crate::pane::PaneCmd::SnapshotAndWait(tx));
+            rx
+        })
+        .collect();
+    match tokio::time::timeout(Duration::from_secs(10), futures::future::join_all(replies)).await {
+        Ok(replies) if replies.iter().all(|r| matches!(r, Ok(true))) => {}
+        _ => tracing::warn!(
+            "some panes could not snapshot before shutdown; recovery will use holder journals"
+        ),
+    }
+    let server = server.clone();
+    let _ = tokio::task::spawn_blocking(move || server.shutdown_housekeeping()).await;
 }
 
 /// One control connection: newline-delimited JSON-RPC, pipelined, with optional switch to the

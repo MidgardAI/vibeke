@@ -289,16 +289,13 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
         None => binary(server),
     };
     *server.restart_error.lock().unwrap() = None;
-    for rt in server.panes.lock().unwrap().values() {
-        rt.send(crate::pane::PaneCmd::Snapshot);
-    }
     let srv = server.clone();
     let session = server.opts.session.clone();
     let exe = bin.clone();
     tokio::spawn(async move {
-        // Let the response and the pane snapshots go out first.
+        // Let the response go out first, then wait for the requested snapshots to commit.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        srv.housekeeping();
+        crate::run::flush_for_shutdown(&srv).await;
         // The new image starts its own gateway; a child of this image would outlive its
         // supervisor.
         let gateway_wanted = crate::gateway_supervisor::shutdown(&srv).await;

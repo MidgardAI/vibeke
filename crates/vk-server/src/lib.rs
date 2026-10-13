@@ -191,6 +191,9 @@ pub struct Server {
     /// Test hook: runs in [`Server::housekeeping`] right after the FTS batch was drained.
     #[cfg(test)]
     pub(crate) after_fts_drain: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test hook: pause a snapshot worker after compression, before acquiring `core`.
+    #[cfg(test)]
+    pub(crate) before_snapshot_commit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub tokens: Mutex<HashMap<String, String>>,
     pub tracking: tracking::State,
     pub gateway: gateway_api::State,
@@ -221,6 +224,9 @@ pub struct Server {
     /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
     pub housekeeping_wake: Notify,
     pub housekeeping_runs: AtomicU64,
+    /// Serialize all housekeeping callers, including shutdown, while compression releases
+    /// the archive mutex. Never acquire this while holding `archive` or `core`.
+    housekeeping_lock: Mutex<()>,
     /// Audit log, token revocation and elevation, integration tamper state (09).
     pub security: security::State,
     /// Encryption at rest and redaction settings (09 §9.1–9.2).
@@ -326,6 +332,8 @@ impl Server {
             fts_buf: Mutex::new(Vec::new()),
             #[cfg(test)]
             after_fts_drain: Mutex::new(None),
+            #[cfg(test)]
+            before_snapshot_commit: Mutex::new(None),
             tokens: Mutex::new(tokens),
             tracking: Default::default(),
             gateway: Default::default(),
@@ -346,6 +354,7 @@ impl Server {
             timers: Arc::default(),
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
+            housekeeping_lock: Mutex::new(()),
             security: Default::default(),
             privacy: Default::default(),
             hardening: Default::default(),
@@ -1785,11 +1794,23 @@ impl Server {
         blob: Vec<u8>,
         incarnation: &str,
     ) -> bool {
+        self.store_snapshot_at_epoch(pane, offset, blob, incarnation, None)
+    }
+
+    /// The pane worker supplies its captured holder epoch. A replaced or closed holder
+    /// cannot acquire a stale snapshot while the blocking worker was compressing it.
+    pub(crate) fn store_snapshot_at_epoch(
+        &self,
+        pane: &str,
+        offset: u64,
+        blob: Vec<u8>,
+        incarnation: &str,
+        epoch: Option<u64>,
+    ) -> bool {
         // Degraded: VT snapshots pause (the recovery guarantee is "ring only", 02 §4a).
         if self.degraded.lock().unwrap().is_some() {
             return false;
         }
-        let mut c = self.core.lock().unwrap();
         let mut tx = Tx::new();
         tx.m.snapshot(
             pane,
@@ -1799,6 +1820,22 @@ impl Server {
             blob,
             incarnation,
         );
+        if tx.m.prepare_snapshots().is_err() {
+            return false;
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.before_snapshot_commit.lock().unwrap().as_ref() {
+            hook();
+        }
+        let mut c = self.core.lock().unwrap();
+        if let Some(epoch) = epoch
+            && !c
+                .store
+                .holders()
+                .is_ok_and(|hs| hs.iter().any(|h| h.pane == pane && h.epoch == epoch))
+        {
+            return false;
+        }
         c.commit(tx).is_ok()
     }
 
@@ -1838,20 +1875,55 @@ impl Server {
     /// Housekeeping: flush archive + FTS, probe storage when degraded. Runs at most once a
     /// second while there is something to do ([`Server::housekeeping_wake`]), never when idle.
     pub fn housekeeping(&self) {
+        self.housekeeping_pass(false);
+    }
+
+    /// A final pass must drain more than the normal compression budget: a committed VT
+    /// snapshot may already cover rows that have left its bounded in-memory scrollback.
+    pub(crate) fn shutdown_housekeeping(&self) {
+        self.housekeeping_pass(true);
+    }
+
+    fn housekeeping_pass(&self, flush_all: bool) {
+        let _housekeeping = self.housekeeping_lock.lock().unwrap();
         self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
+        // Buffers remain visible to readers while compression runs. A purge or encryption
+        // change may consume them in between; apply_flush detects and discards stale work.
+        let batches = self.archive.lock().unwrap().prepare_flush();
+        let batches: Vec<_> = batches
+            .into_iter()
+            .filter_map(|b| b.compress().ok())
+            .collect();
         // The archive lock is held from the drain until the batch is indexed: `forget` and
         // retention purge under it, so a purge can't run between the two and have this batch
         // re-insert text it just deleted (leftovers review finding 7).
         let mut a = self.archive.lock().unwrap();
-        let _ = a.flush();
-        let rows = std::mem::take(&mut *self.fts_buf.lock().unwrap());
+        for batch in batches {
+            let _ = a.apply_flush(batch);
+        }
+        if flush_all {
+            let _ = a.flush();
+        }
+        let buffered = a.buffered_starts();
+        let rows = {
+            let mut pending = self.fts_buf.lock().unwrap();
+            let (ready, later): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition(|row| buffered.get(&row.0).is_none_or(|first| row.1 < *first));
+            *pending = later;
+            ready
+        };
+        if !buffered.is_empty() {
+            // New output arrived while compression ran, or a write needs another attempt.
+            self.housekeeping_wake.notify_one();
+        }
         #[cfg(test)]
         if let Some(hook) = self.after_fts_drain.lock().unwrap().as_ref() {
             hook();
         }
         if !rows.is_empty() {
-            let c = self.core.lock().unwrap();
             let rows = crate::privacy::index_rows(self, rows);
+            let c = self.core.lock().unwrap();
             let _ = c.store.fts_insert(&rows);
             // Remember each archived pane's workspace for scoped archive search (09 §5.1).
             let mut seen: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();

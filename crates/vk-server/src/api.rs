@@ -878,14 +878,11 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
-            // Snapshot every pane so the next server replays as little as possible.
-            for rt in server.panes.lock().unwrap().values() {
-                rt.send(crate::pane::PaneCmd::Snapshot);
-            }
             let srv = server.clone();
             tokio::spawn(async move {
+                // Allow the response to be written before stopping client connections.
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                srv.housekeeping();
+                crate::run::flush_for_shutdown(&srv).await;
                 crate::gateway_supervisor::shutdown(&srv).await;
                 crate::machines::stopped(&srv, "api");
                 srv.shutdown.notify_waiters();

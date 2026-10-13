@@ -212,6 +212,11 @@ pub struct PendingEvent {
     pub data: Value,
 }
 
+enum SnapshotBlob {
+    Raw(Vec<u8>),
+    Compressed(Vec<u8>),
+}
+
 enum Write {
     Put {
         kind: &'static str,
@@ -240,7 +245,7 @@ enum Write {
         offset: u64,
         engine: String,
         version: String,
-        blob: Vec<u8>,
+        blob: SnapshotBlob,
         incarnation: String,
     },
     SnapshotDelete {
@@ -358,10 +363,22 @@ impl Mutation {
             offset,
             engine: engine.into(),
             version: version.into(),
-            blob,
+            blob: SnapshotBlob::Raw(blob),
             incarnation: incarnation.into(),
         });
         self
+    }
+    /// Compress snapshots before acquiring the caller's state lock. Commit still performs
+    /// the atomic SQLite write; callers that omit this keep the same on-disk format.
+    pub fn prepare_snapshots(&mut self) -> Result<()> {
+        for write in &mut self.writes {
+            if let Write::Snapshot { blob, .. } = write
+                && let SnapshotBlob::Raw(raw) = blob
+            {
+                *blob = SnapshotBlob::Compressed(zstd::encode_all(&raw[..], 3)?);
+            }
+        }
+        Ok(())
     }
     /// Forget a pane's VT snapshot (its holder was replaced; the old screen must not return).
     pub fn snapshot_delete(&mut self, pane: &str) -> &mut Self {
@@ -632,7 +649,10 @@ impl Store {
                     blob,
                     incarnation,
                 } => {
-                    let blob = zstd::encode_all(&blob[..], 3)?;
+                    let blob = match blob {
+                        SnapshotBlob::Raw(raw) => zstd::encode_all(&raw[..], 3)?,
+                        SnapshotBlob::Compressed(blob) => blob,
+                    };
                     tx.execute(
                         "INSERT INTO vt_snapshots (pane_id, holder_offset, engine, engine_version, blob, taken_at, holder_incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7)
                          ON CONFLICT(pane_id) DO UPDATE SET holder_offset=?2, engine=?3, engine_version=?4, blob=?5, taken_at=?6, holder_incarnation=?7",
@@ -1417,6 +1437,20 @@ mod tests {
         m.snapshot_delete("p1");
         s.commit(m).unwrap();
         assert!(s.snapshot_for("p1").unwrap().is_none());
+    }
+
+    #[test]
+    fn prepared_snapshots_keep_the_recovery_format() {
+        let mut s = Store::open_in_memory().unwrap();
+        let mut m = Mutation::new();
+        m.snapshot("p", 42, "e", "1", vec![9; 10_000], "holder");
+        m.prepare_snapshots().unwrap();
+        m.prepare_snapshots().unwrap();
+        s.commit(m).unwrap();
+        let snap = s.snapshot_for("p").unwrap().unwrap();
+        assert_eq!(snap.blob, vec![9; 10_000]);
+        assert_eq!(snap.offset, 42);
+        assert_eq!(snap.incarnation.as_deref(), Some("holder"));
     }
 
     #[test]

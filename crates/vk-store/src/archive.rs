@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::crypt::{self, StateCipher};
 
 const SEGMENT_BYTES: usize = 1 << 20;
+const FLUSH_BATCH_BYTES: usize = 8 << 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArchivedRow {
@@ -30,6 +31,8 @@ pub struct ArchivedRow {
 }
 
 struct PaneSeg {
+    generation: u64,
+    flush_revision: u64,
     path: PathBuf,
     written: usize,
     buf: Vec<u8>,
@@ -40,9 +43,45 @@ struct PaneSeg {
 pub struct Archive {
     root: PathBuf,
     open: HashMap<String, PaneSeg>,
+    /// Rotated segments stay readable until housekeeping writes their remaining rows.
+    pending: HashMap<String, Vec<PaneSeg>>,
+    next_generation: u64,
     cipher: Option<Arc<StateCipher>>,
     /// Encryption was asked for but the key is locked: nothing is written (fail closed).
     paused: bool,
+}
+
+/// An immutable archive prefix that can be compressed outside the archive lock.
+pub struct FlushBatch {
+    pane: String,
+    generation: u64,
+    flush_revision: u64,
+    bytes: Vec<u8>,
+    cipher: Option<Arc<StateCipher>>,
+}
+
+pub struct CompressedFlush {
+    pane: String,
+    generation: u64,
+    flush_revision: u64,
+    len: usize,
+    frame: Vec<u8>,
+}
+
+impl FlushBatch {
+    pub fn compress(self) -> Result<CompressedFlush> {
+        let mut frame = zstd::encode_all(&self.bytes[..], 3)?;
+        if let Some(c) = self.cipher {
+            frame = c.seal(&frame);
+        }
+        Ok(CompressedFlush {
+            pane: self.pane,
+            generation: self.generation,
+            flush_revision: self.flush_revision,
+            len: self.bytes.len(),
+            frame,
+        })
+    }
 }
 
 impl Archive {
@@ -50,6 +89,8 @@ impl Archive {
         Archive {
             root: root.to_path_buf(),
             open: HashMap::new(),
+            pending: HashMap::new(),
+            next_generation: 0,
             cipher: None,
             paused: false,
         }
@@ -113,8 +154,8 @@ impl Archive {
         let seg = match self.open.get_mut(pane) {
             Some(s) if s.written < SEGMENT_BYTES => s,
             _ => {
-                if let Some(mut old) = self.open.remove(pane) {
-                    flush_seg(&mut old)?;
+                if let Some(old) = self.open.remove(pane) {
+                    self.pending.entry(pane.to_string()).or_default().push(old);
                 }
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join(format!("{:016}.zst", rows[0].n));
@@ -134,7 +175,10 @@ impl Archive {
                 } else {
                     self.cipher.clone()
                 };
+                self.next_generation += 1;
                 self.open.entry(pane.to_string()).or_insert(PaneSeg {
+                    generation: self.next_generation,
+                    flush_revision: 0,
                     path,
                     written: 0,
                     buf: Vec::new(),
@@ -153,6 +197,12 @@ impl Archive {
 
     /// Write buffered rows (called at least every second by the server).
     pub fn flush(&mut self) -> Result<()> {
+        for segs in self.pending.values_mut() {
+            for s in segs {
+                flush_seg(s)?;
+            }
+        }
+        self.pending.clear();
         for s in self.open.values_mut() {
             flush_seg(s)?;
         }
@@ -160,35 +210,73 @@ impl Archive {
     }
 
     pub fn close_pane(&mut self, pane: &str) -> Result<()> {
-        if let Some(mut s) = self.open.remove(pane) {
-            flush_seg(&mut s)?;
+        if let Some(segs) = self.pending.get_mut(pane) {
+            for s in segs {
+                flush_seg(s)?;
+            }
         }
+        self.pending.remove(pane);
+        // Retain the buffer if writing fails, so a later flush can retry.
+        if let Some(s) = self.open.get_mut(pane) {
+            flush_seg(s)?;
+        }
+        self.open.remove(pane);
         Ok(())
     }
 
     pub fn remove_pane(&mut self, pane: &str) {
         self.open.remove(pane);
+        self.pending.remove(pane);
         let _ = std::fs::remove_dir_all(self.pane_dir(pane));
     }
 
     /// Highest archived absolute line number for a pane (to resume after restart).
     pub fn last_line(&mut self, pane: &str) -> Result<Option<u64>> {
-        self.flush()?;
-        let segs = self.segments(pane);
+        let segs = self.readable_segments(pane);
         let Some(last) = segs.last() else {
             return Ok(None);
         };
-        Ok(read_seg(last)?.last().map(|r| r.n))
+        Ok(self.read_buffered_segment(pane, last)?.last().map(|r| r.n))
     }
 
-    /// Lowest archived absolute line number still on disk (retention deletes old segments).
+    /// Lowest archived absolute line number still available (including pending writes).
     pub fn first_line(&mut self, pane: &str) -> Result<Option<u64>> {
-        self.flush()?;
-        let segs = self.segments(pane);
+        let segs = self.readable_segments(pane);
         let Some(first) = segs.first() else {
             return Ok(None);
         };
-        Ok(read_seg(first)?.first().map(|r| r.n))
+        Ok(self
+            .read_buffered_segment(pane, first)?
+            .first()
+            .map(|r| r.n))
+    }
+
+    fn buffered_segments(&self, pane: &str) -> impl Iterator<Item = &PaneSeg> {
+        self.pending
+            .get(pane)
+            .into_iter()
+            .flatten()
+            .chain(self.open.get(pane))
+    }
+
+    fn readable_segments(&self, pane: &str) -> Vec<PathBuf> {
+        let mut paths = self.segments(pane);
+        paths.extend(self.buffered_segments(pane).map(|s| s.path.clone()));
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
+    fn read_buffered_segment(&self, pane: &str, path: &Path) -> Result<Vec<ArchivedRow>> {
+        let mut rows = if path.exists() {
+            read_seg(path)?
+        } else {
+            Vec::new()
+        };
+        for s in self.buffered_segments(pane).filter(|s| s.path == path) {
+            rows.extend(parse_rows(&s.buf));
+        }
+        Ok(rows)
     }
 
     fn segments(&self, pane: &str) -> Vec<PathBuf> {
@@ -206,8 +294,7 @@ impl Archive {
 
     /// Rows with absolute line numbers in `[from, to)`.
     pub fn read(&mut self, pane: &str, from: u64, to: u64) -> Result<Vec<ArchivedRow>> {
-        self.flush()?;
-        let segs = self.segments(pane);
+        let segs = self.readable_segments(pane);
         let starts: Vec<u64> = segs.iter().map(|p| seg_start(p)).collect();
         let mut out = Vec::new();
         for (i, p) in segs.iter().enumerate() {
@@ -215,7 +302,11 @@ impl Archive {
             if next <= from || starts[i] >= to {
                 continue;
             }
-            out.extend(read_seg(p)?.into_iter().filter(|r| r.n >= from && r.n < to));
+            out.extend(
+                self.read_buffered_segment(pane, p)?
+                    .into_iter()
+                    .filter(|r| r.n >= from && r.n < to),
+            );
         }
         Ok(out)
     }
@@ -233,6 +324,7 @@ impl Archive {
             })
             .unwrap_or_default();
         v.extend(self.open.keys().cloned());
+        v.extend(self.pending.keys().cloned());
         v.sort();
         v.dedup();
         v
@@ -246,6 +338,78 @@ impl Archive {
     /// Discard the pane's open (buffered) segment state; its file is removed by the caller.
     pub fn drop_open(&mut self, pane: &str) {
         self.open.remove(pane);
+        self.pending.remove(pane);
+    }
+
+    /// Copy a stable prefix of every buffered segment. Compression can run after releasing
+    /// the archive mutex. The original buffers stay readable until [`Self::apply_flush`].
+    pub fn prepare_flush(&self) -> Vec<FlushBatch> {
+        let mut batches = Vec::new();
+        let mut bytes = 0;
+        // Drain closed segments first, bounding temporary copies to about 8 MiB per pass
+        // (plus the last segment). The caller schedules another pass if buffers remain.
+        for (pane, s) in self
+            .pending
+            .iter()
+            .flat_map(|(p, segs)| segs.iter().map(move |s| (p, s)))
+            .chain(self.open.iter())
+        {
+            if s.buf.is_empty() {
+                continue;
+            }
+            bytes += s.buf.len();
+            batches.push(FlushBatch {
+                pane: pane.clone(),
+                generation: s.generation,
+                flush_revision: s.flush_revision,
+                bytes: s.buf.clone(),
+                cipher: s.cipher.clone(),
+            });
+            if bytes >= FLUSH_BATCH_BYTES {
+                break;
+            }
+        }
+        batches
+    }
+
+    /// Earliest row still buffered for each pane. The caller must not publish later rows
+    /// into its durable search index before this prefix has been written.
+    pub fn buffered_starts(&self) -> HashMap<String, u64> {
+        let mut starts = HashMap::new();
+        for (pane, s) in self.open.iter().chain(
+            self.pending
+                .iter()
+                .flat_map(|(p, segs)| segs.iter().map(move |s| (p, s))),
+        ) {
+            if let Some(row) = parse_rows(&s.buf).next() {
+                let start = starts.entry(pane.clone()).or_insert(row.n);
+                *start = (*start).min(row.n);
+            }
+        }
+        starts
+    }
+
+    /// Write a prepared prefix only if it still belongs to the same segment and no flush,
+    /// purge or cipher change has consumed it. Concurrent appends remain buffered.
+    pub fn apply_flush(&mut self, batch: CompressedFlush) -> Result<()> {
+        let segment = self
+            .open
+            .get_mut(&batch.pane)
+            .into_iter()
+            .chain(self.pending.get_mut(&batch.pane).into_iter().flatten())
+            .find(|s| s.generation == batch.generation);
+        if let Some(s) = segment
+            && s.flush_revision == batch.flush_revision
+        {
+            write_frame(s, &batch.frame)?;
+            s.buf.drain(..batch.len);
+            s.flush_revision += 1;
+        }
+        self.pending.retain(|_, segs| {
+            segs.retain(|s| !s.buf.is_empty());
+            !segs.is_empty()
+        });
+        Ok(())
     }
 
     /// Segments of `pane` (oldest first) chosen by `sel`. Retention selections never include
@@ -407,6 +571,13 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
     if let Some(c) = &s.cipher {
         frame = c.seal(&frame);
     }
+    write_frame(s, &frame)?;
+    s.buf.clear();
+    s.flush_revision += 1;
+    Ok(())
+}
+
+fn write_frame(s: &PaneSeg, frame: &[u8]) -> Result<()> {
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -416,19 +587,20 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&s.path, std::fs::Permissions::from_mode(0o600));
     }
-    f.write_all(&frame)?;
-    s.buf.clear();
+    f.write_all(frame)?;
     Ok(())
 }
 
 fn read_seg(p: &Path) -> Result<Vec<ArchivedRow>> {
     let raw = crypt::read_file(p)?;
     let text = zstd::decode_all(&raw[..])?;
-    Ok(text
-        .split(|&b| b == b'\n')
+    Ok(parse_rows(&text).collect())
+}
+
+fn parse_rows(text: &[u8]) -> impl Iterator<Item = ArchivedRow> + '_ {
+    text.split(|&b| b == b'\n')
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_slice(l).ok())
-        .collect())
 }
 
 #[cfg(test)]
@@ -471,6 +643,89 @@ mod tests {
                 w: false,
             })
             .collect()
+    }
+
+    #[test]
+    fn reads_see_rotated_buffers_without_flushing_any_pane() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = Archive::new(d.path());
+        let first = rows(0, 2, &"x".repeat(SEGMENT_BYTES / 2));
+        a.append("p1", &first).unwrap();
+        a.append("p1", &rows(2, 3, "next")).unwrap();
+        a.append("p2", &rows(0, 1, "other")).unwrap();
+        assert!(
+            a.segments("p1").is_empty(),
+            "rotation must not write or compress"
+        );
+        assert_eq!(a.first_line("p1").unwrap(), Some(0));
+        assert_eq!(a.last_line("p1").unwrap(), Some(4));
+        assert_eq!(
+            a.read("p1", 1, 4)
+                .unwrap()
+                .iter()
+                .map(|r| r.n)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(a.segments("p1").is_empty());
+        assert!(a.segments("p2").is_empty(), "reading p1 must not flush p2");
+        a.flush().unwrap();
+        assert_eq!(a.read("p1", 0, 5).unwrap().len(), 5);
+        assert_eq!(a.segments("p1").len(), 2);
+    }
+
+    #[test]
+    fn prepared_prefix_remains_readable_through_append_and_rotation() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = Archive::new(d.path());
+        a.append("p1", &rows(0, 2, "first")).unwrap();
+        let batch = a.prepare_flush().pop().unwrap().compress().unwrap();
+        a.append("p1", &rows(2, 1, &"x".repeat(SEGMENT_BYTES)))
+            .unwrap();
+        a.append("p1", &rows(3, 2, "rotated")).unwrap();
+        let before = a.read("p1", 0, 5).unwrap();
+        a.apply_flush(batch).unwrap();
+        assert_eq!(a.read("p1", 0, 5).unwrap(), before);
+        a.flush().unwrap();
+        assert_eq!(a.read("p1", 0, 5).unwrap(), before);
+    }
+
+    #[test]
+    fn stale_prepared_flush_cannot_duplicate_or_resurrect_rows() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = Archive::new(d.path());
+        a.append("p1", &rows(0, 2, "first")).unwrap();
+        let old = a.prepare_flush().pop().unwrap().compress().unwrap();
+        a.flush().unwrap();
+        a.append("p1", &rows(2, 2, "later")).unwrap();
+        a.apply_flush(old).unwrap();
+        assert_eq!(a.read("p1", 0, 4).unwrap().len(), 4);
+        let removed = a.prepare_flush().pop().unwrap().compress().unwrap();
+        a.remove_pane("p1");
+        // Even reusing the path after a delete must not accept a previous generation.
+        a.append("p1", &rows(0, 1, "new")).unwrap();
+        a.apply_flush(removed).unwrap();
+        assert_eq!(a.read("p1", 0, 4).unwrap(), rows(0, 1, "new"));
+    }
+
+    #[test]
+    fn prepared_flush_cannot_cross_an_encryption_change_or_pause() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = Archive::new(d.path());
+        a.append("p1", &rows(0, 2, "plain")).unwrap();
+        let plain = a.prepare_flush().pop().unwrap().compress().unwrap();
+        let (cipher, _) = StateCipher::generate();
+        a.set_cipher(Some(Arc::new(cipher))).unwrap();
+        a.append("p1", &rows(2, 2, "secret")).unwrap();
+        a.apply_flush(plain).unwrap();
+        let sealed = a.prepare_flush().pop().unwrap().compress().unwrap();
+        a.set_paused(true).unwrap();
+        a.apply_flush(sealed).unwrap();
+        a.append("p1", &rows(4, 1, "dropped")).unwrap();
+        assert_eq!(a.read("p1", 0, 10).unwrap().len(), 4);
+        let segs = a.segment_infos("p1");
+        assert_eq!(segs.len(), 2);
+        assert!(crypt::file_is_sealed(&segs[1].path));
     }
 
     #[test]
