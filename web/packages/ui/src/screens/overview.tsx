@@ -18,6 +18,7 @@ import { bgCount } from '../lib/bg-tasks';
 import { excerpt, sumChanges } from '../lib/catch-up';
 import { relTime, shortDuration } from '../lib/format';
 import { buildOverview, filterFeed, overviewGroup, tilesOf, type FeedEvent, type FeedKind, type Overview, type OverviewHost } from '../lib/overview';
+import { workspacePreviews } from '../lib/previews';
 import { useScrollMemory } from '../lib/scroll-memory';
 import { toolSummary } from '../lib/tool-summary';
 import { useGitStatus } from '../lib/use-git-status';
@@ -74,7 +75,7 @@ function Desktop() {
   const approvals = useApprovalCount();
   const now = useNow(30_000);
   const multiHost = ov.hosts.length > 1;
-  const needs = items.length + approvals;
+  const needs = items.length + approvals + ov.stopped.length;
   const oldest = oldestOpen(items);
   const online = ov.hosts.filter((h) => h.status === 'online').length;
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -97,12 +98,21 @@ function Desktop() {
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-5">
           <Section id="ov-needs" title={t.overview.needs} tone="need" right={needs > 0 && <KeyHints />}>
+            {ov.stopped.length > 0 && (
+              <List>
+                {ov.stopped.map((r) => (
+                  <StoppedRow key={r.key} row={r} showHost={multiHost} />
+                ))}
+              </List>
+            )}
             <div className="-mx-3 -mb-6 -mt-2 sm:-mx-4">
               <InboxScreen
                 empty={
-                  <div className="px-3 pb-6 pt-2 sm:px-4">
-                    <Quiet title={t.overview.calm} hint={t.overview.calmHint} />
-                  </div>
+                  ov.stopped.length ? null : (
+                    <div className="px-3 pb-6 pt-2 sm:px-4">
+                      <Quiet title={t.overview.calm} hint={t.overview.calmHint} />
+                    </div>
+                  )
                 }
               />
             </div>
@@ -238,6 +248,25 @@ function WorkingRow({ row, now, showHost }: { row: WorkspaceRow; now: number; sh
   );
 }
 
+/** A workspace that needs the user without a request: its agent stopped with an error. */
+function StoppedRow({ row, showHost }: { row: WorkspaceRow; showHost: boolean }) {
+  const run = row.panes.find((p) => p.run?.execution.value === 'error')?.run ?? row.primary?.run;
+  const message = excerpt(run?.execution.detail || run?.last_message, 160);
+  return (
+    <button type="button" onClick={() => openRow(row, run?.pane)} className="vk-focus flex w-full min-w-0 flex-col gap-0.5 px-3.5 py-2.5 text-left hover:bg-hover">
+      <span className="flex w-full min-w-0 items-center gap-2">
+        <StatusDot status="error" />
+        <HarnessIcon harness={row.harness} />
+        <span className="truncate text-sm font-medium">{row.title}</span>
+        {showHost && <span className="truncate text-xs text-faint">{row.hostName}</span>}
+        <span className="flex-1" />
+        <span className="shrink-0 text-xs text-del">{t.overview.event.error}</span>
+      </span>
+      {message && <span className="truncate pl-[30px] text-xs text-muted">{message}</span>}
+    </button>
+  );
+}
+
 function ReviewCard({ row, showHost }: { row: WorkspaceRow; showHost: boolean }) {
   const pane = row.primary?.pane.id ?? null;
   const git = useGitStatus(row.host, pane, { poll: false });
@@ -255,7 +284,7 @@ function ReviewCard({ row, showHost }: { row: WorkspaceRow; showHost: boolean })
       </div>
       {message && <p className="line-clamp-2 text-sm text-muted">{message}</p>}
       <div className="flex gap-2 pt-0.5">
-        <Button size="sm" variant="primary" onClick={() => navigate(workspaceRoute(row.host, row.workspace.id, { panel: 'changes' }))}>
+        <Button size="sm" variant="primary" onClick={() => navigate(workspaceRoute(row.host, row.workspace.id, { pane, panel: 'changes' }))}>
           {t.overview.reviewDiff}
         </Button>
         <Button size="sm" onClick={() => openRow(row, pane)}>
@@ -272,11 +301,12 @@ function Previews() {
   const list = useMemo(() => {
     const out: { key: string; label: string; up: boolean; row: WorkspaceRow; id: string }[] = [];
     for (const h of hosts) {
-      for (const p of h.dashboard?.previews ?? []) {
-        if (p.status === 'gone' || p.status === 'suggested' || !p.pane) continue;
-        const row = rows.find((r) => r.host === h.record.host_id && r.panes.some((x) => x.pane.id === p.pane));
-        if (!row) continue;
-        out.push({ key: `${h.record.host_id}/${p.id}`, label: p.label || `:${p.port}`, up: p.status !== 'down', row, id: p.id });
+      const hostRows = rows.filter((r) => r.host === h.record.host_id);
+      for (const row of hostRows) {
+        for (const p of workspacePreviews(row, h.dashboard?.previews, hostRows)) {
+          if (p.status === 'suggested') continue;
+          out.push({ key: `${h.record.host_id}/${p.id}`, label: p.label || `:${p.port}`, up: p.status !== 'down', row, id: p.id });
+        }
       }
     }
     return out;
@@ -342,7 +372,7 @@ const TILE_TONE: Record<string, string> = {
 
 function Phone() {
   const ov = useOverview();
-  const needs = useInboxItems().length + useApprovalCount();
+  const needs = useInboxItems().length + useApprovalCount() + ov.stopped.length;
   const now = useNow(30_000);
   const [selected, setSelected] = useState<string | null>(null);
   // Forget a filter whose workspace went away.
@@ -364,7 +394,7 @@ function Phone() {
   }, [ov.active.length > 0]);
 
   const filter = useCallback((it: InboxItem) => !!selRow && it.host_id === selRow.host && selRow.panes.some((p) => p.pane.id === it.interaction.pane), [selRow]);
-  const feed = filterFeed(ov.feed, sel);
+  const feed = filterFeed(ov.feed, sel).slice(0, 40);
 
   return (
     <div className="pb-8">

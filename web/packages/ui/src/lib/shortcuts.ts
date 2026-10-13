@@ -64,7 +64,7 @@ function mapKey(e: KeyLike, ctx: KeyContext): ShortcutAction | null {
     if (k === 'e' && e.shiftKey) return { type: 'changes' };
     if (k === 't' && e.shiftKey) return { type: 'agentView' };
     if (k === 'b' && e.shiftKey) return { type: 'previews' };
-    if (k === 'o' && e.shiftKey) return { type: 'go', to: 'overview' };
+    if (k === 'h' && e.shiftKey) return { type: 'go', to: 'overview' };
     const n = Number(e.key);
     if (!e.shiftKey && Number.isInteger(n) && n >= 1 && n <= NUMBERED.length) return NUMBERED[n - 1]!;
     return null;
@@ -114,7 +114,7 @@ export const SHORTCUTS: readonly { keys: string[]; what: string }[] = [
   { keys: ['A'], what: 'allowAlways' },
   { keys: ['Enter'], what: 'open' },
   { keys: ['Esc'], what: 'back' },
-  { keys: ['mod+shift+o'], what: 'overview' },
+  { keys: ['mod+shift+h'], what: 'overview' },
   { keys: ['mod+1'], what: 'inbox' },
   { keys: ['mod+2'], what: 'workspace' },
   { keys: ['mod+3'], what: 'panel' },

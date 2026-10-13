@@ -60,7 +60,32 @@ describe('overview model', () => {
     ]);
     expect(filterFeed(feed, 'h1/w1').map((e) => e.key)).toEqual(['h1/r1']);
     expect(filterFeed(feed, null)).toHaveLength(3);
-    expect(feedOf(rows, 1)).toHaveLength(1);
+  });
+
+  test('an ended run from the dashboard shows as exited; the newest run of a pane wins', () => {
+    const { rows, hosts } = setup(2, {
+      runs: [
+        run({ id: 'old', pane: 'p1', execution: exec('exited', 50), started_at_ms: 10, ended_at_ms: 60 }),
+        run({ id: 'new', pane: 'p1', execution: exec('working', 80), started_at_ms: 70 }),
+        run({ id: 'gone', pane: 'p2', execution: exec('exited', 40), started_at_ms: 5, ended_at_ms: 40 }),
+      ],
+    });
+    expect(feedOf(rows, hosts).map((e) => [e.key, e.kind])).toEqual([
+      ['h1/new', 'working'],
+      ['h1/gone', 'exited'],
+    ]);
+  });
+
+  test('an agent stopped with an error needs the user without a request; only background tasks count as background', () => {
+    const { rows, hosts } = setup(2, {
+      runs: [
+        run({ id: 'r1', pane: 'p1', execution: exec('error', 10) }),
+        run({ id: 'r2', pane: 'p2', execution: { ...exec('idle', 10), value: 'rate_limited' } }),
+      ],
+    });
+    const ov = buildOverview(rows, hosts);
+    expect(ov.stopped.map((r) => r.workspace.id)).toEqual(['w1']);
+    expect(ov.counts).toMatchObject({ needs: 1, working: 1, background: 0 });
   });
 
   test('tiles keep the last slot for a "more" tile', () => {
@@ -83,8 +108,8 @@ describe('overview route and shortcut', () => {
     expect(formatRoute({ name: 'overview' })).toBe('#/overview');
   });
 
-  test('mod+shift+O opens the overview', () => {
+  test('mod+shift+H opens the overview', () => {
     const ctx = { mac: true, typing: false, dialog: false, onControl: false };
-    expect(shortcutFor({ key: 'O', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }, ctx)).toEqual({ type: 'go', to: 'overview' });
+    expect(shortcutFor({ key: 'H', metaKey: true, ctrlKey: false, altKey: false, shiftKey: true }, ctx)).toEqual({ type: 'go', to: 'overview' });
   });
 });

@@ -253,7 +253,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
           leading={<LayoutDashboard className="size-4" />}
           active={route.name === 'overview'}
           onClick={() => go({ name: 'overview' })}
-          title={`${t.tabs.overview} (${keyLabel(mac, 'mod+shift+o')})`}
+          title={`${t.tabs.overview} (${keyLabel(mac, 'mod+shift+h')})`}
         >
           {t.tabs.overview}
         </Row>
