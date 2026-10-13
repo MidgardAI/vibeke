@@ -357,9 +357,15 @@ fn col_of(c: vk_proto::render::Color) -> vk_agents::manifest::Col {
 pub fn snapshot_of(engine: &vk_term::Engine) -> Snapshot {
     use vk_agents::manifest::CellStyle;
     use vk_proto::render::{attr, mark};
-    let text = engine.screen_text();
+    let rows = engine.visible_rows_shared();
+    // Preserve screen_text's per-row Unicode whitespace trimming and str::lines' handling
+    // of the final empty row. Derive text and styles from the same row projection.
+    let text = rows
+        .iter()
+        .map(|row| row.text().trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let rows = engine.visible_rows();
     let mut styles: Vec<Vec<CellStyle>> = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
         let mut cells = Vec::with_capacity(line.chars().count());
@@ -616,6 +622,52 @@ mod tests {
 │   2. Yes, and don't ask again for rm commands│
 │   3. No, and tell Claude what to do differently (esc) │
 ╰──────────────────────────────────────────────╯";
+
+    #[test]
+    fn snapshot_reuses_rows_with_identical_trimming_and_style_alignment() {
+        let cases: &[(u16, &str, &[&str])] = &[
+            (1, "", &[]),
+            (3, "", &["", ""]),
+            (3, "hello   ", &["hello", ""]),
+            (3, "hello\r\nworld\r\n", &["hello", "world"]),
+            (3, "\x1b[3;1Hlast", &["", "", "last"]),
+            (
+                3,
+                "\x1b[1;31m日e\u{301}\u{2003}\x1b[0m\r\nlast\u{a0}",
+                &["日e\u{301}", "last"],
+            ),
+            (3, "\x1b[44m   \x1b[0m\r\nend", &["", "end"]),
+        ];
+        for &(height, input, expected) in cases {
+            let mut engine = vk_term::Engine::new(40, height, 10);
+            engine.feed(input.as_bytes(), &mut Vec::new());
+            let snap = snapshot_of(&engine);
+            assert_eq!(snap.lines, expected, "input {input:?}");
+            assert_eq!(
+                snap.lines,
+                engine.screen_text().lines().collect::<Vec<_>>(),
+                "screen_text semantics for {input:?}",
+            );
+            assert_eq!(engine.row_projection_builds(), 1);
+            assert_eq!(snap.styles.len(), snap.lines.len());
+            for (line, styles) in snap.lines.iter().zip(&snap.styles) {
+                assert_eq!(styles.len(), line.chars().count());
+            }
+            if input.starts_with("\x1b[1;31m") {
+                let red_bold = vk_agents::manifest::CellStyle {
+                    fg: vk_agents::manifest::Col::Indexed(1),
+                    bold: true,
+                    ..Default::default()
+                };
+                assert_eq!(snap.styles[0], vec![red_bold; 3]);
+                assert!(snap.styles[1].iter().all(|style| !style.bold));
+            }
+            let repeated = snapshot_of(&engine);
+            assert_eq!(repeated.lines, snap.lines);
+            assert_eq!(repeated.styles, snap.styles);
+            assert_eq!(engine.row_projection_builds(), 1);
+        }
+    }
 
     #[test]
     fn claude_approval_dialog_and_keys() {

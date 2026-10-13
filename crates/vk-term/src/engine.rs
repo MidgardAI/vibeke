@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
+use std::sync::Arc;
 use vk_proto::render::{Color, Cursor, CursorShape, Link, PaneModes, Row, Span, Style, attr, mark};
 
 pub const ENGINE: &str = "libghostty-vt";
@@ -266,10 +267,20 @@ struct Render {
     stale: bool,
 }
 
+#[derive(Default)]
+struct RowProjection {
+    rows: Option<Arc<[Row]>>,
+    builds: u64,
+}
+
 pub struct Engine {
     term: sys::GhosttyTerminal,
     cb: NonNull<CbState>,
     render: RefCell<Render>,
+    /// Shared immutable projection of this engine state, independent of consumer revisions
+    /// and the destructive damage API. Feed and resize invalidate it; replacing the engine
+    /// starts a new cache, including journal-gap recovery without a server revision change.
+    projection: RefCell<RowProjection>,
     /// Tracked reference to the top active row of the primary screen at the end of the last
     /// feed; how far history grew past it gives the lines scrolled since (`scrolled_total`).
     anchor: sys::GhosttyTrackedGridRef,
@@ -680,6 +691,7 @@ impl Engine {
                 rows: rows_it,
                 stale: true,
             }),
+            projection: RefCell::new(RowProjection::default()),
             anchor: ptr::null_mut(),
             scrolled_total: 0,
             hist_last: 0,
@@ -1359,6 +1371,7 @@ impl Engine {
         }
         self.cb().swallow_clip_reply = false;
         self.render.get_mut().stale = true;
+        self.projection.get_mut().rows = None;
         let mut last_exit = self.last_exit;
         for e in &self.cb_ref().effects {
             if let Effect::Mark { kind, exit } = e {
@@ -1429,6 +1442,7 @@ impl Engine {
         self.cb().effects.clear();
         self.update_scrolled();
         self.render.get_mut().stale = true;
+        self.projection.get_mut().rows = None;
     }
 
     pub fn title(&self) -> String {
@@ -1526,7 +1540,28 @@ impl Engine {
     }
 
     pub fn visible_rows(&self) -> Vec<Row> {
-        (0..self.rows()).map(|y| self.row(y)).collect()
+        self.visible_rows_shared().to_vec()
+    }
+
+    /// Immutable visible rows shared by readers of the same engine state. Each feed or
+    /// resize invalidates the projection. Previously returned rows remain unchanged, so
+    /// clients can retain different revisions and still compare every row independently.
+    /// Palette defaults do not invalidate rows: their colours stay symbolic in `Style`.
+    pub fn visible_rows_shared(&self) -> Arc<[Row]> {
+        let mut projection = self.projection.borrow_mut();
+        if let Some(rows) = &projection.rows {
+            return Arc::clone(rows);
+        }
+        let rows: Arc<[Row]> = (0..self.rows()).map(|y| self.row(y)).collect();
+        projection.rows = Some(Arc::clone(&rows));
+        projection.builds = projection.builds.saturating_add(1);
+        rows
+    }
+
+    /// Number of full row projections built by this engine, for performance diagnostics.
+    /// Starts at zero on engine creation or restoration; cache hits do not increment it.
+    pub fn row_projection_builds(&self) -> u64 {
+        self.projection.borrow().builds
     }
 
     /// Scrollback rows kept in memory for the primary screen: the newest `scrollback` rows the
@@ -1687,52 +1722,50 @@ impl Engine {
                 }
                 _ => {}
             }
-            let (text, w): (String, u16) = if wide == sys::GHOSTTY_CELL_WIDE_SPACER_HEAD
+            // Append directly to the span instead of allocating a temporary String for
+            // every cell (including blanks). Only a style change starts a new allocation.
+            if spans.last().is_none_or(|last| last.style != style) {
+                spans.push(Span {
+                    style,
+                    text: String::new(),
+                    cols: 0,
+                });
+            }
+            let span = spans.last_mut().expect("a span was just created");
+            if wide == sys::GHOSTTY_CELL_WIDE_SPACER_HEAD
                 || cp == 0
                 || tag_v >= sys::GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE
             {
-                (" ".into(), 1)
+                span.text.push(' ');
+                span.cols += 1;
             } else {
-                let mut s = String::new();
+                let start = span.text.len();
                 if tag_v == sys::GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME {
                     let mut n = 0usize;
                     let res = unsafe {
                         sys::ghostty_grid_ref_graphemes(&r, gbuf.as_mut_ptr(), gbuf.len(), &mut n)
                     };
                     if res == sys::GHOSTTY_SUCCESS {
-                        s.extend(gbuf[..n].iter().filter_map(|&c| char::from_u32(c)));
+                        span.text
+                            .extend(gbuf[..n].iter().filter_map(|&c| char::from_u32(c)));
                     } else {
                         let mut big = vec![0u32; n];
                         unsafe { sys::ghostty_grid_ref_graphemes(&r, big.as_mut_ptr(), n, &mut n) };
-                        s.extend(
+                        span.text.extend(
                             big[..n.min(big.len())]
                                 .iter()
                                 .filter_map(|&c| char::from_u32(c)),
                         );
                     }
                 }
-                if s.is_empty() {
-                    s.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
+                if span.text.len() == start {
+                    span.text.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
                 }
-                (
-                    s,
-                    if wide == sys::GHOSTTY_CELL_WIDE_WIDE {
-                        2
-                    } else {
-                        1
-                    },
-                )
-            };
-            match spans.last_mut() {
-                Some(last) if last.style == style => {
-                    last.text.push_str(&text);
-                    last.cols += w;
-                }
-                _ => spans.push(Span {
-                    style,
-                    text,
-                    cols: w,
-                }),
+                span.cols += if wide == sys::GHOSTTY_CELL_WIDE_WIDE {
+                    2
+                } else {
+                    1
+                };
             }
         }
         // Trim trailing default-styled blanks to keep frames small.
@@ -2022,7 +2055,7 @@ impl Engine {
 
     /// Plain text of the visible screen (trailing spaces trimmed per row).
     pub fn screen_text(&self) -> String {
-        self.visible_rows()
+        self.visible_rows_shared()
             .iter()
             .map(|r| r.text().trim_end().to_string())
             .collect::<Vec<_>>()
@@ -2393,6 +2426,10 @@ fn percent_decode(s: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+#[cfg(test)]
+#[path = "engine_projection_tests.rs"]
+mod projection_tests;
 
 #[cfg(test)]
 mod tests {
