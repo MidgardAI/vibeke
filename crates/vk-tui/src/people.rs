@@ -1196,6 +1196,28 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
         }
         return;
     }
+    // An older gateway ignores `access` and hands back a plain link: never show it as a GitHub
+    // link. Cancel it instead.
+    if let Reply::Create { access, .. } = &r
+        && !matches!(access, Who::Link)
+        && let Ok(x) = &res
+        && x["access"].as_str() != Some("github")
+    {
+        if let Some(pid) = s_of(x, "pid") {
+            gw(app, mi, "share.revoke", json!({"id": pid}), Reply::Cancel);
+        }
+        if let Some(v) = view_mut(app).filter(|v| v.mi == mi) {
+            v.busy = None;
+            v.creating = None;
+            create_failed(
+                v,
+                "this machine's gateway cannot make GitHub links yet (update vibeke); the plain \
+                 link it made was cancelled"
+                    .into(),
+            );
+        }
+        return;
+    }
     let Some(v) = view_mut(app).filter(|v| v.mi == mi) else {
         return;
     };

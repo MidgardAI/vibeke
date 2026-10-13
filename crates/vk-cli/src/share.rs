@@ -609,6 +609,17 @@ where
     };
     match &cmd {
         Cmd::Watch { .. } | Cmd::Review { .. } => {
+            // An older gateway ignores `access` and returns a plain link: never print that for
+            // a GitHub request. Cancel it instead.
+            if params["access"] == "github" && first["access"] != "github" {
+                if let Some(pid) = first["pid"].as_str() {
+                    let _ = gateway_call(client, "share.revoke", json!({"id": pid})).await;
+                }
+                eprintln!(
+                    "vibeke share: this host's gateway cannot make GitHub links yet (update vibeke); the plain link it made was cancelled"
+                );
+                return EXIT_API;
+            }
             print_result(g, as_json, &first, |v| link_text(v).unwrap_or_default());
             EXIT_OK
         }

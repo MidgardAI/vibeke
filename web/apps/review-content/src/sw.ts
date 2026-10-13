@@ -116,7 +116,15 @@ async function forward(req: Request): Promise<Response> {
   return new Promise<Response>((resolve) => {
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     let settled = false;
-    const timer = setTimeout(() => fail('the preview did not answer'), HEAD_WAIT_MS);
+    // A timeout also cancels the request at the controller, so its tunnel slot is freed.
+    const timer = setTimeout(() => {
+      try {
+        p.postMessage({ p: REVIEW_PROTO, t: 'fetch.abort', id });
+      } catch {
+        // the channel is gone
+      }
+      fail('the preview did not answer');
+    }, HEAD_WAIT_MS);
     const fail = (message: string) => {
       pending.delete(id);
       if (!settled) {

@@ -129,8 +129,9 @@ export class ReviewController {
     if (this.bootTimer) clearTimeout(this.bootTimer);
     for (const c of this.fetches.values()) c.close();
     this.fetches.clear();
-    for (const s of this.sockets.values()) s.conn?.close();
+    for (const s of this.sockets.values()) this.drop(s);
     this.sockets.clear();
+    this.aborted.clear();
     this.bridgePort?.close();
     this.pagePort?.close();
     for (const p of this.workerPorts) p.close();
@@ -246,8 +247,8 @@ export class ReviewController {
   private async fetch(m: FetchMsg, sink: Sink, port: MessagePort): Promise<void> {
     const key = fetchKey(port, m.id);
     const release = await this.limiter.take();
-    // Cancelled while it waited for a slot: never sent.
-    if (this.aborted.delete(key)) {
+    // Cancelled (or the review closed) while it waited for a slot: never sent.
+    if (this.aborted.delete(key) || this.disposed) {
       release();
       sink.post({ t: 'fetch.error', id: m.id, message: 'aborted' });
       return;
@@ -266,8 +267,8 @@ export class ReviewController {
       const headers = forwardRequestHeaders(m.headers, { target: this.o.authority, contentOrigin: this.o.contentOrigin, cookie: this.o.jar.header(pathname, now) });
       const bytes = writeRequest({ method: m.method, target, headers }, m.body ? new Uint8Array(m.body) : null);
       conn = await this.openStream();
-      // Cancelled while the stream opened: close it before writing anything.
-      if (this.aborted.delete(key)) {
+      // Cancelled (or the review closed) while the stream opened: close it before writing.
+      if (this.aborted.delete(key) || this.disposed) {
         finished = true;
         conn.close();
         release();
@@ -401,7 +402,7 @@ export class ReviewController {
     const state: WsState = { conn: null, open: false, closed: false, release: () => {} };
     this.sockets.set(m.id, state);
     const release = await this.limiter.take();
-    if (state.closed) return release();
+    if (state.closed || this.disposed) return release();
     state.release = release;
     // Callbacks of this socket only, never of a newer page's socket with the same id.
     const gone = (code: number, reason: string, clean = false) => {
@@ -421,7 +422,7 @@ export class ReviewController {
       headers.push(['Sec-WebSocket-Version', '13'], ['Sec-WebSocket-Key', key]);
       if (m.protocols.length) headers.push(['Sec-WebSocket-Protocol', m.protocols.join(', ')]);
       const conn = await this.openStream();
-      if (state.closed) return conn.close();
+      if (state.closed || this.disposed) return conn.close();
       state.conn = conn;
       const parser = new ResponseParser('GET');
       const frames = new FrameReader();

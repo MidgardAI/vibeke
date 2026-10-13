@@ -190,7 +190,7 @@ function Main() {
     <>
       {route.name === 'tui' ? <Suspense fallback={<Spinner />}><TuiScreen host={route.host} workspace={route.workspace} pane={route.pane} /></Suspense>
         // A reviewer sees the review only: no host list, no sidebar (spec 20 §7.2).
-        : route.name === 'review' ? <ReviewScreen d={route.d} />
+        : route.name === 'review' ? <ReviewScreen key={route.d ?? ''} d={route.d} />
         : route.name === 'attest' ? <AttestScreen query={route.query} />
         : <Layout route={route}>
         <ConnectionBanner />
