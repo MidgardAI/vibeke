@@ -144,6 +144,7 @@ impl FakeServer {
             .route("/v1/github/users/{login}", get(github_user))
             .route("/v1/sharing", get(sharing))
             .route("/v1/teams", get(teams))
+            .route("/v1/teams/{id}", get(team_detail))
             .with_state(state.clone())
             .merge(crate::blobs::fake::router(state.clone(), blobs.clone()));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -353,4 +354,29 @@ async fn teams(State(st): State<Shared>, headers: HeaderMap) -> Response {
         .map(|t| json!({"id": t.id, "name": t.name, "role": t.role, "members": t.members.len()}))
         .collect();
     axum::Json(json!({"teams": teams})).into_response()
+}
+
+async fn team_detail(
+    State(st): State<Shared>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let st = st.lock().unwrap();
+    if bearer(&headers).is_none() || bearer(&headers) != st.access {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    match st.teams.iter().find(|t| t.id == id) {
+        Some(t) => {
+            let members: Vec<Value> = t
+                .members
+                .iter()
+                .map(|m| json!({"id": m, "login": format!("u{m}"), "role": "member"}))
+                .collect();
+            axum::Json(json!({"team": {"id": t.id, "name": t.name, "role": t.role,
+                                       "members": t.members.len()},
+                              "members": members, "invites": []}))
+            .into_response()
+        }
+        None => err(StatusCode::NOT_FOUND, "not_found"),
+    }
 }

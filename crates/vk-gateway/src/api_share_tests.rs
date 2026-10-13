@@ -557,3 +557,62 @@ async fn github_shares_default_to_the_account_people_and_teams() {
         e.message
     );
 }
+
+/// A device that only a team let in keeps its access while its GitHub account is in the team:
+/// a stale confirmation is checked again, a member stays, someone who left is revoked, and an
+/// account server that cannot answer refuses (but keeps) the device (spec 20 §2.5).
+#[tokio::test(flavor = "multi_thread")]
+async fn team_devices_are_rechecked_and_revoked_when_they_leave() {
+    use vk_account::fake::FakeTeam;
+    let fake = FakeServer::start().await;
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, &fake.url);
+    sign_in(&gw, &fake.url);
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.teams = vec![FakeTeam::new(ACME, "Acme", &[4242])];
+    });
+    let r = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github", "teams": [ACME]}),
+    )
+    .await
+    .unwrap();
+    let pid = r["pid"].as_str().unwrap().to_string();
+    let bob = crate::state::GithubId {
+        id: 4242,
+        login: "bob".into(),
+    };
+    let (d, _) = crate::pair::redeem(&gw, &pid, &[5; 32], "x", "web", Some(bob)).unwrap();
+    let check = d.team_check.clone().expect("let in by a team");
+    assert_eq!(check.teams, vec![ACME.to_string()]);
+    let age = |gw: &Gateway, id: &str| {
+        gw.update_device(id, |x| x.team_check.as_mut().unwrap().checked_at = 0)
+            .unwrap()
+    };
+    // Fresh: nothing to check.
+    crate::team_check::confirm(&gw, &d).await.unwrap();
+    // Stale and still a member: kept, confirmation refreshed.
+    age(&gw, &d.id);
+    let d = gw.device(&d.id).unwrap();
+    crate::team_check::confirm(&gw, &d).await.unwrap();
+    assert!(gw.device(&d.id).unwrap().team_check.unwrap().checked_at > 0);
+    // The account server cannot answer: refused, but kept.
+    age(&gw, &d.id);
+    let d = gw.device(&d.id).unwrap();
+    fake.with(|s| s.access = Some("other".into()));
+    assert!(crate::team_check::confirm(&gw, &d).await.is_err());
+    assert!(gw.device(&d.id).is_some());
+    // Bob left the team: revoked.
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.teams = vec![FakeTeam::new(ACME, "Acme", &[])];
+    });
+    sign_in(&gw, &fake.url);
+    let e = crate::team_check::confirm(&gw, &d).await.unwrap_err();
+    assert_eq!(e.kind, "revoked");
+    assert!(gw.device(&d.id).is_none());
+    // A retry by the same key is refused as revoked too.
+    let e = crate::pair::redeem(&gw, &pid, &[5; 32], "x", "web", None).unwrap_err();
+    assert_eq!(e.kind, "revoked");
+}

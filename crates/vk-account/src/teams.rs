@@ -118,6 +118,32 @@ impl Client {
     pub async fn sharing_people(&self, access_token: &str) -> Result<Vec<GithubUser>> {
         self.sharing(access_token).await.map(|s| s.people)
     }
+    /// `GET /v1/teams/{id}`: the GitHub ids of the team's members now. A team this account is
+    /// not in (or that is gone) has nobody: `Ok(vec![])`.
+    pub async fn team_member_ids(&self, access_token: &str, team: &str) -> Result<Vec<u64>> {
+        if !valid_team_id(team) {
+            return Ok(Vec::new());
+        }
+        match self
+            .send(
+                reqwest::Method::GET,
+                &format!("/v1/teams/{team}"),
+                Some(access_token),
+                None,
+            )
+            .await?
+        {
+            (200, v) => Ok(v["members"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| m["id"].as_u64())
+                .collect()),
+            (401, _) => Err(Error::Unauthorized),
+            (404, _) => Ok(Vec::new()),
+            (s, v) => Err(Self::unexpected(s, &v)),
+        }
+    }
 }
 
 impl Account {
@@ -136,6 +162,11 @@ impl Account {
     /// The people of [`Account::sharing`].
     pub async fn sharing_people(&self) -> Result<Vec<GithubUser>> {
         self.sharing().await.map(|s| s.people)
+    }
+    /// [`Client::team_member_ids`] with this account's token.
+    pub async fn team_member_ids(&self, team: &str) -> Result<Vec<u64>> {
+        self.with_access(|t| async move { self.client.team_member_ids(&t, team).await })
+            .await
     }
 }
 

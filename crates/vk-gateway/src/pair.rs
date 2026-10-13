@@ -320,6 +320,7 @@ pub async fn claim(
         github: None,
         invitation: None,
         review: None,
+        team_check: None,
     };
     let consumed = confirmed
         && (|| -> anyhow::Result<bool> {
@@ -716,9 +717,15 @@ async fn redeem_claim(
         platform.to_string(),
     );
     // The registry lock is a blocking flock.
-    tokio::task::spawn_blocking(move || redeem(&gw2, &pid, &remote, &name, &platform, github))
-        .await
-        .map_err(|_| refuse("unavailable", "the claim was interrupted"))?
+    let (device, new) =
+        tokio::task::spawn_blocking(move || redeem(&gw2, &pid, &remote, &name, &platform, github))
+            .await
+            .map_err(|_| refuse("unavailable", "the claim was interrupted"))??;
+    // A retry by a device a team let in: still in the team?
+    if !new {
+        crate::team_check::confirm(gw, &device).await?;
+    }
+    Ok((device, new))
 }
 
 /// Redeem invitation `pid` for device key `remote` under the registry lock (spec 20 §2.4):
@@ -813,6 +820,20 @@ pub fn redeem(
         limit: share.limit.clone(),
         peer: None,
         supports_clear: false,
+        // Let in by a team only (not by id, not "any"): membership is checked again later.
+        team_check: match &github {
+            Some(g)
+                if !share.teams.is_empty()
+                    && !share.github_any
+                    && !share.github.iter().any(|x| x.id == g.id) =>
+            {
+                Some(crate::state::TeamCheck {
+                    teams: share.teams.iter().map(|t| t.id.clone()).collect(),
+                    checked_at: now_s(),
+                })
+            }
+            _ => None,
+        },
         github,
         invitation: Some(pid.to_string()),
         review: share.review.clone(),

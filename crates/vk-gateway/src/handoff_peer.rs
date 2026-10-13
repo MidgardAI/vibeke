@@ -587,6 +587,7 @@ mod tests {
             github: None,
             invitation: None,
             review: None,
+            team_check: None,
         }
     }
 

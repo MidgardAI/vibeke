@@ -681,6 +681,14 @@ where
                 eprintln!("vibeke handoff link: the gateway returned no job");
                 return EXIT_API;
             };
+            // An older gateway ignores `teams`: never hand out a link the team cannot open.
+            if params.get("teams").is_some_and(|t| !t.is_null()) && first.get("teams").is_none() {
+                let _ = gateway_call(client, "handoff.cancel", json!({"id": job})).await;
+                eprintln!(
+                    "vibeke handoff link: this host's gateway cannot make team links yet (update vibeke); the link was cancelled"
+                );
+                return EXIT_API;
+            }
             let done = match wait_job(client, &job).await {
                 Ok(v) => v,
                 Err(code) => return code,

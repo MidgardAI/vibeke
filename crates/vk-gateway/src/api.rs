@@ -2230,6 +2230,37 @@ pub(crate) fn nobody_to_share_with(server: &str) -> ApiError {
     ))
 }
 
+/// Most people a default (account page) list may hold: the account server's own limit.
+pub const MAX_DEFAULT_PEOPLE: usize = 200;
+
+/// The `github: [login] | ["*"]` parameter: `None` when absent. Anything else that is not a
+/// non-empty list of non-empty strings (at most 100, `*` alone) is refused, so a malformed
+/// request never falls back to the account's whole list.
+pub(crate) fn github_param(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
+    const MSG: &str = "github is a list of GitHub logins";
+    let logins = match p.get("github") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| v.as_str().map(str::trim).filter(|l| !l.is_empty()))
+            .collect::<Option<Vec<&str>>>()
+            .ok_or_else(|| ApiError::invalid(MSG))?,
+        Some(_) => return Err(ApiError::invalid(MSG)),
+    };
+    if logins.is_empty() {
+        return Err(ApiError::invalid(
+            "the github list is empty: name at least one account, or [\"*\"] for any",
+        ));
+    }
+    if logins.len() > 100 {
+        return Err(ApiError::invalid("at most 100 GitHub accounts per share"));
+    }
+    if logins.len() > 1 && logins.contains(&"*") {
+        return Err(ApiError::invalid("\"*\" (any GitHub account) stands alone"));
+    }
+    Ok(Some(logins.into_iter().map(str::to_string).collect()))
+}
+
 impl Call<'_> {
     /// `github: [login] | ["*"]` resolved to ids through the account server (spec 20 §2.2), and
     /// `teams: [id | name]` resolved against the host account's teams (§2.5). Without either,
@@ -2238,29 +2269,10 @@ impl Call<'_> {
     /// error, never a `link` share.
     async fn resolve_github(&self, p: &Value) -> Result<GithubAllow, ApiError> {
         let teams = teams_param(p)?;
-        let given: Option<Vec<&str>> = match p.get("github") {
-            None | Some(Value::Null) => None,
-            Some(Value::Array(a)) => Some(
-                a.iter()
-                    .map(|v| v.as_str().map(str::trim))
-                    .collect::<Option<Vec<&str>>>()
-                    .ok_or_else(|| ApiError::invalid("github is a list of GitHub logins"))?,
-            ),
-            Some(_) => return Err(ApiError::invalid("github is a list of GitHub logins")),
-        };
-        if let Some(logins) = &given {
-            if logins.is_empty() {
-                return Err(ApiError::invalid(
-                    "the github list is empty: name at least one account, or [\"*\"] for any",
-                ));
-            }
-            if logins.len() > 100 {
-                return Err(ApiError::invalid("at most 100 GitHub accounts per share"));
-            }
-            if logins.len() > 1 && logins.contains(&"*") {
-                return Err(ApiError::invalid("\"*\" (any GitHub account) stands alone"));
-            }
-        }
+        let given_owned = github_param(p)?;
+        let given: Option<Vec<&str>> = given_owned
+            .as_ref()
+            .map(|v| v.iter().map(String::as_str).collect());
         let any = given.as_deref() == Some(&["*"][..]);
         if any && teams.is_some() {
             return Err(ApiError::invalid(
@@ -2302,7 +2314,12 @@ impl Call<'_> {
                 if sharing.people.is_empty() && sharing.teams.is_empty() {
                     return Err(nobody_to_share_with(&server));
                 }
-                for u in sharing.people.into_iter().take(100) {
+                if sharing.people.len() > MAX_DEFAULT_PEOPLE {
+                    return Err(ApiError::invalid(format!(
+                        "your sharing list has more than {MAX_DEFAULT_PEOPLE} people"
+                    )));
+                }
+                for u in sharing.people {
                     add(u.id, u.login);
                 }
                 picked = sharing
@@ -3180,6 +3197,7 @@ mod workspace_tests {
             github: None,
             invitation: None,
             review: None,
+            team_check: None,
         }
     }
 

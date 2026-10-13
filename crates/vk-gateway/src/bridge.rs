@@ -97,6 +97,7 @@ fn owner() -> Device {
         github: None,
         invitation: None,
         review: None,
+        team_check: None,
     }
 }
 
@@ -734,9 +735,7 @@ mod tests {
         let fake = vk_account::fake::FakeServer::start().await;
         let t = tempfile::tempdir().unwrap();
         let gw = account_gateway(&t, "ws://relay.test", &fake.url);
-        let e = execute(&gw, "account.teams", &json!({}))
-            .await
-            .unwrap_err();
+        let e = execute(&gw, "account.teams", &json!({})).await.unwrap_err();
         assert_eq!(e.kind, "account_required");
         let a = crate::account::account(&fake.url, &gw.state.dir).unwrap();
         a.save(&vk_account::Credential {
@@ -768,9 +767,7 @@ mod tests {
             s.access = Some("other".into());
             s.refresh = None;
         });
-        let e = execute(&gw, "account.teams", &json!({}))
-            .await
-            .unwrap_err();
+        let e = execute(&gw, "account.teams", &json!({})).await.unwrap_err();
         assert_eq!(e.kind, "account_required");
     }
 

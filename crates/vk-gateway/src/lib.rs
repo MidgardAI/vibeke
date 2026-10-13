@@ -24,6 +24,7 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod stt;
+pub mod team_check;
 pub mod tui;
 pub mod tunnel;
 
@@ -535,6 +536,7 @@ pub async fn run(gw: Arc<Gateway>) -> Result<()> {
     // Requests from the server (`gateway.call`): peers and invitations for the TUI.
     tokio::spawn(bridge::run(gw.clone()));
     tokio::spawn(report_devices(gw.clone()));
+    tokio::spawn(team_check::run(gw.clone()));
     tokio::spawn({
         let gw = gw.clone();
         async move {

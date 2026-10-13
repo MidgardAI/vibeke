@@ -528,14 +528,8 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     }
     let acct = host_account(gw)?;
     let access = if github {
-        let logins: Vec<String> = p
-            .get("github")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .filter(|l| !l.is_empty())
-            .collect();
+        // Strict: a malformed or empty `github` is refused, never the account's whole list.
+        let logins: Vec<String> = crate::api::github_param(p)?.unwrap_or_default();
         if logins.iter().any(|l| l == "*") {
             if teams.is_some() {
                 return Err(ApiError::invalid(
@@ -553,7 +547,13 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
                 if sharing.people.is_empty() && sharing.teams.is_empty() {
                     return Err(crate::api::nobody_to_share_with(acct.server()));
                 }
-                ids = sharing.people.into_iter().map(|u| u.id).take(100).collect();
+                if sharing.people.len() > crate::api::MAX_DEFAULT_PEOPLE {
+                    return Err(ApiError::invalid(format!(
+                        "your sharing list has more than {} people",
+                        crate::api::MAX_DEFAULT_PEOPLE
+                    )));
+                }
+                ids = sharing.people.into_iter().map(|u| u.id).collect();
                 team_ids = sharing
                     .teams
                     .into_iter()
@@ -597,6 +597,14 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     job.pane = Some(pane.clone());
     job.server = Some(acct.server().to_string());
     let id = job.id.clone();
+    // Who the link is for, echoed so a caller can tell this gateway applied `teams` (an older
+    // one ignores the field).
+    let echo = match &access {
+        BlobAccess::Github { ids, teams } => {
+            json!({"access": "github", "people": ids.len(), "teams": teams})
+        }
+        _ => json!({"access": if github { "github" } else { "link" }}),
+    };
     let work = run_create(
         gw.clone(),
         dev.clone(),
@@ -614,7 +622,11 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
     gw.state.audit(
         &json!({"ts": now_s(), "event": "handoff.link.create", "device": dev.id, "job": id}),
     );
-    Ok(json!({"job": id}))
+    let mut out = json!({"job": id});
+    for (k, v) in echo.as_object().into_iter().flatten() {
+        out[k] = v.clone();
+    }
+    Ok(out)
 }
 
 struct CreateInput {

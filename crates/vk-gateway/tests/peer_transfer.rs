@@ -126,6 +126,7 @@ async fn gateway(
         github: None,
         invitation: None,
         review: None,
+        team_check: None,
     };
     gw.add_device(owner.clone()).unwrap();
     tokio::spawn(vk_gateway::run(gw.clone()));

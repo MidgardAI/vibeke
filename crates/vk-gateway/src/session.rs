@@ -143,7 +143,11 @@ pub async fn serve(gw: Arc<Gateway>, mut ws: impl Ws, dialing: Dialing) {
         }
         Some(_) => None,
         None => match gw.device_by_key(&remote) {
-            Some(d) => Some(d),
+            // A device a team let in reconnects only while its owner is still in the team.
+            Some(d) => match crate::team_check::confirm(&gw, &d).await {
+                Ok(()) => Some(d),
+                Err(e) => return reject(ws, json!({"error": e.kind}).to_string()).await,
+            },
             None => return reject(ws, json!({"error": "unauthorized"}).to_string()).await,
         },
     };

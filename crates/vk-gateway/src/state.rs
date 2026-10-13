@@ -134,6 +134,20 @@ pub struct Device {
     /// only ever passes `review::authorize`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Review>,
+    /// Set when only team membership let this device in (spec 20 §2.5): the share's teams, and
+    /// when membership was last confirmed. The gateway confirms it again on reconnects and
+    /// claims, and every few minutes while connected (`team_check`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_check: Option<TeamCheck>,
+}
+
+/// See [`Device::team_check`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamCheck {
+    /// Team ids of the share; being in any one of them keeps the device.
+    pub teams: Vec<String>,
+    /// Unix seconds of the last confirmation.
+    pub checked_at: u64,
 }
 
 /// A GitHub account: `id` is what counts, `login` is for display.
@@ -1110,6 +1124,7 @@ mod tests {
             github: None,
             invitation: None,
             review: None,
+            team_check: None,
         }
     }
 

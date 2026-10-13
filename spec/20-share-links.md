@@ -172,6 +172,15 @@ links the account server puts the opener's team ids in the attestation (§2.3), 
 opener signs in, so the gateway learns current membership without asking the account server. For
 continue links the account server checks membership when the blob is fetched (§6.3).
 
+A device that only a team let in (its GitHub id is not on the share's list and the share is not
+for any account) carries `team_check {teams, checked_at}`. The gateway confirms membership again
+through the host account (`GET /v1/teams/{id}`) when the device reconnects or claims again and the
+last confirmation is older than 10 minutes, and every 5 minutes for every such device. A device
+whose account left the team is revoked (its redemption stays spent). When the account server
+cannot answer, a stale device is refused but kept, so it works again once membership can be
+confirmed. A removed member can keep a session that is already open for at most about
+15 minutes.
+
 Gateway side:
 
 - `ShareSpec.teams: [{id, name}]` (absent in shares from older gateways; such shares behave as

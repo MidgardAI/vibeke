@@ -853,13 +853,18 @@ pub(crate) fn open_on(app: &mut App, mi: usize, pane: Option<String>) {
         return;
     }
     let mut v = View::new(mi);
-    if pane.is_some() {
+    let form = pane.is_some();
+    if form {
         v.stage = Stage::Form(Form::new(app, mi, pane));
     }
     app.ux.people = Some(v);
     app.mode = Mode::Popup(Popup::People);
     refresh(app);
     ask_gateway_status(app, mi);
+    // The share shortcut opens the form directly: its team choices come from here too.
+    if form {
+        gw(app, mi, "account.teams", json!({}), Reply::Teams);
+    }
 }
 
 fn refresh(app: &mut App) {
