@@ -57,12 +57,27 @@ function failOn(p: MessagePort, message: string): void {
   }
 }
 
+const retired = new Set<MessagePort>();
+
+/** Close a replaced channel when its last pending request is done. */
+function retire(p: MessagePort): void {
+  retired.add(p);
+  closeIfIdle(p);
+}
+
+function closeIfIdle(p: MessagePort): void {
+  if (!retired.has(p)) return;
+  for (const h of pending.values()) if (h.port === p) return;
+  retired.delete(p);
+  p.close();
+}
+
 function setPort(client: string, p: MessagePort): void {
+  // A newer channel from the same tab (the bridge may send one on its own and another when
+  // asked) serves new requests; requests already sent on the older one finish there. Close the
+  // older one once nothing is pending on it.
   const old = ports.get(client);
-  if (old && old !== p) {
-    failOn(old, 'the review reconnected');
-    old.close();
-  }
+  if (old && old !== p) retire(old);
   ports.set(client, p);
   p.onmessage = (ev) => onPortMessage(ev.data);
   p.start();
@@ -83,10 +98,12 @@ function onPortMessage(raw: unknown): void {
       return h.data(m.data);
     case 'fetch.end':
       pending.delete(m.id);
-      return h.end();
+      h.end();
+      return closeIfIdle(h.port);
     case 'fetch.error':
       pending.delete(m.id);
-      return h.error(typeof m.message === 'string' ? m.message : 'error');
+      h.error(typeof m.message === 'string' ? m.message : 'error');
+      return closeIfIdle(h.port);
   }
 }
 
