@@ -161,16 +161,36 @@ pub fn startup() -> Option<Detected> {
 #[derive(Default)]
 pub(crate) struct Probe {
     pub deadline: Option<Instant>,
+    prepared: bool,
     background: Option<Detected>,
     scheme_seen: bool,
 }
 
 #[cfg(any(not(target_arch = "wasm32"), test))]
 impl Probe {
-    pub fn begin(&mut self, now: Instant) {
-        self.deadline = Some(now + crate::input::SEQ_WAIT);
+    /// Arm before the main writer emits queries. There is no response deadline until
+    /// that write completes; stdin remains readable even while host output is blocked.
+    pub fn prepare(&mut self) {
+        self.prepared = true;
+        self.deadline = None;
         self.background = None;
         self.scheme_seen = false;
+    }
+
+    pub fn sent(&mut self, now: Instant) {
+        if std::mem::take(&mut self.prepared) {
+            self.deadline = Some(now + crate::input::SEQ_WAIT);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn begin(&mut self, now: Instant) {
+        self.prepare();
+        self.sent(now);
+    }
+
+    pub fn active(&self) -> bool {
+        self.prepared || self.deadline.is_some()
     }
 
     pub fn report(&mut self, det: Detected, now: Instant) -> Option<Detected> {
@@ -181,7 +201,7 @@ impl Probe {
                 Some(det)
             }
             Source::Osc11 => {
-                if self.deadline.is_some_and(|d| now < d) && !self.scheme_seen {
+                if (self.prepared || self.deadline.is_some_and(|d| now < d)) && !self.scheme_seen {
                     self.background = Some(det);
                 }
                 None
@@ -190,6 +210,7 @@ impl Probe {
     }
 
     pub fn finish(&mut self) -> Option<Detected> {
+        self.prepared = false;
         self.deadline = None;
         self.background.take()
     }
@@ -352,5 +373,38 @@ mod probe_tests {
         probe.begin(now);
         assert_eq!(probe.finish_due(now + Duration::from_secs(1)), None);
         assert!(probe.deadline.is_none());
+    }
+
+    #[test]
+    fn reader_stays_armed_until_main_writer_finishes_and_does_not_reopen_completed_query() {
+        let now = Instant::now();
+        let det = Detected {
+            dark: true,
+            source: Source::Osc11,
+        };
+        let mut probe = Probe::default();
+        probe.prepare();
+        assert!(probe.active());
+        assert!(probe.deadline.is_none());
+        assert!(probe.finish_due(now + Duration::from_secs(5)).is_none());
+        assert!(
+            probe.active(),
+            "a blocked writer has not sent the queries yet"
+        );
+        assert!(probe.report(det, now + Duration::from_secs(5)).is_none());
+        probe.sent(now + Duration::from_secs(5));
+        assert_eq!(probe.finish_due(now + Duration::from_secs(6)), Some(det));
+        probe.prepare();
+        probe.report(det, now);
+        assert_eq!(
+            probe.finish(),
+            Some(det),
+            "the sentinel can beat the writer acknowledgement"
+        );
+        probe.sent(now);
+        assert!(
+            !probe.active(),
+            "a sent acknowledgement must not reopen a finished query"
+        );
     }
 }

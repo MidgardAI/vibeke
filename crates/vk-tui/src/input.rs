@@ -999,6 +999,7 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Reader {
     rx: tokio::sync::mpsc::UnboundedReceiver<Input>,
+    armed: tokio::sync::mpsc::UnboundedReceiver<()>,
     stop_w: libc::c_int,
     thread: Option<std::thread::JoinHandle<()>>,
     winch: Option<tokio::signal::unix::Signal>,
@@ -1008,28 +1009,40 @@ pub struct Reader {
 impl Reader {
     pub fn new() -> Reader {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (armed_tx, armed) = tokio::sync::mpsc::unbounded_channel();
         let mut fds = [0 as libc::c_int; 2];
         // SAFETY: pipe() fills two fds.
         let ok = unsafe { libc::pipe(fds.as_mut_ptr()) } == 0;
         let (stop_r, stop_w) = if ok { (fds[0], fds[1]) } else { (-1, -1) };
         let policy = Policy::from_host();
-        let thread = std::thread::spawn(move || read_loop(tx, stop_r, policy));
+        let thread = std::thread::spawn(move || read_loop(tx, armed_tx, stop_r, policy));
         let winch =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok();
         Reader {
             rx,
+            armed,
             stop_w,
             thread: Some(thread),
             winch,
         }
     }
 
-    /// Ask the input thread to arm reply parsing before it writes the queries.
-    pub fn query_appearance(&self) {
-        if self.stop_w >= 0 {
-            // SAFETY: one command byte to the reader's pipe.
-            unsafe { libc::write(self.stop_w, [1u8].as_ptr().cast(), 1) };
+    /// Arm parsing before the main terminal writer sends queries. The reader never
+    /// writes stdout: a blocked terminal must not stop stdin from being drained.
+    pub async fn arm_appearance_query(&mut self) -> bool {
+        self.command(1) && self.armed.recv().await.is_some()
+    }
+
+    pub fn appearance_query_sent(&self) {
+        self.command(2);
+    }
+
+    fn command(&self, command: u8) -> bool {
+        if self.stop_w < 0 {
+            return false;
         }
+        // SAFETY: one command byte to the reader's pipe.
+        unsafe { libc::write(self.stop_w, [command].as_ptr().cast(), 1) == 1 }
     }
 
     pub async fn next(&mut self) -> Option<std::io::Result<Input>> {
@@ -1072,7 +1085,12 @@ impl Drop for Reader {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int, policy: Policy) {
+fn read_loop(
+    tx: tokio::sync::mpsc::UnboundedSender<Input>,
+    armed: tokio::sync::mpsc::UnboundedSender<()>,
+    stop_r: libc::c_int,
+    policy: Policy,
+) {
     let mut dec = Decoder::with_policy(policy);
     dec.capture_appearance = true;
     let mut probe = crate::appearance::Probe::default();
@@ -1102,7 +1120,7 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             },
         ];
         let input_deadline = dec
-            .query_wait(probe.deadline.is_some() || query_prefix)
+            .query_wait(probe.active() || query_prefix)
             .map(|w| since + w);
         let deadline = input_deadline.into_iter().chain(probe.deadline).min();
         let timeout = deadline.map_or(-1, |d| {
@@ -1126,13 +1144,17 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             if count <= 0 || commands[..count as usize].contains(&0) {
                 break;
             }
-            if commands[..count as usize].contains(&1) {
-                use std::io::Write;
-                probe.begin(Instant::now());
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout
-                    .write_all(crate::appearance::QUERIES)
-                    .and_then(|()| stdout.flush());
+            for &command in &commands[..count as usize] {
+                match command {
+                    1 => {
+                        probe.prepare();
+                        if armed.send(()).is_err() {
+                            return;
+                        }
+                    }
+                    2 => probe.sent(Instant::now()),
+                    _ => {}
+                }
             }
         }
         let flushed = n == 0 && input_deadline.is_some_and(|d| Instant::now() >= d);
@@ -1153,7 +1175,7 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
             dec.feed_after_wait(
                 &b[..k as usize],
                 since.elapsed(),
-                probe.deadline.is_some() || query_prefix,
+                probe.active() || query_prefix,
             )
         } else {
             vec![]
@@ -1181,7 +1203,7 @@ fn read_loop(tx: tokio::sync::mpsc::UnboundedSender<Input>, stop_r: libc::c_int,
         }
         // A DA1 sentinel above closes the query before arming any following key prefix.
         // Expiry alone must not shorten the wait of an already buffered reply.
-        query_prefix = (query_prefix || probe.deadline.is_some()) && dec.wait().is_some();
+        query_prefix = (query_prefix || probe.active()) && dec.wait().is_some();
     }
     if stop_r >= 0 {
         // SAFETY: closing our pipe's read end.

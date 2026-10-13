@@ -855,8 +855,11 @@ async fn run_inner(
             }
         }
         // The existing reader handles query replies alongside ordinary keys and paste.
-        if crate::appearance::take_reprobe(&mut app) {
-            events.query_appearance();
+        if crate::appearance::take_reprobe(&mut app) && events.arm_appearance_query().await {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(crate::appearance::QUERIES)?;
+            stdout.flush()?;
+            events.appearance_query_sent();
         }
         let redraw_in = if app.dirty {
             Duration::from_millis(1000 / 120).saturating_sub(last_draw.elapsed())
