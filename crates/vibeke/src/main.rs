@@ -247,6 +247,23 @@ fn main() {
             }
         }));
     }
+    let probe_global_flags: Vec<_> = args
+        .iter()
+        .filter(|arg| {
+            matches!(
+                arg.as_str(),
+                "--session"
+                    | "--machine"
+                    | "--socket"
+                    | "--timeout"
+                    | "--quiet"
+                    | "-q"
+                    | "--no-spawn"
+                    | "--config-override"
+            ) || arg.starts_with("--config-override=")
+        })
+        .map(|arg| arg.split('=').next().unwrap().to_owned())
+        .collect();
     let g = match parse_global(&mut args) {
         Ok(g) => g,
         Err(e) => {
@@ -259,6 +276,13 @@ fn main() {
     if args.first().map(String::as_str) == Some("debug")
         && args.get(1).map(String::as_str) == Some("tui-latency")
     {
+        if !probe_global_flags.is_empty() {
+            eprintln!(
+                "debug tui-latency uses an isolated session and does not accept {}",
+                probe_global_flags.join(", ")
+            );
+            std::process::exit(EXIT_USAGE);
+        }
         std::process::exit(idle::tui_latency(&args[2..], g.json.unwrap_or(false)));
     }
     if let Err(e) = export_config_overrides() {

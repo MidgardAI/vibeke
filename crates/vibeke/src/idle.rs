@@ -180,13 +180,36 @@ impl Env {
         c
     }
     fn api(&self, method: &str, params: Value) -> Option<Value> {
-        let out = self
-            .cmd(&["api", "call", method, &params.to_string()])
-            .output()
-            .ok()?;
-        out.status
+        self.api_with_timeout(method, params, Duration::from_secs(15))
+    }
+
+    fn api_with_timeout(&self, method: &str, params: Value, timeout: Duration) -> Option<Value> {
+        use std::io::{Seek, SeekFrom};
+        // Spool to a private file so a large reply cannot fill a pipe while we wait.
+        let mut output = tempfile::tempfile().ok()?;
+        let mut command = self.cmd(&["api", "call", method, &params.to_string()]);
+        if method == "server.stop" {
+            command.arg("--no-spawn");
+        }
+        let mut child = command.stdout(output.try_clone().ok()?).spawn().ok()?;
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if !stopped() && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        output.seek(SeekFrom::Start(0)).ok()?;
+        status
             .success()
-            .then(|| serde_json::from_slice(&out.stdout).ok())
+            .then(|| serde_json::from_reader(output).ok())
             .flatten()
     }
 }
@@ -220,10 +243,20 @@ impl Drop for Run {
             let _ = t.wait();
         }
         let holders = self.holders();
-        let _ = self.env.api("server.stop", json!({}));
+        let _ = self
+            .env
+            .api_with_timeout("server.stop", json!({}), Duration::from_secs(1));
         std::thread::sleep(Duration::from_millis(300));
         let mut victims = holders;
-        victims.extend(self.server);
+        // A timed-out startup call may have started the server before returning its pid.
+        victims.extend(self.server.or_else(|| {
+            std::fs::read_to_string(self.env.dir.join("run/default/server.pid"))
+                .ok()?
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|pid| *pid > 1)
+        }));
         let mut all = Vec::new();
         for p in &victims {
             for i in vk_hold::procinfo::tree(*p, 4) {

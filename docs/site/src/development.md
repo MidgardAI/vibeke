@@ -36,6 +36,9 @@ vibeke debug tui-latency --n 200 --json
 The probe starts an isolated server and the native TUI in a pseudo-terminal.
 It measures the time from a key to visible output through the full client path.
 It reports latency percentiles and changes in render counters.
+The host terminal is emulated, so physical display latency is excluded.
+Ten warm-up samples and the 20 ms gap between keys are excluded.
+The probe uses its own session and configuration.
 Compare runs from the same build profile on the same machine.
 Use `--binary /path/to/another/vibeke` to measure another build with the same probe.
 

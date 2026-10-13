@@ -69,7 +69,11 @@ pub fn run(args: &[String], json_out: bool) -> i32 {
                     ms["p95"].as_f64().unwrap(),
                     ms["p99"].as_f64().unwrap(),
                 );
-                println!("render counter deltas: {}", report["render_counter_deltas"]);
+                if report["render_counter_deltas"].is_null() {
+                    println!("render counters: unavailable from the measured server");
+                } else {
+                    println!("render counter deltas: {}", report["render_counter_deltas"]);
+                }
                 println!(
                     "load1 {:.2} -> {:.2} ({} cores); physical display latency is excluded",
                     report["load1_start"].as_f64().unwrap(),
@@ -218,6 +222,8 @@ fn measure(options: &Options) -> Result<Value> {
         "measured_binary": options.binary,
         "observer_binary": observer,
         "observer_version": vk_proto::VERSION,
+        "observer_debug": cfg!(debug_assertions),
+        "measured_version": before["version"],
         "n": n,
         "warmup_samples": WARMUP,
         "sample_gap_ms": SAMPLE_GAP.as_millis(),
@@ -232,6 +238,9 @@ fn measure(options: &Options) -> Result<Value> {
 }
 
 fn counter_deltas(before: &Value, after: &Value) -> Value {
+    if !before.is_object() || !after.is_object() {
+        return Value::Null;
+    }
     let mut delta = serde_json::Map::new();
     for key in [
         "session_wakes",
@@ -428,5 +437,32 @@ mod tests {
             parse_options(&command).unwrap().binary,
             path.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn absent_counters_are_unavailable_instead_of_zero() {
+        assert_eq!(counter_deltas(&Value::Null, &Value::Null), Value::Null);
+        assert_eq!(
+            counter_deltas(&json!({"pane_frames": 7}), &json!({"pane_frames": 9})),
+            json!({"pane_frames": 2})
+        );
+    }
+
+    #[test]
+    fn stalled_api_process_is_killed_at_the_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let exe = directory.path().join("stalled-probe");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let env = Env {
+            dir: directory.path().into(),
+            exe,
+        };
+        let start = Instant::now();
+        assert!(
+            env.api_with_timeout("server.status", json!({}), Duration::from_millis(50))
+                .is_none()
+        );
+        assert!(start.elapsed() < Duration::from_secs(10));
     }
 }
