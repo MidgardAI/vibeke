@@ -271,27 +271,20 @@ pub fn predates_process(server: &Server, run: &AgentRun, since_ms: i64) -> bool 
     harness_started_ms(server, run).is_some_and(|t0| since_ms < t0 - SKEW_MS)
 }
 
-/// Drop transcript tasks that started before the harness process: a replay can add them before
-/// the first hook names the process.
+/// Drop transcript tasks that started before the harness process, and raise `bg_level_ms` to
+/// its start so a replayed start that arrives later is refused in the same update ([`started`]).
+/// A replay can add such tasks before the first hook names the process.
 pub(super) fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
-    if !run
-        .bg_tasks
-        .iter()
-        .any(|t| t.source == StateSource::Structured)
-    {
-        return;
-    }
-    let Some(t0) = harness_started_ms(server, run) else {
+    let Some(cutoff) = harness_started_ms(server, run).map(|t0| t0 - SKEW_MS) else {
         return;
     };
+    let stale = |t: &BgTask| t.source == StateSource::Structured && t.since_ms < cutoff;
+    if run.bg_level_ms >= cutoff && !run.bg_tasks.iter().any(stale) {
+        return;
+    }
     store(server, &run.id, |r| {
-        let next: Vec<BgTask> = r
-            .bg_tasks
-            .iter()
-            .filter(|t| t.source != StateSource::Structured || t.since_ms >= t0 - SKEW_MS)
-            .cloned()
-            .collect();
-        (next.len() != r.bg_tasks.len()).then_some((next, r.bg_level_ms.max(t0 - SKEW_MS)))
+        let next: Vec<BgTask> = r.bg_tasks.iter().filter(|t| !stale(t)).cloned().collect();
+        Some((next, r.bg_level_ms.max(cutoff)))
     });
 }
 
