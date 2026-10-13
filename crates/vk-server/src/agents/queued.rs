@@ -246,15 +246,21 @@ fn binding_of(chord: &str) -> Option<Binding> {
         if ev.mods.0 & (Mods::SUPER.0 | Mods::HYPER.0) != 0 {
             pty_safe = false;
         }
-        // Legacy encoding drops ctrl/shift on these keys (`ctrl+enter` is a plain CR).
-        if ev.mods.0 & (Mods::CTRL.0 | Mods::SHIFT.0) != 0
-            && matches!(
-                ev.key,
-                Key::Named(
-                    NamedKey::Enter | NamedKey::Tab | NamedKey::Backspace | NamedKey::Escape
-                )
-            )
-        {
+        // Legacy encoding turns some chords into editing keys (`ctrl+enter` and `ctrl+m` are a
+        // plain CR, `ctrl+i` is Tab): pressing them would edit or submit the draft.
+        let legacy = vk_term::encode::encode_key(&ev, &vk_term::encode::InputModes::default());
+        let editing = [
+            NamedKey::Enter,
+            NamedKey::Tab,
+            NamedKey::Backspace,
+            NamedKey::Escape,
+        ]
+        .iter()
+        .any(|k| {
+            let plain = vk_proto::input::KeyEvent::new(Key::Named(*k), Mods::default());
+            vk_term::encode::encode_key(&plain, &vk_term::encode::InputModes::default()) == legacy
+        });
+        if editing || legacy == b"\n" || legacy == b"\x08" {
             pty_safe = false;
         }
     }
@@ -578,6 +584,16 @@ mod tests {
             {"context":"Chat","bindings":{"ctrl+x ctrl+s":"chat:submit"}},
             {"context":"Global","bindings":{"ctrl+x ctrl+s":"chat:sendNow"}}]}"#;
         assert!(claude_send_now_keys(Some(f)).is_err());
+    }
+
+    #[test]
+    fn chords_that_legacy_encoding_turns_into_editing_keys_are_not_used() {
+        for k in ["ctrl+shift+m", "ctrl+m", "ctrl+i", "ctrl+enter", "ctrl+j"] {
+            assert!(!binding_of(k).unwrap().pty_safe, "{k}");
+        }
+        for k in ["ctrl+x ctrl+s", "ctrl+k ctrl+n", "alt+s"] {
+            assert!(binding_of(k).unwrap().pty_safe, "{k}");
+        }
     }
 
     #[test]

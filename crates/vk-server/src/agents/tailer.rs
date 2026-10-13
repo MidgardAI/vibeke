@@ -454,7 +454,7 @@ fn apply(
                     },
                 );
             }
-            Event::BgEnded { id, .. } => super::bg::ended(server, run_id, id),
+            Event::BgEnded { id, ts_ms, .. } => super::bg::ended(server, run_id, id, *ts_ms),
         }
     }
     if !totals.is_empty() {

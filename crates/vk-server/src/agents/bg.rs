@@ -35,10 +35,13 @@ static ENDED: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(String, String), i64>>,
 > = std::sync::LazyLock::new(Default::default);
 
-fn note_ended(run: &str, id: &str, now: i64) {
+fn note_ended(run: &str, id: &str, at: i64) {
+    let now = now_ms();
     let mut m = ENDED.lock().unwrap();
     m.retain(|_, t| now - *t < ENDED_KEEP_MS);
-    m.insert((run.to_string(), id.to_string()), now);
+    if now - at < ENDED_KEEP_MS {
+        m.insert((run.to_string(), id.to_string()), at);
+    }
 }
 
 fn ended_recently(run: &str, id: &str, now: i64) -> bool {
@@ -219,9 +222,12 @@ pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
     });
 }
 
-/// A transcript record (or a protocol event) says task `id` ended.
-pub fn ended(server: &Arc<Server>, run: &str, id: &str) {
-    note_ended(run, id, now_ms());
+/// A transcript record (or a protocol event) says task `id` ended, at `at_ms` when known. The
+/// end is remembered from when it happened: a replayed old end must not hide a new task that
+/// reuses the id (omp numbers its jobs from `bg_1` again in a resumed process).
+pub fn ended(server: &Arc<Server>, run: &str, id: &str, at_ms: Option<i64>) {
+    let now = now_ms();
+    note_ended(run, id, at_ms.map_or(now, |t| t.min(now)));
     store(server, run, |r| {
         if !r.bg_tasks.iter().any(|t| t.id == id) {
             return None;
