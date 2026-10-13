@@ -222,6 +222,18 @@ Each note contains the element's selector, its text and a screenshot of the pick
 
 Vibeke types the notes into the agent's pane only when the agent is idle and no question is open. Otherwise the notes wait. Vibeke tries again when the agent becomes idle.
 
+### When notes wait
+
+Notes do not always reach the agent at once. Vibeke picks the safest way for the state of the agent.
+
+- A working agent gets the notes with its next step, or when it finishes its turn. Claude Code and Codex receive them through Vibeke's hooks. Vibeke does not type into the input box in this case.
+- An idle agent gets the notes typed into its input box. Vibeke does this only when nobody typed in that pane in the last few seconds and the input box is empty.
+- Otherwise the notes wait. The notes panel says why, for example "waiting: someone is typing in that pane".
+
+You can deliver waiting notes at once. Press `S` (shift and s) in the notes panel, or choose **Send now** in the app. Send now skips the idle, typing and empty input checks. It still refuses when the agent run has ended or when a question is open.
+
+Only the owner of the preview can use Send now. Reviewers cannot.
+
 An agent can also ask you for a review and wait for your notes:
 
 ```sh

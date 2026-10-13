@@ -181,3 +181,150 @@ fn connecting_restores_held_drafts_and_drops_settled_ones() {
     assert_eq!(items, vec![("D9".to_string(), 2)]);
     assert_eq!(app.ux.held.items[0].author, "@bob");
 }
+
+/// Open the overlay for D1 with its notes loaded and press Send; returns the release request.
+fn send_held(
+    app: &mut App,
+    rxs: &mut [tokio::sync::mpsc::UnboundedReceiver<vk_proto::render::ClientFrame>],
+) -> u64 {
+    commands(&mut rxs[0]);
+    on_held(app, 0, &held_event());
+    open(app, 0, "D1");
+    let (req, _) = only(&commands(&mut rxs[0]), "browser.annotations");
+    reply(app, 0, req, drafts_answer());
+    app.on_key(ch('s'));
+    let (req, _) = only(&commands(&mut rxs[0]), "browser.annotations_release");
+    req
+}
+
+#[test]
+fn a_queued_release_keeps_the_overlay_and_shows_why() {
+    let (mut app, mut rxs) = fleet();
+    let req = send_held(&mut app, &mut rxs);
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"state": "queued", "agent_pane": "p3", "text": "x",
+               "draft": {"id": "D1", "state": "queued",
+                         "detail": "waiting: someone is typing in that pane"}}),
+    );
+    assert!(matches!(app.mode, Mode::Popup(Popup::HeldNotes)));
+    assert!(app.ux.held.items.is_empty(), "no longer held");
+    assert!(commands(&mut rxs[0]).is_empty(), "the reply had the detail");
+    let s = screen(&app);
+    assert!(
+        s.contains("Waiting for the agent: someone is typing in that pane"),
+        "{s}"
+    );
+    assert!(s.contains("S send now"), "{s}");
+    // Send and discard no longer apply.
+    app.on_key(ch('s'));
+    app.on_key(ch('d'));
+    assert!(commands(&mut rxs[0]).is_empty());
+    assert!(!screen(&app).contains("Discard these notes?"));
+}
+
+#[test]
+fn a_queued_release_without_detail_reads_the_draft() {
+    let (mut app, mut rxs) = fleet();
+    let req = send_held(&mut app, &mut rxs);
+    reply(&mut app, 0, req, json!({"state": "queued"}));
+    let (req, p) = only(&commands(&mut rxs[0]), "browser.annotations");
+    assert_eq!(p, json!({"draft": "D1"}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"draft": {"id": "D1", "state": "queued",
+                         "detail": "waiting: the agent is working; it gets the notes at its next step"}}),
+    );
+    let s = screen(&app);
+    assert!(
+        s.contains(
+            "Waiting for the agent: the agent is working; it gets the notes at its next step"
+        ),
+        "{s}"
+    );
+}
+
+#[test]
+fn shift_s_sends_a_waiting_draft_now() {
+    let (mut app, mut rxs) = fleet();
+    let req = send_held(&mut app, &mut rxs);
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"state": "queued", "draft": {"id": "D1", "detail": "waiting: busy"}}),
+    );
+    app.on_key(ch('S'));
+    let (req, p) = only(&commands(&mut rxs[0]), "browser.annotations_send");
+    assert_eq!(p, json!({"draft": "D1", "force": true}));
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"state": "delivered", "via": "hook"}),
+    );
+    assert!(app.ux.held.view.is_none());
+    assert!(!matches!(app.mode, Mode::Popup(Popup::HeldNotes)));
+}
+
+#[test]
+fn send_now_is_off_while_the_draft_is_held() {
+    let (mut app, mut rxs) = fleet();
+    commands(&mut rxs[0]);
+    on_held(&mut app, 0, &held_event());
+    open(&mut app, 0, "D1");
+    commands(&mut rxs[0]);
+    app.on_key(ch('S'));
+    assert!(commands(&mut rxs[0]).is_empty());
+}
+
+#[test]
+fn a_failed_send_now_shows_the_reason() {
+    let (mut app, mut rxs) = fleet();
+    let req = send_held(&mut app, &mut rxs);
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"state": "queued", "draft": {"detail": "waiting: busy"}}),
+    );
+    app.on_key(ch('S'));
+    let (req, _) = only(&commands(&mut rxs[0]), "browser.annotations_send");
+    crate::drafts::tests::reply_err(&mut app, 0, req, "run_ended", Value::Null);
+    assert!(screen(&app).contains("✗ run_ended!"));
+    assert!(app.ux.held.view.is_some());
+}
+
+#[test]
+fn events_keep_a_waiting_overlay_until_the_draft_settles() {
+    let (mut app, mut rxs) = fleet();
+    let req = send_held(&mut app, &mut rxs);
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"state": "queued", "draft": {"detail": "waiting: busy"}}),
+    );
+    on_settled(
+        &mut app,
+        0,
+        &json!({"data": {"draft": "D1", "state": "queued", "detail": "waiting: input box has text"}}),
+    );
+    assert!(screen(&app).contains("Waiting for the agent: input box has text"));
+    on_settled(
+        &mut app,
+        0,
+        &json!({"data": {"draft": "D1", "state": "delivered"}}),
+    );
+    assert!(app.ux.held.view.is_none());
+}
+
+#[test]
+fn wait_details_lose_the_prefix_and_control_characters() {
+    assert_eq!(detail_text("waiting: a\u{1b}[2Jb"), "a[2Jb");
+    assert_eq!(detail_text("plain"), "plain");
+}
