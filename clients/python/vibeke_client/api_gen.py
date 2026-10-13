@@ -242,6 +242,12 @@ class Api:
     async def browser_annotations_clear(self, params: "t.BrowserAnnotationsClearParams") -> "t.BrowserAnnotationsClearResult":
         return await self.call("browser.annotations_clear", params)  # type: ignore[arg-type, return-value]
 
+    async def browser_annotations_discard(self, params: "t.BrowserAnnotationsDiscardParams") -> "t.BrowserAnnotationsDiscardResult":
+        return await self.call("browser.annotations_discard", params)  # type: ignore[arg-type, return-value]
+
+    async def browser_annotations_release(self, params: "t.BrowserAnnotationsReleaseParams") -> "t.BrowserAnnotationsReleaseResult":
+        return await self.call("browser.annotations_release", params)  # type: ignore[arg-type, return-value]
+
     async def browser_annotations_send(self, params: "t.BrowserAnnotationsSendParams") -> "t.BrowserAnnotationsSendResult":
         return await self.call("browser.annotations_send", params)  # type: ignore[arg-type, return-value]
 

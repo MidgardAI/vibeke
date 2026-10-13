@@ -68,10 +68,23 @@ export type AgentSummary = {
   idle: number;
 };
 
+export type AnnotationAuthor = {
+  kind: "github" | "share";
+  id: string;
+  label: string;
+};
+
+export type AnnotationAuthorParam = {
+  kind: "github" | "share";
+  id: string | number;
+  label?: string;
+};
+
 export type AnnotationDraft = {
   id: string;
   workspace?: string;
   target: AnnotationTarget;
+  author?: AnnotationAuthor;
   agent_pane?: string | null;
   url: string;
   title?: string;
@@ -83,7 +96,7 @@ export type AnnotationDraft = {
   };
   notes: AnnotationNote[];
   page_note?: string | null;
-  state: "open" | "queued" | "sending" | "delivered" | "unconfirmed";
+  state: "open" | "held" | "queued" | "sending" | "delivered" | "unconfirmed";
   via?: "feedback" | "typed" | "prompt";
   detail?: string;
   updated_at_ms: number;
@@ -241,6 +254,7 @@ export type BrowserSession = {
   status?: number | null;
   final_url?: string;
   title?: string;
+  confined?: boolean;
 };
 
 export type CloudAuthMethod = {
@@ -2144,6 +2158,8 @@ export type BrowserAnnotationAddParams = {
   }[];
   image_b64?: string;
   note?: string;
+  author?: AnnotationAuthorParam;
+  capture?: boolean;
 };
 
 export type BrowserAnnotationAddResult = {
@@ -2159,6 +2175,7 @@ export type BrowserAnnotationPickParams = {
   y: number;
   w?: number;
   h?: number;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationPickResult = {
@@ -2170,6 +2187,7 @@ export type BrowserAnnotationPickResult = {
 export type BrowserAnnotationRemoveParams = {
   draft: string;
   n: number;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationRemoveResult = {
@@ -2182,6 +2200,7 @@ export type BrowserAnnotationUpdateParams = {
   n?: number;
   note?: string;
   page_note?: string;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationUpdateResult = {
@@ -2194,14 +2213,17 @@ export type BrowserAnnotationsParams = {
   session?: string;
   preview?: string;
   draft?: string;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationsResult = {
   draft: AnnotationDraft | null;
+  drafts?: AnnotationDraft[];
 };
 
 export type BrowserAnnotationsClearParams = {
   draft: string;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationsClearResult = {
@@ -2209,14 +2231,38 @@ export type BrowserAnnotationsClearResult = {
   cursor?: Cursor;
 };
 
+export type BrowserAnnotationsDiscardParams = {
+  draft: string;
+};
+
+export type BrowserAnnotationsDiscardResult = {
+  discarded: boolean;
+  cursor?: Cursor;
+};
+
+export type BrowserAnnotationsReleaseParams = {
+  draft: string;
+  agent?: Target;
+};
+
+export type BrowserAnnotationsReleaseResult = {
+  state: "delivered" | "sending" | "unconfirmed" | "queued";
+  via?: "feedback" | "typed" | "prompt" | null;
+  agent_pane?: string | null;
+  text: string;
+  cursor?: Cursor;
+};
+
 export type BrowserAnnotationsSendParams = {
   draft: string;
   agent?: Target;
   copy_only?: boolean;
+  hold?: boolean;
+  author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationsSendResult = {
-  state: "delivered" | "sending" | "unconfirmed" | "queued" | "open";
+  state: "delivered" | "sending" | "unconfirmed" | "queued" | "open" | "held";
   via?: "feedback" | "typed" | "prompt" | null;
   agent_pane?: string | null;
   text: string;
@@ -2553,6 +2599,7 @@ export type BrowserNavigateParams = {
   target?: string;
   url?: string;
   path?: string;
+  action?: "back" | "forward" | "reload";
   wait?: "load" | "domcontentloaded" | "commit" | "none" | string;
   timeout_ms?: number;
 };
@@ -2562,6 +2609,10 @@ export type BrowserNavigateResult = {
   status: number | null;
   final_url: string;
   title: string;
+  cursor?: Cursor;
+} | {
+  session: string;
+  action: "back" | "forward" | "reload";
   cursor?: Cursor;
 };
 
@@ -2895,6 +2946,7 @@ export type BrowserSessionOpenParams = {
   dark?: boolean;
   wait?: string;
   timeout_ms?: number;
+  confine?: boolean;
 };
 
 export type BrowserSessionOpenResult = BrowserSession;
@@ -5848,6 +5900,8 @@ export type PreviewConnectParams = {
   machine?: string;
   host: string;
   port: number;
+} | {
+  preview: string;
 };
 
 export type PreviewConnectResult = {
@@ -8324,6 +8378,8 @@ export interface Methods {
   "browser.annotation_update": { params: BrowserAnnotationUpdateParams; result: BrowserAnnotationUpdateResult };
   "browser.annotations": { params: BrowserAnnotationsParams; result: BrowserAnnotationsResult };
   "browser.annotations_clear": { params: BrowserAnnotationsClearParams; result: BrowserAnnotationsClearResult };
+  "browser.annotations_discard": { params: BrowserAnnotationsDiscardParams; result: BrowserAnnotationsDiscardResult };
+  "browser.annotations_release": { params: BrowserAnnotationsReleaseParams; result: BrowserAnnotationsReleaseResult };
   "browser.annotations_send": { params: BrowserAnnotationsSendParams; result: BrowserAnnotationsSendResult };
   "browser.attach_screencast": { params: BrowserAttachScreencastParams; result: BrowserAttachScreencastResult };
   "browser.click": { params: BrowserClickParams; result: BrowserClickResult };
@@ -8792,6 +8848,8 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "browser.annotation_update": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.annotations": { mutating: false, scope: "pane", paneScope: "open" },
   "browser.annotations_clear": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotations_discard": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "browser.annotations_release": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.annotations_send": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.attach_screencast": { mutating: true, scope: "full", paneScope: "forbidden" },
   "browser.click": { mutating: true, scope: "pane", paneScope: "open" },
@@ -9634,6 +9692,18 @@ export type BrowserAnnotationsChangedSubject = {
 export type BrowserAnnotationsChangedData = {
   notes: number;
   state: string;
+};
+
+export type BrowserAnnotationsHeldSubject = {
+  draft: string;
+  pane?: string;
+};
+
+export type BrowserAnnotationsHeldData = {
+  draft: string;
+  preview: string | null;
+  author: AnnotationAuthor | null;
+  count: number;
 };
 
 export type BrowserAnnotationsSentSubject = {
@@ -12070,6 +12140,7 @@ export interface EventMap {
   "auth.elevate_requested": { subject: AuthElevateRequestedSubject; data: AuthElevateRequestedData };
   "auth.token_revoked": { subject: AuthTokenRevokedSubject; data: AuthTokenRevokedData };
   "browser.annotations_changed": { subject: BrowserAnnotationsChangedSubject; data: BrowserAnnotationsChangedData };
+  "browser.annotations_held": { subject: BrowserAnnotationsHeldSubject; data: BrowserAnnotationsHeldData };
   "browser.annotations_sent": { subject: BrowserAnnotationsSentSubject; data: BrowserAnnotationsSentData };
   "browser.navigated": { subject: BrowserNavigatedSubject; data: BrowserNavigatedData };
   "browser.viewport_changed": { subject: BrowserViewportChangedSubject; data: BrowserViewportChangedData };

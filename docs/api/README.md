@@ -119,6 +119,8 @@ Clients must accept new fields and event types. The API can change before versio
 | `browser.annotation_update` | Write | Full |
 | `browser.annotations` | Read | Pane |
 | `browser.annotations_clear` | Write | Full |
+| `browser.annotations_discard` | Write | Full |
+| `browser.annotations_release` | Write | Full |
 | `browser.annotations_send` | Write | Full |
 | `browser.attach_screencast` | Write | Full |
 | `browser.click` | Write | Pane |

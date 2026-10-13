@@ -388,6 +388,16 @@
       "scope": "full",
       "pane_scope": "forbidden"
     },
+    "browser.annotations_discard": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
+    "browser.annotations_release": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden"
+    },
     "browser.annotations_send": {
       "mutating": true,
       "scope": "full",

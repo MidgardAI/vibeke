@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 462,
+  "method_count": 464,
   "methods": [
     {
       "name": "adapter.control",
@@ -1001,7 +1001,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string}",
+      "params": "{target: AnnotationTarget, url: string, title?: string, viewport?: object, kind: element|region|page, selector?: string, role?: string, name?: string, text?: string, html?: string, rect?: AnnotationRect, covers?: [{selector: string, text?: string}], image_b64?: string, note?: string, author?: AnnotationAuthorParam, capture?: bool}",
       "result": "{draft: AnnotationDraft, note: AnnotationNote}"
     },
     {
@@ -1015,7 +1015,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{pane?: Target, session?: string, x: number, y: number, w?: number, h?: number}",
+      "params": "{pane?: Target, session?: string, x: number, y: number, w?: number, h?: number, author?: AnnotationAuthorParam}",
       "result": "{draft: AnnotationDraft, note: AnnotationNote}"
     },
     {
@@ -1029,7 +1029,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string, n: int}",
+      "params": "{draft: string, n: int, author?: AnnotationAuthorParam}",
       "result": "{draft: AnnotationDraft}"
     },
     {
@@ -1043,7 +1043,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string, n?: int, note?: string, page_note?: string}",
+      "params": "{draft: string, n?: int, note?: string, page_note?: string, author?: AnnotationAuthorParam}",
       "result": "{draft: AnnotationDraft}"
     },
     {
@@ -1057,8 +1057,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{pane?: Target, session?: string, preview?: string, draft?: string}",
-      "result": "{draft: AnnotationDraft|null}"
+      "params": "{pane?: Target, session?: string, preview?: string, draft?: string, author?: AnnotationAuthorParam}",
+      "result": "{draft: AnnotationDraft|null, drafts?: [AnnotationDraft]}"
     },
     {
       "name": "browser.annotations_clear",
@@ -1071,8 +1071,36 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string}",
+      "params": "{draft: string, author?: AnnotationAuthorParam}",
       "result": "{cleared: bool}"
+    },
+    {
+      "name": "browser.annotations_discard",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string}",
+      "result": "{discarded: bool}"
+    },
+    {
+      "name": "browser.annotations_release",
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "gateway": "actor_required",
+      "tables": [
+        "browser_pane::annotate"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{draft: string, agent?: Target}",
+      "result": "{state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
     },
     {
       "name": "browser.annotations_send",
@@ -1085,8 +1113,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string, agent?: Target, copy_only?: bool}",
-      "result": "{state: delivered|sending|unconfirmed|queued|open, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
+      "params": "{draft: string, agent?: Target, copy_only?: bool, hold?: bool, author?: AnnotationAuthorParam}",
+      "result": "{state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
     },
     {
       "name": "browser.attach_screencast",
@@ -1281,8 +1309,8 @@
       ],
       "milestone": "M3",
       "spec": "`{browser_session, url|path, wait?}` → `{status, final_url}` — destination rules apply to redirects too (06 B5)",
-      "params": "{session?: string, browser_session?: string, target?: string, url?: string, path?: string, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000}",
-      "result": "{session: string, status: int|null, final_url: string, title: string}"
+      "params": "{session?: string, browser_session?: string, target?: string, url?: string, path?: string, action?: back|forward|reload, wait?: load|domcontentloaded|commit|none|string = load, timeout_ms?: int = 15000}",
+      "result": "{session: string, status: int|null, final_url: string, title: string} | {session: string, action: back|forward|reload}"
     },
     {
       "name": "browser.network",
@@ -1491,7 +1519,7 @@
       ],
       "milestone": "M3",
       "spec": "`{preview?|url?, viewport?: {w, h, dpr}, device?, color_scheme?: light|dark}` → `{browser_session}` — headless context **on the machine where the dev server runs**, owned by the caller's pane/run",
-      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int}",
+      "params": "{url?: string, preview?: string, machine?: string, device?: string, viewport?: string | {width?: int, height?: int, w?: int, h?: int}, dpr?: number, mobile?: bool, color_scheme?: string, dark?: bool, wait?: string, timeout_ms?: int, confine?: bool}",
       "result": "BrowserSession"
     },
     {
@@ -4396,7 +4424,7 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{machine?: string, host: string, port: int}",
+      "params": "{machine?: string, host: string, port: int} | {preview: string}",
       "result": "{connected: bool}"
     },
     {

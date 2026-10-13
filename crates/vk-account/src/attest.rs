@@ -294,6 +294,22 @@ mod tests {
         assert_eq!(verify(TOKEN, &keys(), 1_700_000_100).unwrap(), claims());
     }
 
+    /// The token vibeke-cloud's signer produces for its own test vector (seed `[0x11; 32]`,
+    /// `crates/vibeke-cloud/src/attest.rs`): this verifier must accept it unchanged.
+    #[test]
+    fn verifies_the_cloud_signer_vector() {
+        const CLOUD_TOKEN: &str = "v1.eyJ2IjoxLCJraWQiOiIxMGJhNjgyYzhhZDEzNTEzIiwiZ2hfaWQiOjU4MzIzMSwibG9naW4iOiJvY3RvY2F0IiwiYXVkIjoicW5sYnZ3enpyN21oN2R0NjNhenJ4N3pwem0iLCJub25jZSI6IlFqQ0d0eDg3VW81Tl9KalFDUUl4WmdpRVl4ellBTWVVQVkxd25McWFpcHMiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMH0.VEA5rA-iyDgluuDOZc2sYIFtwSFyPFVf1OLIlVhu01njP9W-ZrUTwHEImpuV3UJ9BvDXIPyyGR2SV84pUXmtBQ";
+        let key = public_of(&[0x11; 32]);
+        assert_eq!(kid_of(&key), "10ba682c8ad13513");
+        let keys = [AttestKey {
+            kid: kid_of(&key),
+            key,
+        }];
+        let c = verify(CLOUD_TOKEN, &keys, 1_700_000_100).unwrap();
+        assert_eq!((c.gh_id, c.login.as_str()), (583231, "octocat"));
+        assert_eq!(c.aud, "qnlbvwzzr7mh7dt63azrx7zpzm");
+    }
+
     #[test]
     fn nonce_binds_pid_and_device() {
         let n = nonce("p1", &[1; 32]);

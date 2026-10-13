@@ -265,6 +265,58 @@
         "idle"
       ]
     },
+    "AnnotationAuthor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "github",
+            "share"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "label"
+      ]
+    },
+    "AnnotationAuthorParam": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "github",
+            "share"
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
     "AnnotationDraft": {
       "type": "object",
       "properties": {
@@ -276,6 +328,9 @@
         },
         "target": {
           "$ref": "#/$defs/AnnotationTarget"
+        },
+        "author": {
+          "$ref": "#/$defs/AnnotationAuthor"
         },
         "agent_pane": {
           "anyOf": [
@@ -334,6 +389,7 @@
           "type": "string",
           "enum": [
             "open",
+            "held",
             "queued",
             "sending",
             "delivered",
@@ -1067,6 +1123,9 @@
         },
         "title": {
           "type": "string"
+        },
+        "confined": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -9427,6 +9486,12 @@
           },
           "note": {
             "type": "string"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
+          },
+          "capture": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -9478,6 +9543,9 @@
           },
           "h": {
             "type": "number"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         },
         "required": [
@@ -9516,6 +9584,9 @@
           },
           "n": {
             "type": "integer"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         },
         "required": [
@@ -9556,6 +9627,9 @@
           },
           "page_note": {
             "type": "string"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         },
         "required": [
@@ -9595,6 +9669,9 @@
           },
           "draft": {
             "type": "string"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         }
       },
@@ -9610,6 +9687,12 @@
                 "type": "null"
               }
             ]
+          },
+          "drafts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AnnotationDraft"
+            }
           }
         },
         "required": [
@@ -9626,6 +9709,9 @@
         "properties": {
           "draft": {
             "type": "string"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         },
         "required": [
@@ -9647,6 +9733,105 @@
         ]
       }
     },
+    "browser.annotations_discard": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "discarded": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "discarded"
+        ]
+      }
+    },
+    "browser.annotations_release": {
+      "mutating": true,
+      "scope": "full",
+      "pane_scope": "forbidden",
+      "params": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "agent": {
+            "$ref": "#/$defs/Target"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "delivered",
+              "sending",
+              "unconfirmed",
+              "queued"
+            ]
+          },
+          "via": {
+            "anyOf": [
+              {
+                "const": "feedback"
+              },
+              {
+                "const": "typed"
+              },
+              {
+                "const": "prompt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_pane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "state",
+          "text"
+        ]
+      }
+    },
     "browser.annotations_send": {
       "mutating": true,
       "scope": "full",
@@ -9662,6 +9847,12 @@
           },
           "copy_only": {
             "type": "boolean"
+          },
+          "hold": {
+            "type": "boolean"
+          },
+          "author": {
+            "$ref": "#/$defs/AnnotationAuthorParam"
           }
         },
         "required": [
@@ -9678,7 +9869,8 @@
               "sending",
               "unconfirmed",
               "queued",
-              "open"
+              "open",
+              "held"
             ]
           },
           "via": {
@@ -11052,6 +11244,14 @@
           "path": {
             "type": "string"
           },
+          "action": {
+            "type": "string",
+            "enum": [
+              "back",
+              "forward",
+              "reload"
+            ]
+          },
           "wait": {
             "anyOf": [
               {
@@ -11079,36 +11279,63 @@
         }
       },
       "result": {
-        "type": "object",
-        "properties": {
-          "session": {
-            "type": "string"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "integer"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
               },
-              {
-                "type": "null"
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "final_url": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
               }
+            },
+            "required": [
+              "session",
+              "status",
+              "final_url",
+              "title"
             ]
           },
-          "final_url": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "cursor": {
-            "$ref": "#/$defs/Cursor"
+          {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "back",
+                  "forward",
+                  "reload"
+                ]
+              },
+              "cursor": {
+                "$ref": "#/$defs/Cursor"
+              }
+            },
+            "required": [
+              "session",
+              "action"
+            ]
           }
-        },
-        "required": [
-          "session",
-          "status",
-          "final_url",
-          "title"
         ]
       }
     },
@@ -12428,6 +12655,9 @@
           },
           "timeout_ms": {
             "type": "integer"
+          },
+          "confine": {
+            "type": "boolean"
           }
         }
       },
@@ -23721,21 +23951,36 @@
       "scope": "full",
       "pane_scope": "forbidden",
       "params": {
-        "type": "object",
-        "properties": {
-          "machine": {
-            "type": "string"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "machine": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "host",
+              "port"
+            ]
           },
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer"
+          {
+            "type": "object",
+            "properties": {
+              "preview": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "preview"
+            ]
           }
-        },
-        "required": [
-          "host",
-          "port"
         ]
       },
       "result": {
@@ -34900,6 +35145,59 @@
         "required": [
           "notes",
           "state"
+        ]
+      }
+    },
+    "browser.annotations_held": {
+      "subject": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "pane": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "draft"
+        ]
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "draft": {
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "author": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AnnotationAuthor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft",
+          "preview",
+          "author",
+          "count"
         ]
       }
     },

@@ -69,6 +69,18 @@ AgentSummary = TypedDict("AgentSummary", {
     "idle": int,
 })
 
+AnnotationAuthor = TypedDict("AnnotationAuthor", {
+    "kind": Literal["github", "share"],
+    "id": str,
+    "label": str,
+})
+
+AnnotationAuthorParam = TypedDict("AnnotationAuthorParam", {
+    "kind": Literal["github", "share"],
+    "id": Union[str, int],
+    "label": NotRequired[str],
+})
+
 AnnotationDraftViewport = TypedDict("AnnotationDraftViewport", {
     "w": int,
     "h": int,
@@ -80,13 +92,14 @@ AnnotationDraft = TypedDict("AnnotationDraft", {
     "id": str,
     "workspace": NotRequired[str],
     "target": "AnnotationTarget",
+    "author": NotRequired["AnnotationAuthor"],
     "agent_pane": NotRequired[Optional[str]],
     "url": str,
     "title": NotRequired[str],
     "viewport": NotRequired["AnnotationDraftViewport"],
     "notes": List["AnnotationNote"],
     "page_note": NotRequired[Optional[str]],
-    "state": Literal["open", "queued", "sending", "delivered", "unconfirmed"],
+    "state": Literal["open", "held", "queued", "sending", "delivered", "unconfirmed"],
     "via": NotRequired[Literal["feedback", "typed", "prompt"]],
     "detail": NotRequired[str],
     "updated_at_ms": int,
@@ -264,6 +277,7 @@ BrowserSession = TypedDict("BrowserSession", {
     "status": NotRequired[Optional[int]],
     "final_url": NotRequired[str],
     "title": NotRequired[str],
+    "confined": NotRequired[bool],
 })
 
 CloudAuthMethodXV0 = TypedDict("CloudAuthMethodXV0", {
@@ -2287,6 +2301,8 @@ BrowserAnnotationAddParams = TypedDict("BrowserAnnotationAddParams", {
     "covers": NotRequired[List["BrowserAnnotationAddParamsCoversItem"]],
     "image_b64": NotRequired[str],
     "note": NotRequired[str],
+    "author": NotRequired["AnnotationAuthorParam"],
+    "capture": NotRequired[bool],
 })
 
 BrowserAnnotationAddResult = TypedDict("BrowserAnnotationAddResult", {
@@ -2302,6 +2318,7 @@ BrowserAnnotationPickParams = TypedDict("BrowserAnnotationPickParams", {
     "y": float,
     "w": NotRequired[float],
     "h": NotRequired[float],
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationPickResult = TypedDict("BrowserAnnotationPickResult", {
@@ -2313,6 +2330,7 @@ BrowserAnnotationPickResult = TypedDict("BrowserAnnotationPickResult", {
 BrowserAnnotationRemoveParams = TypedDict("BrowserAnnotationRemoveParams", {
     "draft": str,
     "n": int,
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationRemoveResult = TypedDict("BrowserAnnotationRemoveResult", {
@@ -2325,6 +2343,7 @@ BrowserAnnotationUpdateParams = TypedDict("BrowserAnnotationUpdateParams", {
     "n": NotRequired[int],
     "note": NotRequired[str],
     "page_note": NotRequired[str],
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationUpdateResult = TypedDict("BrowserAnnotationUpdateResult", {
@@ -2337,14 +2356,17 @@ BrowserAnnotationsParams = TypedDict("BrowserAnnotationsParams", {
     "session": NotRequired[str],
     "preview": NotRequired[str],
     "draft": NotRequired[str],
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationsResult = TypedDict("BrowserAnnotationsResult", {
     "draft": Optional["AnnotationDraft"],
+    "drafts": NotRequired[List["AnnotationDraft"]],
 })
 
 BrowserAnnotationsClearParams = TypedDict("BrowserAnnotationsClearParams", {
     "draft": str,
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationsClearResult = TypedDict("BrowserAnnotationsClearResult", {
@@ -2352,14 +2374,38 @@ BrowserAnnotationsClearResult = TypedDict("BrowserAnnotationsClearResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+BrowserAnnotationsDiscardParams = TypedDict("BrowserAnnotationsDiscardParams", {
+    "draft": str,
+})
+
+BrowserAnnotationsDiscardResult = TypedDict("BrowserAnnotationsDiscardResult", {
+    "discarded": bool,
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserAnnotationsReleaseParams = TypedDict("BrowserAnnotationsReleaseParams", {
+    "draft": str,
+    "agent": NotRequired["Target"],
+})
+
+BrowserAnnotationsReleaseResult = TypedDict("BrowserAnnotationsReleaseResult", {
+    "state": Literal["delivered", "sending", "unconfirmed", "queued"],
+    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
+    "agent_pane": NotRequired[Optional[str]],
+    "text": str,
+    "cursor": NotRequired["Cursor"],
+})
+
 BrowserAnnotationsSendParams = TypedDict("BrowserAnnotationsSendParams", {
     "draft": str,
     "agent": NotRequired["Target"],
     "copy_only": NotRequired[bool],
+    "hold": NotRequired[bool],
+    "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationsSendResult = TypedDict("BrowserAnnotationsSendResult", {
-    "state": Literal["delivered", "sending", "unconfirmed", "queued", "open"],
+    "state": Literal["delivered", "sending", "unconfirmed", "queued", "open", "held"],
     "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
     "agent_pane": NotRequired[Optional[str]],
     "text": str,
@@ -2750,17 +2796,26 @@ BrowserNavigateParams = TypedDict("BrowserNavigateParams", {
     "target": NotRequired[str],
     "url": NotRequired[str],
     "path": NotRequired[str],
+    "action": NotRequired[Literal["back", "forward", "reload"]],
     "wait": NotRequired[Union[Literal["load"], Literal["domcontentloaded"], Literal["commit"], Literal["none"], str]],
     "timeout_ms": NotRequired[int],
 })
 
-BrowserNavigateResult = TypedDict("BrowserNavigateResult", {
+BrowserNavigateResultXV0 = TypedDict("BrowserNavigateResultXV0", {
     "session": str,
     "status": Optional[int],
     "final_url": str,
     "title": str,
     "cursor": NotRequired["Cursor"],
 })
+
+BrowserNavigateResultXV1 = TypedDict("BrowserNavigateResultXV1", {
+    "session": str,
+    "action": Literal["back", "forward", "reload"],
+    "cursor": NotRequired["Cursor"],
+})
+
+BrowserNavigateResult: TypeAlias = Union["BrowserNavigateResultXV0", "BrowserNavigateResultXV1"]
 
 BrowserNetworkParamsXV0 = TypedDict("BrowserNetworkParamsXV0", {
     "session": NotRequired[str],
@@ -3130,6 +3185,7 @@ BrowserSessionOpenParams = TypedDict("BrowserSessionOpenParams", {
     "dark": NotRequired[bool],
     "wait": NotRequired[str],
     "timeout_ms": NotRequired[int],
+    "confine": NotRequired[bool],
 })
 
 BrowserSessionOpenResult: TypeAlias = "BrowserSession"
@@ -6279,11 +6335,17 @@ PolicyTrustResult = TypedDict("PolicyTrustResult", {
     "cursor": NotRequired["Cursor"],
 })
 
-PreviewConnectParams = TypedDict("PreviewConnectParams", {
+PreviewConnectParamsXV0 = TypedDict("PreviewConnectParamsXV0", {
     "machine": NotRequired[str],
     "host": str,
     "port": int,
 })
+
+PreviewConnectParamsXV1 = TypedDict("PreviewConnectParamsXV1", {
+    "preview": str,
+})
+
+PreviewConnectParams: TypeAlias = Union["PreviewConnectParamsXV0", "PreviewConnectParamsXV1"]
 
 PreviewConnectResult = TypedDict("PreviewConnectResult", {
     "connected": bool,
@@ -8973,6 +9035,8 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "browser.annotation_update": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.annotations": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "browser.annotations_clear": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotations_discard": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "browser.annotations_release": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.annotations_send": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.attach_screencast": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
     "browser.click": {"mutating": True, "scope": "pane", "pane_scope": "open"},
@@ -9817,6 +9881,18 @@ BrowserAnnotationsChangedSubject = TypedDict("BrowserAnnotationsChangedSubject",
 BrowserAnnotationsChangedData = TypedDict("BrowserAnnotationsChangedData", {
     "notes": int,
     "state": str,
+})
+
+BrowserAnnotationsHeldSubject = TypedDict("BrowserAnnotationsHeldSubject", {
+    "draft": str,
+    "pane": NotRequired[str],
+})
+
+BrowserAnnotationsHeldData = TypedDict("BrowserAnnotationsHeldData", {
+    "draft": str,
+    "preview": Optional[str],
+    "author": Optional["AnnotationAuthor"],
+    "count": int,
 })
 
 BrowserAnnotationsSentSubject = TypedDict("BrowserAnnotationsSentSubject", {
@@ -12271,6 +12347,7 @@ EVENT_TYPES = (
     "auth.elevate_requested",
     "auth.token_revoked",
     "browser.annotations_changed",
+    "browser.annotations_held",
     "browser.annotations_sent",
     "browser.navigated",
     "browser.viewport_changed",
