@@ -1099,8 +1099,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string, agent?: Target}",
-      "result": "{state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
+      "params": "{draft: string, agent?: Target, force?: bool}",
+      "result": "{state: delivered|sending|unconfirmed|queued, via?: feedback|typed|prompt|hook|null, agent_pane?: string|null, detail?: string, text: string}"
     },
     {
       "name": "browser.annotations_send",
@@ -1113,8 +1113,8 @@
       ],
       "milestone": null,
       "spec": null,
-      "params": "{draft: string, agent?: Target, copy_only?: bool, hold?: bool, author?: AnnotationAuthorParam}",
-      "result": "{state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|null, agent_pane?: string|null, text: string}"
+      "params": "{draft: string, agent?: Target, copy_only?: bool, hold?: bool, force?: bool, author?: AnnotationAuthorParam}",
+      "result": "{state: delivered|sending|unconfirmed|queued|open|held, via?: feedback|typed|prompt|hook|null, agent_pane?: string|null, detail?: string, text: string}"
     },
     {
       "name": "browser.attach_screencast",

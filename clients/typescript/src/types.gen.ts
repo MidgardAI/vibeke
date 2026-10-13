@@ -97,7 +97,7 @@ export type AnnotationDraft = {
   notes: AnnotationNote[];
   page_note?: string | null;
   state: "open" | "held" | "queued" | "sending" | "delivered" | "unconfirmed";
-  via?: "feedback" | "typed" | "prompt";
+  via?: "feedback" | "typed" | "prompt" | "hook";
   detail?: string;
   updated_at_ms: number;
   delivered_at_ms?: number;
@@ -2243,12 +2243,14 @@ export type BrowserAnnotationsDiscardResult = {
 export type BrowserAnnotationsReleaseParams = {
   draft: string;
   agent?: Target;
+  force?: boolean;
 };
 
 export type BrowserAnnotationsReleaseResult = {
   state: "delivered" | "sending" | "unconfirmed" | "queued";
-  via?: "feedback" | "typed" | "prompt" | null;
+  via?: "feedback" | "typed" | "prompt" | "hook" | null;
   agent_pane?: string | null;
+  detail?: string;
   text: string;
   cursor?: Cursor;
 };
@@ -2258,13 +2260,15 @@ export type BrowserAnnotationsSendParams = {
   agent?: Target;
   copy_only?: boolean;
   hold?: boolean;
+  force?: boolean;
   author?: AnnotationAuthorParam;
 };
 
 export type BrowserAnnotationsSendResult = {
   state: "delivered" | "sending" | "unconfirmed" | "queued" | "open" | "held";
-  via?: "feedback" | "typed" | "prompt" | null;
+  via?: "feedback" | "typed" | "prompt" | "hook" | null;
   agent_pane?: string | null;
+  detail?: string;
   text: string;
   cursor?: Cursor;
 };

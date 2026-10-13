@@ -43,8 +43,8 @@ pub(crate) fn typing_wait(server: &Server, pane: &str) -> Option<Duration> {
         .filter(|d| !d.is_zero())
 }
 
-/// Why typing into `pane` now could mix with the user's input, if it could: someone typed into
-/// it in the last [`QUIET_INPUT`], or the input box is not provably empty.
+/// Why typing into `pane` now could mix with the user's input, if it could: the input box is
+/// not provably empty, or someone typed into it in the last [`QUIET_INPUT`].
 /// For Claude and Codex, whose box Vibeke knows, an unreadable input box counts as unsafe and a
 /// placeholder as empty ([`super::input_box`]); other harnesses only refuse a box that visibly
 /// holds text.
@@ -57,16 +57,15 @@ pub(crate) fn input_unsafe(
     if server.pane_rt(pane).is_none() {
         return Some("pane_gone");
     }
-    if typing_wait(server, pane).is_some() {
-        return Some("recent_input");
-    }
-    match super::input_box::of_pane(server, pane, harness) {
+    // A draft in the box first: it lasts, while typing is a pause.
+    let boxed = match super::input_box::of_pane(server, pane, harness) {
         None => Some("pane_gone"),
         Some(InputBox::Empty) => None,
         Some(InputBox::Draft(_)) => Some("draft_in_input"),
         Some(InputBox::Unknown) if strict => Some("input_unknown"),
         Some(InputBox::Unknown) => None,
-    }
+    };
+    boxed.or_else(|| typing_wait(server, pane).map(|_| "recent_input"))
 }
 
 /// Start the engine (server start). Deliveries a previous server left `submitted` keep their

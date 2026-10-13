@@ -100,7 +100,7 @@ AnnotationDraft = TypedDict("AnnotationDraft", {
     "notes": List["AnnotationNote"],
     "page_note": NotRequired[Optional[str]],
     "state": Literal["open", "held", "queued", "sending", "delivered", "unconfirmed"],
-    "via": NotRequired[Literal["feedback", "typed", "prompt"]],
+    "via": NotRequired[Literal["feedback", "typed", "prompt", "hook"]],
     "detail": NotRequired[str],
     "updated_at_ms": int,
     "delivered_at_ms": NotRequired[int],
@@ -2386,12 +2386,14 @@ BrowserAnnotationsDiscardResult = TypedDict("BrowserAnnotationsDiscardResult", {
 BrowserAnnotationsReleaseParams = TypedDict("BrowserAnnotationsReleaseParams", {
     "draft": str,
     "agent": NotRequired["Target"],
+    "force": NotRequired[bool],
 })
 
 BrowserAnnotationsReleaseResult = TypedDict("BrowserAnnotationsReleaseResult", {
     "state": Literal["delivered", "sending", "unconfirmed", "queued"],
-    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
+    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"], Literal["hook"]]]],
     "agent_pane": NotRequired[Optional[str]],
+    "detail": NotRequired[str],
     "text": str,
     "cursor": NotRequired["Cursor"],
 })
@@ -2401,13 +2403,15 @@ BrowserAnnotationsSendParams = TypedDict("BrowserAnnotationsSendParams", {
     "agent": NotRequired["Target"],
     "copy_only": NotRequired[bool],
     "hold": NotRequired[bool],
+    "force": NotRequired[bool],
     "author": NotRequired["AnnotationAuthorParam"],
 })
 
 BrowserAnnotationsSendResult = TypedDict("BrowserAnnotationsSendResult", {
     "state": Literal["delivered", "sending", "unconfirmed", "queued", "open", "held"],
-    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"]]]],
+    "via": NotRequired[Optional[Union[Literal["feedback"], Literal["typed"], Literal["prompt"], Literal["hook"]]]],
     "agent_pane": NotRequired[Optional[str]],
+    "detail": NotRequired[str],
     "text": str,
     "cursor": NotRequired["Cursor"],
 })

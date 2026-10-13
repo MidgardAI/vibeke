@@ -1581,7 +1581,9 @@ fn message_prepare(server: &Server, p: &Value) -> R {
         created_at_ms: now(),
         updated_at_ms: now(),
     };
-    let safety = send_safety(server, &m);
+    // Typing in the pane only delays the send (`until_quiet`); it is still a prompt send.
+    let safety =
+        send_safety(server, &m).or_else(|why| if why == TYPING { Ok(()) } else { Err(why) });
     let mut c = server.core.lock().unwrap();
     let mut tx = Tx::new();
     put_message(&mut tx, &m);
@@ -1649,6 +1651,26 @@ fn send_safety(server: &Server, m: &TaskMessage) -> Result<(), String> {
 /// Why a delivery waits while someone types (see [`prompt_input_check`]).
 pub(crate) const TYPING: &str = "someone is typing in that pane; it is sent when the typing stops";
 
+/// The longest an explicit send (a task message, a draft) waits for typing in the recipient
+/// pane to stop before it checks again and gives up.
+pub(crate) const TYPING_WAIT_MAX: Duration = Duration::from_secs(15);
+
+/// Wait until nobody typed into `run`'s pane for a moment
+/// ([`crate::mentions::delivery::QUIET_INPUT`]), at most [`TYPING_WAIT_MAX`]: typing is a
+/// pause, not a reason to fall back to "open the pane".
+pub(crate) async fn until_quiet(server: &Server, run_id: &str) {
+    let Some(pane) = server.with_core(|c| c.run(run_id).map(|r| r.pane.clone())) else {
+        return;
+    };
+    let start = Instant::now();
+    while let Some(left) = crate::mentions::delivery::typing_wait(server, &pane) {
+        if start.elapsed() >= TYPING_WAIT_MAX {
+            return;
+        }
+        tokio::time::sleep(left + Duration::from_millis(100)).await;
+    }
+}
+
 pub(crate) fn prompt_input_safety(
     server: &Server,
     run_id: &str,
@@ -1686,18 +1708,20 @@ pub(crate) fn prompt_input_check(
     if run.execution.value != Execution::Idle {
         return Err(format!("the agent is {:?}, not idle", run.execution.value).to_lowercase());
     }
-    if crate::mentions::delivery::typing_wait(server, &run.pane).is_some() {
-        return Err(TYPING.into());
-    }
     // Claude and Codex draw a faint placeholder in an empty box: read with styles (spec 19
-    // §4.2), so the placeholder does not count as a draft.
+    // §4.2), so the placeholder does not count as a draft. A draft in the box is checked
+    // before typing: it lasts until someone acts on it, while typing is a pause.
     use crate::mentions::input_box::{self, InputBox};
     let harness = crate::agents::harness::Harness::from_id(&run.harness);
     match input_box::of_pane(server, &run.pane, harness).ok_or("the pane is gone")? {
-        InputBox::Empty => Ok(()),
-        InputBox::Draft(_) => Err("the agent's input box has a draft in it".into()),
-        InputBox::Unknown => Err("can't establish that the agent's input is empty".into()),
+        InputBox::Empty => {}
+        InputBox::Draft(_) => return Err("the agent's input box has a draft in it".into()),
+        InputBox::Unknown => return Err("can't establish that the agent's input is empty".into()),
     }
+    if crate::mentions::delivery::typing_wait(server, &run.pane).is_some() {
+        return Err(TYPING.into());
+    }
+    Ok(())
 }
 
 async fn message_send(server: &Arc<Server>, p: &Value) -> R {
@@ -1727,6 +1751,7 @@ async fn message_send(server: &Arc<Server>, p: &Value) -> R {
         }
         _ => return Ok(json!({"message": m})),
     }
+    until_quiet(server, &m.run).await;
     if let Err(why) = send_safety(server, &m) {
         return Err(err(ErrorKind::Conflict, format!("not sent (zero bytes written): {why}")).details(json!({"reason": "send_unsafe", "detail": why, "fallback": "open_pane_to_send", "pane": server.with_core(|c| c.run(&m.run).map(|r| r.pane.clone()))})));
     }
@@ -1831,6 +1856,7 @@ fn b_flag(p: &Value, k: &str) -> bool {
 /// Prompt-input delivery with a final recheck; delivered only when a bound turn with this text
 /// starts on the same run and conversation.
 async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option<String>) {
+    until_quiet(server, &m.run).await;
     if let Err(why) = send_safety(server, m) {
         return (MessageState::Failed, Some(format!("not sent: {why}")));
     }

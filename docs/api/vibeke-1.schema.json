@@ -401,7 +401,8 @@
           "enum": [
             "feedback",
             "typed",
-            "prompt"
+            "prompt",
+            "hook"
           ]
         },
         "detail": {
@@ -9775,6 +9776,9 @@
           },
           "agent": {
             "$ref": "#/$defs/Target"
+          },
+          "force": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -9805,6 +9809,9 @@
                 "const": "prompt"
               },
               {
+                "const": "hook"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -9818,6 +9825,9 @@
                 "type": "null"
               }
             ]
+          },
+          "detail": {
+            "type": "string"
           },
           "text": {
             "type": "string"
@@ -9849,6 +9859,9 @@
             "type": "boolean"
           },
           "hold": {
+            "type": "boolean"
+          },
+          "force": {
             "type": "boolean"
           },
           "author": {
@@ -9885,6 +9898,9 @@
                 "const": "prompt"
               },
               {
+                "const": "hook"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -9898,6 +9914,9 @@
                 "type": "null"
               }
             ]
+          },
+          "detail": {
+            "type": "string"
           },
           "text": {
             "type": "string"

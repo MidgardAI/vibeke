@@ -725,7 +725,10 @@ fn check(
     let mut why: Vec<String> = vec![];
     match &conv {
         Some(c) => {
-            if let Err(e) = crate::tracking::prompt_input_safety(server, &run.id, c) {
+            // Typing in the pane only delays the send (`tracking::until_quiet`).
+            if let Err(e) = crate::tracking::prompt_input_safety(server, &run.id, c)
+                && e != crate::tracking::TYPING
+            {
                 why.push(e);
             }
         }
@@ -895,6 +898,7 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, scope: Option<&str>, p: &Value) -
     let srv = server.clone();
     let (did, run_id) = (d.id.clone(), target.run.id.clone());
     tokio::spawn(async move {
+        crate::tracking::until_quiet(&srv, &run_id).await;
         let (state, detail) = match crate::tracking::prompt_input_safety(&srv, &run_id, &conv) {
             Err(why) => (MessageState::Failed, Some(format!("not sent: {why}"))),
             Ok(()) => crate::tracking::deliver_text(&srv, &run_id, &conv, &text).await,
