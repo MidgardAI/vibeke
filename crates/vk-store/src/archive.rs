@@ -7,12 +7,13 @@
 //! it is set is sealed ([`crate::crypt`]), one record per flush. A segment keeps the mode it was
 //! created with; readers handle both.
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::crypt::{self, StateCipher};
 
@@ -33,6 +34,8 @@ pub struct ArchivedRow {
 struct PaneSeg {
     generation: u64,
     flush_revision: u64,
+    /// A failed append whose truncation must be retried before any later write.
+    rollback_len: Option<u64>,
     path: PathBuf,
     written: usize,
     buf: Vec<u8>,
@@ -46,9 +49,79 @@ pub struct Archive {
     /// Rotated segments stay readable until housekeeping writes their remaining rows.
     pending: HashMap<String, Vec<PaneSeg>>,
     next_generation: u64,
+    read_fence: ReadFence,
     cipher: Option<Arc<StateCipher>>,
     /// Encryption was asked for but the key is locked: nothing is written (fail closed).
     paused: bool,
+}
+
+/// A lock-free invalidation fence for queued archive reads, including a caller's captured
+/// memory rows. Clone it while constructing the server; reads never need the archive mutex.
+#[derive(Clone, Default)]
+pub struct ReadFence(Arc<AtomicU64>);
+
+impl ReadFence {
+    pub fn generation(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Stable segment prefixes and pending bytes, captured while holding the archive mutex.
+/// File handles keep the selected inodes alive across rename/replacement; their captured
+/// lengths exclude later flushes, which would otherwise duplicate the copied buffer rows.
+pub struct PreparedRead {
+    segments: Vec<ReadSegment>,
+    from: u64,
+    to: u64,
+    generation: u64,
+    fence: ReadFence,
+}
+
+struct ReadSegment {
+    file: Option<(std::fs::File, u64)>,
+    buffered: Vec<u8>,
+}
+
+impl PreparedRead {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Read and decode without holding the archive mutex. A purge invalidates the result.
+    /// The caller must check its enqueue-time fence again immediately before publishing
+    /// any result, including separately captured memory rows. This check is the result's
+    /// publication point; work invalidated before it must not enter the outgoing queue.
+    pub fn finish(self) -> Result<Vec<ArchivedRow>> {
+        ensure!(
+            self.fence.generation() == self.generation,
+            "archive read invalidated"
+        );
+        let mut rows = Vec::new();
+        for segment in self.segments {
+            if let Some((file, len)) = segment.file
+                && len > 0
+            {
+                let mut raw = Vec::new();
+                file.take(len).read_to_end(&mut raw)?;
+                ensure!(raw.len() as u64 == len, "archive prefix was truncated");
+                let compressed = if crypt::is_sealed(&raw) {
+                    crypt::open_all(&raw)?
+                } else {
+                    raw
+                };
+                let text = zstd::decode_all(&compressed[..])?;
+                rows.extend(parse_rows(&text).filter(|r| r.n >= self.from && r.n < self.to));
+            }
+            rows.extend(
+                parse_rows(&segment.buffered).filter(|r| r.n >= self.from && r.n < self.to),
+            );
+        }
+        ensure!(
+            self.fence.generation() == self.generation,
+            "archive read invalidated"
+        );
+        Ok(rows)
+    }
 }
 
 /// An immutable archive prefix that can be compressed outside the archive lock.
@@ -95,6 +168,7 @@ impl Archive {
             open: HashMap::new(),
             pending: HashMap::new(),
             next_generation: 0,
+            read_fence: ReadFence::default(),
             cipher: None,
             paused: false,
         }
@@ -146,6 +220,29 @@ impl Archive {
         &self.root
     }
 
+    /// Check recovery from an archive storage failure with an actual write and sync. The
+    /// private probe contains no pane data and is removed on both success and failure.
+    pub fn probe(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.root)?;
+        let path = self.root.join(format!(".probe-{}", ulid::Ulid::generate()));
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)?;
+        let result = file
+            .write_all(b"archive probe\n")
+            .and_then(|()| file.sync_data());
+        drop(file);
+        let removed = std::fs::remove_file(&path);
+        result?;
+        removed?;
+        Ok(())
+    }
+
     fn pane_dir(&self, pane: &str) -> PathBuf {
         self.root.join(pane)
     }
@@ -183,6 +280,7 @@ impl Archive {
                 self.open.entry(pane.to_string()).or_insert(PaneSeg {
                     generation: self.next_generation,
                     flush_revision: 0,
+                    rollback_len: None,
                     path,
                     written: 0,
                     buf: Vec::new(),
@@ -229,6 +327,7 @@ impl Archive {
     }
 
     pub fn remove_pane(&mut self, pane: &str) {
+        self.invalidate_reads();
         self.open.remove(pane);
         self.pending.remove(pane);
         let _ = std::fs::remove_dir_all(self.pane_dir(pane));
@@ -271,16 +370,35 @@ impl Archive {
         paths
     }
 
-    fn read_buffered_segment(&self, pane: &str, path: &Path) -> Result<Vec<ArchivedRow>> {
-        let mut rows = if path.exists() {
-            read_seg(path)?
-        } else {
-            Vec::new()
-        };
-        for s in self.buffered_segments(pane).filter(|s| s.path == path) {
-            rows.extend(parse_rows(&s.buf));
+    fn capture_segment(&self, pane: &str, path: &Path) -> Result<ReadSegment> {
+        let mut buffered = Vec::new();
+        let mut rollback_len: Option<u64> = None;
+        for segment in self.buffered_segments(pane).filter(|s| s.path == path) {
+            buffered.extend_from_slice(&segment.buf);
+            if let Some(len) = segment.rollback_len {
+                rollback_len = Some(rollback_len.map_or(len, |old| old.min(len)));
+            }
         }
-        Ok(rows)
+        let file = match std::fs::File::open(path) {
+            Ok(file) => {
+                let len = file.metadata()?.len();
+                Some((file, rollback_len.map_or(len, |old| old.min(len))))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(ReadSegment { file, buffered })
+    }
+
+    fn read_buffered_segment(&self, pane: &str, path: &Path) -> Result<Vec<ArchivedRow>> {
+        PreparedRead {
+            segments: vec![self.capture_segment(pane, path)?],
+            from: 0,
+            to: u64::MAX,
+            generation: self.read_generation(),
+            fence: self.read_fence(),
+        }
+        .finish()
     }
 
     fn segments(&self, pane: &str) -> Vec<PathBuf> {
@@ -296,23 +414,50 @@ impl Archive {
         v
     }
 
-    /// Rows with absolute line numbers in `[from, to)`.
-    pub fn read(&mut self, pane: &str, from: u64, to: u64) -> Result<Vec<ArchivedRow>> {
-        let segs = self.readable_segments(pane);
-        let starts: Vec<u64> = segs.iter().map(|p| seg_start(p)).collect();
-        let mut out = Vec::new();
-        for (i, p) in segs.iter().enumerate() {
+    /// Fence to retain for lock-free enqueue-time and publication-time checks.
+    pub fn read_fence(&self) -> ReadFence {
+        self.read_fence.clone()
+    }
+
+    pub fn read_generation(&self) -> u64 {
+        self.read_fence.generation()
+    }
+
+    /// Invalidate outstanding reads before deleting, replacing or forgetting any history.
+    /// Called under the archive mutex, including by retention/purge code which renames files
+    /// itself. Conservative invalidation is safe if deletion later rolls back.
+    pub fn invalidate_reads(&mut self) {
+        self.read_fence.0.fetch_add(1, Ordering::Release);
+    }
+
+    /// Capture rows with absolute line numbers in `[from, to)`. The caller holds the archive
+    /// mutex only for file opens, length snapshots and buffer copies, then releases it before
+    /// calling [`PreparedRead::finish`]. Concurrent appends and flushes do not invalidate a
+    /// read. Deletion and forgetting do; retain [`Self::read_fence`] for publication checks.
+    pub fn prepare_read(&self, pane: &str, from: u64, to: u64) -> Result<PreparedRead> {
+        let paths = self.readable_segments(pane);
+        let starts: Vec<u64> = paths.iter().map(|p| seg_start(p)).collect();
+        let mut segments = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
             let next = starts.get(i + 1).copied().unwrap_or(u64::MAX);
             if next <= from || starts[i] >= to {
                 continue;
             }
-            out.extend(
-                self.read_buffered_segment(pane, p)?
-                    .into_iter()
-                    .filter(|r| r.n >= from && r.n < to),
-            );
+            segments.push(self.capture_segment(pane, path)?);
         }
-        Ok(out)
+        Ok(PreparedRead {
+            segments,
+            from,
+            to,
+            generation: self.read_generation(),
+            fence: self.read_fence(),
+        })
+    }
+
+    /// Synchronous reader. Callers sharing an archive mutex should use [`Self::prepare_read`]
+    /// and decode after releasing the lock.
+    pub fn read(&mut self, pane: &str, from: u64, to: u64) -> Result<Vec<ArchivedRow>> {
+        self.prepare_read(pane, from, to)?.finish()
     }
 
     /// Pane ids that have a segment directory on disk or an open segment. Dot directories
@@ -345,6 +490,7 @@ impl Archive {
 
     /// Discard the pane's open (buffered) segment state; its file is removed by the caller.
     pub fn drop_open(&mut self, pane: &str) {
+        self.invalidate_reads();
         self.open.remove(pane);
         self.pending.remove(pane);
     }
@@ -486,7 +632,10 @@ impl Archive {
     }
 
     /// Delete segment files (a missing file counts as deleted).
-    pub fn remove_segments(segs: &[SegInfo]) -> Result<()> {
+    pub fn remove_segments(&mut self, segs: &[SegInfo]) -> Result<()> {
+        if !segs.is_empty() {
+            self.invalidate_reads();
+        }
         for s in segs {
             match std::fs::remove_file(&s.path) {
                 Ok(()) => {}
@@ -600,7 +749,7 @@ fn flush_seg(s: &mut PaneSeg) -> Result<()> {
     Ok(())
 }
 
-fn write_frame(s: &PaneSeg, frame: &[u8]) -> Result<()> {
+fn write_frame(s: &mut PaneSeg, frame: &[u8]) -> Result<()> {
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -610,14 +759,44 @@ fn write_frame(s: &PaneSeg, frame: &[u8]) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&s.path, std::fs::Permissions::from_mode(0o600));
     }
-    f.write_all(frame)?;
+    // Retry an earlier rollback before any new append. Until it succeeds readers see only
+    // the durable prefix and the untouched buffer, never the torn frame on disk.
+    if let Some(len) = s.rollback_len {
+        truncate_frame(&f, len)?;
+        s.rollback_len = None;
+    }
+    let before = f.metadata()?.len();
+    if let Err(error) = write_frame_bytes(&mut f, frame) {
+        s.rollback_len = Some(before);
+        truncate_frame(&f, before)
+            .with_context(|| format!("roll back archive append after {error}"))?;
+        s.rollback_len = None;
+        return Err(error.into());
+    }
     Ok(())
 }
 
-fn read_seg(p: &Path) -> Result<Vec<ArchivedRow>> {
-    let raw = crypt::read_file(p)?;
-    let text = zstd::decode_all(&raw[..])?;
-    Ok(parse_rows(&text).collect())
+#[cfg(test)]
+thread_local! {
+    static FAIL_WRITE_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static FAIL_TRUNCATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn truncate_frame(file: &std::fs::File, len: u64) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_TRUNCATE.replace(false) {
+        return Err(std::io::Error::other("injected archive rollback failure"));
+    }
+    file.set_len(len)
+}
+
+fn write_frame_bytes(file: &mut std::fs::File, frame: &[u8]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(n) = FAIL_WRITE_AFTER.take() {
+        file.write_all(&frame[..n.min(frame.len())])?;
+        return Err(std::io::Error::other("injected partial archive write"));
+    }
+    file.write_all(frame)
 }
 
 fn parse_rows(text: &[u8]) -> impl Iterator<Item = ArchivedRow> + '_ {
@@ -654,7 +833,7 @@ mod tests {
         assert_eq!(a.first_line("nope").unwrap(), None);
         let sel = a.select("p1", Select::OverBytes(1));
         assert!(!sel.is_empty());
-        Archive::remove_segments(&sel).unwrap();
+        a.remove_segments(&sel).unwrap();
         assert!(a.read("p1", 0, 10).unwrap().is_empty());
     }
 
@@ -749,6 +928,173 @@ mod tests {
         let segs = a.segment_infos("p1");
         assert_eq!(segs.len(), 2);
         assert!(crypt::file_is_sealed(&segs[1].path));
+    }
+
+    #[test]
+    fn partial_frame_write_rolls_back_before_retry_for_plain_and_sealed_segments() {
+        for sealed in [false, true] {
+            for prepared_flush in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut archive = Archive::new(directory.path());
+                if sealed {
+                    let (cipher, _) = StateCipher::generate();
+                    archive.set_cipher(Some(Arc::new(cipher))).unwrap();
+                }
+                archive.append("p", &rows(0, 2, "durable")).unwrap();
+                archive.flush().unwrap();
+                let path = archive.segment_infos("p")[0].path.clone();
+                let original = std::fs::read(&path).unwrap();
+                archive.append("p", &rows(2, 2, "pending")).unwrap();
+                FAIL_WRITE_AFTER.set(Some(7));
+                let failed = if prepared_flush {
+                    let batch = archive.prepare_flush().pop().unwrap().compress().unwrap();
+                    archive.apply_flush(batch)
+                } else {
+                    archive.flush()
+                };
+                assert!(failed.is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                let mut expected = rows(0, 2, "durable");
+                expected.extend(rows(2, 2, "pending"));
+                assert_eq!(archive.read("p", 0, 4).unwrap(), expected);
+                archive.flush().unwrap();
+                assert_eq!(
+                    Archive::new(directory.path()).read("p", 0, 4).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_rollback_fences_reads_and_retries_before_any_more_appends() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = Archive::new(directory.path());
+        archive.append("p", &rows(0, 2, "durable")).unwrap();
+        archive.flush().unwrap();
+        let path = archive.segment_infos("p")[0].path.clone();
+        let original_len = path.metadata().unwrap().len();
+        archive.append("p", &rows(2, 2, "pending")).unwrap();
+        FAIL_WRITE_AFTER.set(Some(7));
+        FAIL_TRUNCATE.set(true);
+        assert!(archive.flush().is_err());
+        assert_eq!(archive.open["p"].rollback_len, Some(original_len));
+        assert_eq!(path.metadata().unwrap().len(), original_len + 7);
+        let mut expected = rows(0, 2, "durable");
+        expected.extend(rows(2, 2, "pending"));
+        assert_eq!(archive.read("p", 0, 4).unwrap(), expected);
+        // Storage has not recovered. The retry must fail at truncation, before appending.
+        FAIL_TRUNCATE.set(true);
+        assert!(archive.flush().is_err());
+        assert_eq!(path.metadata().unwrap().len(), original_len + 7);
+        assert_eq!(archive.open["p"].rollback_len, Some(original_len));
+        archive.flush().unwrap();
+        assert_eq!(archive.open["p"].rollback_len, None);
+        assert_eq!(
+            Archive::new(directory.path()).read("p", 0, 4).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn prepared_read_freezes_file_prefix_and_buffer_across_flush_and_rotation() {
+        for sealed in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut archive = Archive::new(directory.path());
+            if sealed {
+                let (cipher, _) = StateCipher::generate();
+                archive.set_cipher(Some(Arc::new(cipher))).unwrap();
+            }
+            archive.append("p", &rows(0, 2, "first")).unwrap();
+            archive.flush().unwrap();
+            archive.append("p", &rows(2, 2, "buffered")).unwrap();
+            let read = archive.prepare_read("p", 0, 10).unwrap();
+            let generation = read.generation();
+            archive
+                .append("p", &rows(4, 1, &"x".repeat(SEGMENT_BYTES)))
+                .unwrap();
+            archive.append("p", &rows(5, 1, "rotated")).unwrap();
+            archive.flush().unwrap();
+            let mut expected = rows(0, 2, "first");
+            expected.extend(rows(2, 2, "buffered"));
+            assert_eq!(read.finish().unwrap(), expected);
+            assert_eq!(archive.read_generation(), generation);
+            assert_eq!(archive.read("p", 0, 10).unwrap().len(), 6);
+        }
+    }
+
+    #[test]
+    fn prepared_read_uses_captured_inode_and_does_not_reopen_a_replaced_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = Archive::new(directory.path());
+        archive.append("p", &rows(0, 2, "original")).unwrap();
+        archive.flush().unwrap();
+        let read = archive.prepare_read("p", 0, 10).unwrap();
+        let path = archive.segment_infos("p")[0].path.clone();
+        // Simulate an atomic file replacement. Actual forget/retention also advances the
+        // read fence, which is checked separately below; an inode snapshot alone is not it.
+        std::fs::rename(&path, directory.path().join("saved")).unwrap();
+        std::fs::write(&path, b"replacement must never be opened").unwrap();
+        assert_eq!(read.finish().unwrap(), rows(0, 2, "original"));
+    }
+
+    #[test]
+    fn prepared_read_finishes_without_archive_mutex_and_fence_reads_are_lock_free() {
+        use std::sync::Mutex;
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = Archive::new(directory.path());
+        archive.append("p", &rows(0, 2, "first")).unwrap();
+        archive.flush().unwrap();
+        let read = archive.prepare_read("p", 0, 10).unwrap();
+        let fence = archive.read_fence();
+        let generation = fence.generation();
+        let archive = Mutex::new(archive);
+        let guard = archive.lock().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            assert_eq!(fence.generation(), generation);
+            sent.send(read.finish()).unwrap();
+        });
+        // The reader and fence must complete even while another operation holds the lock.
+        let completed = received.recv_timeout(std::time::Duration::from_secs(2));
+        drop(guard);
+        assert_eq!(completed.unwrap().unwrap(), rows(0, 2, "first"));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn forget_and_removal_invalidate_both_prepared_and_queued_reads() {
+        for operation in ["drop_open", "remove_pane", "remove_segments"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut archive = Archive::new(directory.path());
+            archive.append("p", &rows(0, 2, "forgotten")).unwrap();
+            archive.flush().unwrap();
+            archive.append("p", &rows(2, 1, "buffered")).unwrap();
+            let read = archive.prepare_read("p", 0, 10).unwrap();
+            let fence = archive.read_fence();
+            let queued_generation = fence.generation();
+            match operation {
+                "drop_open" => archive.drop_open("p"),
+                "remove_pane" => archive.remove_pane("p"),
+                _ => archive
+                    .remove_segments(&archive.segment_infos("p"))
+                    .unwrap(),
+            }
+            assert_ne!(fence.generation(), queued_generation, "{operation}");
+            assert!(read.finish().is_err(), "{operation}");
+        }
+    }
+
+    #[test]
+    fn storage_probe_checks_writes_and_leaves_no_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("archive");
+        let archive = Archive::new(&root);
+        archive.probe().unwrap();
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir(&root).unwrap();
+        std::fs::write(&root, b"not a directory").unwrap();
+        assert!(archive.probe().is_err());
     }
 
     #[test]

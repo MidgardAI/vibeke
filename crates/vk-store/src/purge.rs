@@ -146,6 +146,12 @@ impl Store {
         if dry_run {
             return Ok(report);
         }
+        // File descriptors held by read workers survive staging/unlink. Invalidate them
+        // before mutation, including retention and memory-only whole-pane forget. The
+        // global fence deliberately stays advanced if staging or the transaction rolls back.
+        if !chosen.is_empty() || sel == Select::All {
+            archive.invalidate_reads();
+        }
         // Recoverable deletion: (1) record the purge in the journal and move the segments into
         // `.trash/<purge-id>/` (a failure moves them back and rolls the index back); (2) commit
         // the index rows and the journal row together; (3) unlink the staging dir and the
@@ -661,10 +667,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (s, mut a) = buffered_rotation(d.path());
         let batches = a.prepare_flush();
+        let read = a.prepare_read("p", 0, 3).unwrap();
+        let fence = a.read_fence();
+        let generation = fence.generation();
         let report = s
             .purge_archive(&mut a, Some(&["p".into()]), Select::All, false)
             .unwrap();
         assert_eq!(report.fts_rows, 1);
+        assert_ne!(fence.generation(), generation);
+        assert!(read.finish().is_err());
         assert_eq!(a.buffered_bytes(), 0);
         assert!(!a.is_open("p"));
         for batch in batches {
@@ -683,16 +694,25 @@ mod tests {
         let (s, mut a) = fixture(d.path());
         let segs = a.segment_infos("p1");
         assert!(segs.len() > 2);
+        let read = a.prepare_read("p1", 0, 1).unwrap();
+        let fence = a.read_fence();
+        let generation = fence.generation();
         let dry = s
             .purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), true)
             .unwrap();
         assert!(dry.segments > 0);
         assert_eq!(fts_count(&s, "p1"), 30_000, "dry run deletes nothing");
+        assert_eq!(fence.generation(), generation, "dry run keeps reads valid");
         let r = s
             .purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), false)
             .unwrap();
         assert_eq!(r.segments, dry.segments);
         assert_eq!(r.fts_rows, dry.fts_rows);
+        assert_ne!(fence.generation(), generation);
+        assert!(
+            read.finish().is_err(),
+            "retention invalidates captured reads"
+        );
         // Rows of deleted segments are gone, rows of the kept (newest) segment stay.
         let left = a.segment_infos("p1");
         assert_eq!(left.len() as u64, segs.len() as u64 - r.segments);
