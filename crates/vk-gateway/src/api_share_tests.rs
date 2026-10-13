@@ -616,3 +616,41 @@ async fn team_devices_are_rechecked_and_revoked_when_they_leave() {
     let e = crate::pair::redeem(&gw, &pid, &[5; 32], "x", "web", None).unwrap_err();
     assert_eq!(e.kind, "revoked");
 }
+
+/// The sweep asks each team once and settles every stale team device: a member stays (its
+/// confirmation refreshed), someone who left is revoked.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_team_sweep_keeps_members_and_revokes_leavers() {
+    use vk_account::fake::FakeTeam;
+    let fake = FakeServer::start().await;
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, &fake.url);
+    sign_in(&gw, &fake.url);
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.teams = vec![FakeTeam::new(ACME, "Acme", &[4242, 5151])];
+    });
+    let r = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github", "teams": [ACME], "uses": 5}),
+    )
+    .await
+    .unwrap();
+    let pid = r["pid"].as_str().unwrap().to_string();
+    let gh = |id: u64| {
+        Some(crate::state::GithubId {
+            id,
+            login: format!("u{id}"),
+        })
+    };
+    let (stays, _) = crate::pair::redeem(&gw, &pid, &[6; 32], "a", "web", gh(4242)).unwrap();
+    let (leaves, _) = crate::pair::redeem(&gw, &pid, &[7; 32], "b", "web", gh(5151)).unwrap();
+    for id in [&stays.id, &leaves.id] {
+        gw.update_device(id, |x| x.team_check.as_mut().unwrap().checked_at = 0)
+            .unwrap();
+    }
+    fake.with(|s| s.teams = vec![FakeTeam::new(ACME, "Acme", &[4242])]);
+    crate::team_check::sweep(&gw).await;
+    assert!(gw.device(&stays.id).unwrap().team_check.unwrap().checked_at > 0);
+    assert!(gw.device(&leaves.id).is_none());
+}
