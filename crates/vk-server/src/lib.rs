@@ -1988,7 +1988,7 @@ impl Server {
                 attempts,
             });
         }
-        tracing::warn!(reason = %message, "archive persistence delayed; retaining buffered rows");
+        tracing::warn!(reason = %message, "archive persistence delayed");
         self.housekeeping_wake.notify_one();
     }
 

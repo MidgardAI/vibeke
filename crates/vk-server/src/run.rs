@@ -127,11 +127,13 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
         tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
         sd.signal_stop_requested
             .store(true, std::sync::atomic::Ordering::Release);
+        let flushed = std::sync::atomic::AtomicBool::new(false);
         // Keep receiving signals while preparation waits for another stop/restart, a slow
         // worker, or a failing disk. A second signal explicitly forces the exit.
         let prepare = async {
             loop {
                 if flush_for_shutdown(&sd).await.is_some() {
+                    flushed.store(true, std::sync::atomic::Ordering::Relaxed);
                     crate::gateway_supervisor::shutdown(&sd).await;
                     crate::machines::stopped(&sd, "signal");
                     let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
@@ -150,7 +152,9 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             _ = int.recv() => true,
         };
         if forced {
-            record_forced_shutdown(&sd).await;
+            if !flushed.load(std::sync::atomic::Ordering::Relaxed) {
+                record_forced_shutdown(&sd).await;
+            }
             std::process::exit(1);
         }
         std::process::exit(0);
