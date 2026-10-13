@@ -164,7 +164,7 @@ A team is a group of GitHub accounts on the account server. Everyone in a team m
 GitHub links that a teammate makes for the team. A team has an id (a lowercase, hyphenated UUID)
 and a name. Names are for display only; nothing is authorized by name. Members are `owner` or
 `member`; the creator is the first owner, and a team keeps at least one owner. Owners invite
-people by GitHub login or with a one-time invite link, and remove members; a member may leave.
+people by GitHub login (one use) or with an invite link (anyone who has it, until it expires after 7 days or is revoked), and remove members; a member may leave.
 
 **Membership counts when a link is opened, not when it is made.** A person who joins later can
 open links made before; a person who leaves or is removed cannot open them any more. For pairing
@@ -563,7 +563,7 @@ the route answers 404, which counts as an empty list; one that sends only `peopl
 teams.
 
 The page also shows **Teams**: create a team, see its members and pending invitations, invite by
-GitHub login or make a one-time invite link (owners), remove members (owners), leave, and tick
+GitHub login or make an invite link (owners), remove members (owners), leave, and tick
 or untick "share with by default". Team routes (Bearer):
 
 | Route | Does |

@@ -107,8 +107,12 @@ github = ["alice", "bob"]
 A **team** is a group of people on the account server. Everyone in a team can open the GitHub links that a teammate makes for the team. You do not need to add each teammate to your sharing list.
 
 1. On your [account page](https://cloud.vibeke.dev/account), create a team and give it a name. You become its owner.
-2. Invite people. Type a GitHub username, or make an invite link and send it to them. An invite link works once.
-3. Each person accepts the invitation on their own account page.
+2. Invite people. Owners can do this in two ways:
+   - Type a GitHub username. That person sees the invitation on their own account page and selects **Join**.
+   - Make an invite link and post it, for example in your team's chat. Anyone who has the link can join, after they sign in with GitHub. The link works for 7 days. You see it only once, and you can revoke it.
+3. On the team page, owners can make another member an owner, remove members, rename the team or delete it. Anyone can leave a team.
+
+Under **People who can open your links**, each of your teams has a tick box (**Everyone in** the team). A ticked team is included when you make a GitHub link without naming people or teams. New teams start ticked.
 
 Vibeke checks who is in the team when someone opens a link, not when you make it. A person who joins the team later can open links you made before. A person who leaves the team, or whom an owner removes, cannot open them any more.
 
