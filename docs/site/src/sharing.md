@@ -120,13 +120,13 @@ To make a link for a team, pick the team in the **Who** field of the **People** 
 
 ## Share a running app for design review
 
-A **design review link** lets a designer try one preview in their own browser. They do not need a terminal or an account on your host.
+A **design review link** lets a designer try one preview from a web browser. They do not need a terminal or an account on your host.
 
 1. The agent or you declare the preview (see [previews and browsers](concepts/previews.md#share-a-preview-for-design-review)).
 2. Create the link: `vibeke share review v4`, or use the **People** form and choose **Design review**.
 3. Send the link. The designer opens it and signs in with GitHub when the link asks for it.
 
-The designer can scroll, type and use the page as usual. They pick elements or areas, write a note for each pick and send the notes. When the agent changes the app, the designer sees the new version at the same link. Requests to your app travel end-to-end encrypted through your host.
+Your host runs the page in its own browser and streams it to the designer, end-to-end encrypted. The designer can scroll, click and type. They pick elements or areas, write a note for each pick and send the notes. When the agent changes the app, the designer sees the new version at the same link.
 
 A review link reaches only that one preview. It cannot reach terminals, files, git, agents or other previews.
 

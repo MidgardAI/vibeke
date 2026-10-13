@@ -60,8 +60,13 @@ const cookieJars = {
   remove: (sid: string) => idbDelete('cookies', sid),
 };
 
-/** `VITE_REVIEW_CONTENT_ORIGIN` (e.g. `http://{sid}.p.localhost:5174`) for local development. */
-const reviewContentPattern = (import.meta.env?.VITE_REVIEW_CONTENT_ORIGIN as string | undefined) || undefined;
+/**
+ * Where a design review runs the preview in the reviewer's own browser:
+ * `VITE_REVIEW_CONTENT_ORIGIN`, e.g. `https://{sid}.p.vibeke.dev` in production once that wildcard
+ * domain serves `apps/review-content`, or `http://{sid}.p.localhost:5174` for local development.
+ * Unset: reviews use the host's browser (the screencast) only.
+ */
+const reviewContentPattern = (import.meta.env?.VITE_REVIEW_CONTENT_ORIGIN as string | undefined) || 'off';
 const accountServer = (import.meta.env?.VITE_ACCOUNT_SERVER as string | undefined) || undefined;
 
 const lifecycle: Lifecycle = {

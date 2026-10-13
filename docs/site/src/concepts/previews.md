@@ -232,7 +232,7 @@ The command returns your notes when you send them. Agents that use the Vibeke MC
 
 ## Share a preview for design review
 
-You can send one preview to a designer as a link. The designer opens it in their own browser, uses the running app and sends notes. The notes reach the agent that owns the preview.
+You can send one preview to a designer as a link. The designer opens it in a web browser, uses the running app and sends notes. The notes reach the agent that owns the preview.
 
 ```sh
 vibeke share review v4                  # v4 is the preview handle
@@ -243,7 +243,7 @@ You can also choose **Design review** in the **People** form (`prefix+alt+v`). B
 
 The designer picks an element with a click or an area with a drag, writes a note for each pick and sends them. When the agent changes the app, hot reload shows the change at the same link. If the browser cannot run the preview itself, the screen shows your host's browser instead. That view cannot leave the preview.
 
-A review link reaches only that preview. It does not give access to terminals, files, git, agents or other previews. Requests from the designer's browser to your app travel end-to-end encrypted through your host. An app that calls another local port, such as an API on a different port, cannot reach it from a review.
+A review link reaches only that preview. It does not give access to terminals, files, git, agents or other previews. Your host runs the page in its own browser and streams it to the designer, end-to-end encrypted. The designer cannot use that browser to open other addresses.
 
 See [work with a teammate](../sharing.md#share-a-running-app-for-design-review) for who can open a link and how held notes work.
 
