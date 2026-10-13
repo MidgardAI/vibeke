@@ -28,6 +28,7 @@ pub mod elevate;
 pub mod event;
 pub mod fleet;
 pub mod floats;
+pub mod formkeys;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod frame_queue;
 pub mod gallery;
