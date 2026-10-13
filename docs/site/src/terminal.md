@@ -73,6 +73,8 @@ Press `prefix+alt+i` to view new images. The sidebar also lists recent images. S
 The desktop app has a **Connect to this Mac/computer** flow.
 **Connections** (`prefix` then `alt+d`) has four tabs. Switch them with `tab` and `shift+tab`, or press `up` from the top of a list or form and then `left` and `right`. In a form, `left` and `right` (or `space`) change the selected option, and `tab`, `shift+tab`, `up` and `down` move between the fields. The tabs are: **Devices** pairs a phone or browser (also **Pair a phone** in the command palette) and lists and revokes paired devices; **People** lists, creates and revokes colleagues' shared access to a pane or workspace; **Hosts** manages your paired hosts and handoff invitations; **Handoffs** lists incoming handoffs (`prefix+shift+h`).
 
+**Setup** (the **Setup** action, or `:setup`) walks through the first-run steps. Switch steps with `tab` and `shift+tab`, or press `up` from the top of a step and then `left` and `right`. In a list, `left` and `right` change the selected option: they choose the previous or next notification channel or theme, and they turn an agent integration off or on. `space` also changes the selected option. Press `esc` to leave Setup for now.
+
 See [desktop access](desktop.md) and [phone and browser access](mobile.md).
 
 ## Next steps

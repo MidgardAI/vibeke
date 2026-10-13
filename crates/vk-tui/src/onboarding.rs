@@ -13,6 +13,7 @@
 //! is written), `:setup` reopens it any time.
 
 use crate::app::{App, Mode, Pending, Popup};
+use crate::formkeys::{self, Nav, Strip, StripKey};
 use crate::screen::{Grid, HostCaps};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -319,6 +320,8 @@ pub struct Flow {
     pub herdr: Option<PathBuf>,
     pub harnesses: Vec<HarnessRow>,
     pub sel: usize,
+    /// The step strip has the keys (↑ from a step's top row): ←/→ switch steps, ↓ goes back.
+    pub strip: Strip,
     /// Showing the selected harness's diff (scroll offset).
     pub diff: Option<usize>,
     /// `i` pressed: waiting for `y` to install the selected harnesses.
@@ -343,6 +346,7 @@ impl Flow {
             herdr: herdr_config(),
             harnesses: detect_harnesses(&dirs, &bin),
             sel: 0,
+            strip: Strip::default(),
             diff: None,
             confirm_install: false,
             choices: Choices {
@@ -441,8 +445,17 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         return;
     };
     let k = ev.key;
+    let plain_view = !f.confirm_install && f.diff.is_none();
+    // The step strip: ←/→ switch steps; ↓, enter and esc go back into the step.
+    if plain_view && f.strip.focused {
+        if let StripKey::Switch(by) = f.strip.key(&ev) {
+            f.go(by);
+        }
+        app.ux.onboarding = Some(f);
+        return keep(app);
+    }
     // Global navigation (not while a confirmation or a diff is up).
-    if !f.confirm_install && f.diff.is_none() {
+    if plain_view {
         match k {
             Key::Named(NamedKey::Escape) => {
                 // Closed for this run; `:setup` reopens it.
@@ -462,6 +475,16 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 return keep(app);
             }
             _ => {}
+        }
+        // ↑ from a step's top row moves onto the strip.
+        let top = match f.step {
+            Step::Integrations | Step::Notifications | Step::Theme => f.sel == 0,
+            _ => true,
+        };
+        if top && formkeys::nav(&ev, false) == Nav::Prev {
+            f.strip.focused = true;
+            app.ux.onboarding = Some(f);
+            return keep(app);
         }
     }
     match f.step {
@@ -497,15 +520,12 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         Step::Integrations => integrations_key(app, &mut f, &ev),
         Step::Notifications => {
             const OPTS: [&str; 3] = ["native", "osc", "none"];
-            match k {
-                Key::Char('j') | Key::Named(NamedKey::Down) => f.sel = (f.sel + 1).min(2),
-                Key::Char('k') | Key::Named(NamedKey::Up) => f.sel = f.sel.saturating_sub(1),
-                Key::Char(c @ '1'..='3') => {
+            match (k, formkeys::nav(&ev, false)) {
+                (Key::Char(c @ '1'..='3'), _) => {
                     f.sel = (c as usize) - ('1' as usize);
                     f.choices.notifications = Some(OPTS[f.sel].into());
                 }
-                Key::Char(' ') => f.choices.notifications = Some(OPTS[f.sel].into()),
-                Key::Char('t') => {
+                (Key::Char('t'), _) => {
                     app.command_on(
                         0,
                         "notification.send",
@@ -515,35 +535,59 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                     f.notice =
                         Some("sent — did it show up (and focus Vibeke when clicked)?".into());
                 }
-                Key::Named(NamedKey::Enter) => {
+                (_, Nav::Next) => f.sel = (f.sel + 1).min(2),
+                (_, Nav::Prev) => f.sel = f.sel.saturating_sub(1),
+                // ←/→ choose the previous or next option.
+                (_, n @ (Nav::Inc | Nav::Dec)) => {
+                    f.sel = formkeys::wrap(f.sel, formkeys::step(n).unwrap_or(1), OPTS.len());
+                    f.choices.notifications = Some(OPTS[f.sel].into());
+                }
+                (_, Nav::Toggle) => f.choices.notifications = Some(OPTS[f.sel].into()),
+                (_, Nav::Activate) => {
                     f.choices.notifications = Some(OPTS[f.sel].into());
                     f.go(1);
                 }
                 _ => {}
             }
         }
-        Step::Theme => match k {
-            Key::Char('j') | Key::Named(NamedKey::Down) => {
-                f.sel = (f.sel + 1).min(THEMES.len() - 1);
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
-            }
-            Key::Char('k') | Key::Named(NamedKey::Up) => {
-                f.sel = f.sel.saturating_sub(1);
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
-            }
-            Key::Char('a') => {
+        Step::Theme => {
+            // The rows are the themes, then the auto light/dark toggle.
+            let auto_row = THEMES.len();
+            let toggle_auto = |f: &mut Flow| {
                 let auto = f.choices.theme_mode.as_deref() == Some("auto");
                 f.choices.theme_mode = Some(if auto { "dark" } else { "auto" }.into());
-            }
-            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
-                f.choices.theme = Some(THEMES[f.sel].into());
-                app.theme = crate::theme::Theme::named(THEMES[f.sel]);
-                if k == Key::Named(NamedKey::Enter) {
+            };
+            match (k, formkeys::nav(&ev, false)) {
+                (Key::Char('a'), _) => toggle_auto(&mut f),
+                (_, Nav::Next) => {
+                    f.sel = (f.sel + 1).min(auto_row);
+                    preview_theme(app, &f);
+                }
+                (_, Nav::Prev) => {
+                    f.sel = f.sel.saturating_sub(1);
+                    preview_theme(app, &f);
+                }
+                (_, Nav::Inc | Nav::Dec | Nav::Toggle) if f.sel == auto_row => toggle_auto(&mut f),
+                // ←/→ choose the previous or next theme.
+                (_, n @ (Nav::Inc | Nav::Dec)) => {
+                    f.sel = formkeys::wrap(f.sel, formkeys::step(n).unwrap_or(1), THEMES.len());
+                    f.choices.theme = Some(THEMES[f.sel].into());
+                    preview_theme(app, &f);
+                }
+                (_, Nav::Toggle) => {
+                    f.choices.theme = Some(THEMES[f.sel].into());
+                    preview_theme(app, &f);
+                }
+                (_, Nav::Activate) => {
+                    if f.sel < auto_row {
+                        f.choices.theme = Some(THEMES[f.sel].into());
+                        preview_theme(app, &f);
+                    }
                     f.go(1);
                 }
+                _ => {}
             }
-            _ => {}
-        },
+        }
         Step::Write => match k {
             Key::Named(NamedKey::Enter) | Key::Char('w') if f.written.is_none() => {
                 match f
@@ -570,6 +614,15 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     }
     app.ux.onboarding = Some(f);
     keep(app);
+}
+
+/// Shows the theme under the cursor; on the auto row, the chosen one.
+fn preview_theme(app: &mut App, f: &Flow) {
+    let name = match THEMES.get(f.sel) {
+        Some(n) => *n,
+        None => f.choices.theme.as_deref().unwrap_or(THEMES[0]),
+    };
+    app.theme = crate::theme::Theme::named(name);
 }
 
 fn integrations_key(app: &mut App, f: &mut Flow, ev: &KeyEvent) {
@@ -612,23 +665,29 @@ fn integrations_key(app: &mut App, f: &mut Flow, ev: &KeyEvent) {
         }
         return;
     }
-    match ev.key {
-        Key::Char('j') | Key::Named(NamedKey::Down) => f.sel = (f.sel + 1).min(n.saturating_sub(1)),
-        Key::Char('k') | Key::Named(NamedKey::Up) => f.sel = f.sel.saturating_sub(1),
-        Key::Char(' ') => {
-            if let Some(r) = f.harnesses.get_mut(f.sel) {
-                r.selected = !r.selected && !r.files.is_empty();
-            }
-        }
-        Key::Char('d') => f.diff = Some(0),
-        Key::Char('i') => {
+    match (ev.key, formkeys::nav(ev, false)) {
+        (Key::Char('d'), _) => f.diff = Some(0),
+        (Key::Char('i'), _) => {
             if f.harnesses.iter().any(|r| r.selected) {
                 f.confirm_install = true;
             } else {
                 f.notice = Some("select a harness with space first".into());
             }
         }
-        Key::Named(NamedKey::Enter) | Key::Char('n') => f.go(1),
+        (Key::Char('n'), _) | (_, Nav::Activate) => f.go(1),
+        (_, Nav::Next) => f.sel = (f.sel + 1).min(n.saturating_sub(1)),
+        (_, Nav::Prev) => f.sel = f.sel.saturating_sub(1),
+        (_, Nav::Toggle) => {
+            if let Some(r) = f.harnesses.get_mut(f.sel) {
+                r.selected = !r.selected && !r.files.is_empty();
+            }
+        }
+        // ←/→ set the focused checkbox off / on.
+        (_, n @ (Nav::Inc | Nav::Dec)) => {
+            if let Some(r) = f.harnesses.get_mut(f.sel) {
+                r.selected = n == Nav::Inc && !r.files.is_empty();
+            }
+        }
         _ => {}
     }
     let _ = app;
@@ -646,10 +705,15 @@ pub fn draw(app: &App, g: &mut Grid) {
         g,
         &format!("Welcome to Vibeke · setup {}/{}", idx + 1, steps.len()),
     );
-    let names: Vec<String> = steps
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
+    // The step strip; focused, the current step reads ‹ name › like the Connections tabs.
+    let y = a.y;
+    if y < a.bottom() {
+        let end = a.r.x + a.r.w.saturating_sub(1);
+        let mut x = a.r.x + 1;
+        for (i, s) in steps.iter().enumerate() {
+            if i > 0 {
+                x += a.g.put_str(x, y, " › ", t.dim(), end.saturating_sub(x));
+            }
             let n = match s {
                 Step::Terminal => "terminal",
                 Step::Herdr => "herdr",
@@ -658,14 +722,21 @@ pub fn draw(app: &App, g: &mut Grid) {
                 Step::Theme => "theme",
                 Step::Write => "write config",
             };
-            if i == idx {
-                format!("[{n}]")
-            } else {
-                n.to_string()
-            }
-        })
-        .collect();
-    a.line(&names.join(" › "), t.dim());
+            let (name, st) = match (i == idx, f.strip.focused) {
+                (true, true) => (
+                    format!("‹ {n} ›"),
+                    vk_proto::render::Style {
+                        attrs: vk_proto::render::attr::BOLD,
+                        ..t.sel(t.accent)
+                    },
+                ),
+                (true, false) => (format!("[{n}]"), t.dim()),
+                _ => (n.to_string(), t.dim()),
+            };
+            x += a.g.put_str(x, y, &name, st, end.saturating_sub(x));
+        }
+        a.y += 1;
+    }
     a.line("", t.text());
     match f.step {
         Step::Terminal => {
@@ -813,12 +884,17 @@ pub fn draw(app: &App, g: &mut Grid) {
             }
             let auto = f.choices.theme_mode.as_deref() == Some("auto");
             a.line("", t.text());
+            let st = if f.sel == THEMES.len() {
+                t.sel(t.accent)
+            } else {
+                t.text()
+            };
             a.line(
                 &format!(
-                    "[a] follow the terminal's light/dark: {}",
-                    if auto { "on" } else { "off" }
+                    "{} [a] follow the terminal's light/dark",
+                    if auto { "[x]" } else { "[ ]" }
                 ),
-                t.text(),
+                st,
             );
         }
         Step::Write => {
@@ -846,15 +922,22 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.line("", t.text());
         a.line(n, t.bold(t.yellow));
     }
-    let keys = match f.step {
-        Step::Integrations => {
-            "j/k move · space select · d diff · i install selected · enter next · tab/shift+tab steps · esc later"
-        }
-        Step::Notifications | Step::Theme => {
-            "j/k move · enter choose and continue · tab/shift+tab steps · esc later"
-        }
-        _ => "enter continue · tab/shift+tab steps · esc later",
+    let keys = if f.strip.focused {
+        formkeys::STRIP_HINT.to_string()
+    } else {
+        let extra = match f.step {
+            Step::Integrations => " · space select · d diff · i install selected",
+            Step::Notifications => " · t test notification",
+            Step::Theme => " · a auto light/dark",
+            _ => "",
+        };
+        format!(
+            "{}{extra} · {} · esc later",
+            formkeys::FORM_HINT,
+            formkeys::LIST_TABS_HINT
+        )
     };
+    let keys = keys.as_str();
     a.footer(keys, t.dim());
 }
 

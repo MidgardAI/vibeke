@@ -1,5 +1,6 @@
 use super::*;
 use crate::drafts::tests::{commands, fleet, only, screen};
+use crate::formkeys;
 use vk_proto::input::Mods;
 
 fn key(app: &mut App, k: Key) {
@@ -213,4 +214,146 @@ fn herdr_step_imports_into_the_written_config() {
     let f = app.ux.onboarding.as_ref().unwrap();
     assert!(f.choices.herdr_toml.as_deref().unwrap().contains("ctrl+a"));
     assert!(f.preview().unwrap().contains("prefix = \"ctrl+a\""));
+}
+
+fn named(app: &mut App, n: NamedKey) {
+    key(app, Key::Named(n));
+}
+
+/// A setup view on `step` with no Herdr step and nothing selected, config in a temp dir.
+fn at(step: Step, tmp: &Path) -> App {
+    let (mut app, _rx) = fleet();
+    open_with(&mut app, temp_dirs(tmp), tmp.join("c.toml"));
+    let f = app.ux.onboarding.as_mut().unwrap();
+    f.herdr = None;
+    for r in &mut f.harnesses {
+        r.selected = false;
+    }
+    while f.step != step {
+        f.go(1);
+    }
+    app
+}
+
+fn flow(app: &App) -> &Flow {
+    app.ux.onboarding.as_ref().unwrap()
+}
+
+#[test]
+fn up_from_the_top_row_focuses_the_strip_and_arrows_switch_steps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = at(Step::Notifications, tmp.path());
+    named(&mut app, NamedKey::Up);
+    assert!(flow(&app).strip.focused);
+    let s = screen(&app);
+    assert!(s.contains("‹ notifications ›"), "{s}");
+    assert!(s.contains(formkeys::STRIP_HINT), "{s}");
+    named(&mut app, NamedKey::Right);
+    assert_eq!(flow(&app).step, Step::Theme);
+    assert!(flow(&app).strip.focused);
+    named(&mut app, NamedKey::Left);
+    named(&mut app, NamedKey::Left);
+    assert_eq!(flow(&app).step, Step::Integrations);
+    // esc goes back into the step; it does not close setup.
+    named(&mut app, NamedKey::Escape);
+    assert!(!flow(&app).strip.focused);
+    assert!(matches!(app.mode, Mode::Popup(Popup::Onboarding)));
+    // ↓ and enter go back too.
+    named(&mut app, NamedKey::Up);
+    named(&mut app, NamedKey::Down);
+    assert!(!flow(&app).strip.focused);
+    assert_eq!(flow(&app).step, Step::Integrations);
+    named(&mut app, NamedKey::Up);
+    enter(&mut app);
+    assert!(!flow(&app).strip.focused);
+    assert_eq!(flow(&app).step, Step::Integrations);
+}
+
+#[test]
+fn up_below_the_top_row_only_moves_and_tab_still_switches_steps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = at(Step::Notifications, tmp.path());
+    named(&mut app, NamedKey::Down);
+    named(&mut app, NamedKey::Up);
+    assert!(!flow(&app).strip.focused);
+    assert_eq!(flow(&app).sel, 0);
+    named(&mut app, NamedKey::Tab);
+    assert_eq!(flow(&app).step, Step::Theme);
+    // From a step with no list, ↑ goes straight to the strip.
+    let mut app = at(Step::Terminal, tmp.path());
+    named(&mut app, NamedKey::Up);
+    assert!(flow(&app).strip.focused);
+    // Tab on the strip switches steps too.
+    named(&mut app, NamedKey::Tab);
+    assert_eq!(flow(&app).step, Step::Integrations);
+}
+
+#[test]
+fn arrows_choose_the_notification_option() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = at(Step::Notifications, tmp.path());
+    named(&mut app, NamedKey::Right);
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("osc"));
+    named(&mut app, NamedKey::Right);
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("none"));
+    named(&mut app, NamedKey::Left);
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("osc"));
+    assert_eq!(flow(&app).sel, 1);
+    // ↓ moves the cursor without choosing; space chooses it.
+    named(&mut app, NamedKey::Down);
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("osc"));
+    key(&mut app, Key::Char(' '));
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("none"));
+    // The digit shortcuts still work.
+    key(&mut app, Key::Char('1'));
+    assert_eq!(flow(&app).choices.notifications.as_deref(), Some("native"));
+}
+
+#[test]
+fn arrows_choose_the_theme_and_toggle_auto() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = at(Step::Theme, tmp.path());
+    let start = flow(&app).sel;
+    named(&mut app, NamedKey::Right);
+    assert_eq!(flow(&app).sel, (start + 1) % THEMES.len());
+    assert_eq!(
+        flow(&app).choices.theme.as_deref(),
+        Some(THEMES[(start + 1) % THEMES.len()])
+    );
+    named(&mut app, NamedKey::Left);
+    assert_eq!(flow(&app).choices.theme.as_deref(), Some(THEMES[start]));
+    // The auto toggle is the row after the themes: ←/→/space flip it, `a` still does.
+    for _ in 0..THEMES.len() {
+        named(&mut app, NamedKey::Down);
+    }
+    assert_eq!(flow(&app).sel, THEMES.len());
+    let auto = |app: &App| flow(app).choices.theme_mode.clone();
+    let before = auto(&app);
+    named(&mut app, NamedKey::Right);
+    assert_ne!(auto(&app), before);
+    named(&mut app, NamedKey::Left);
+    assert_eq!(auto(&app), before);
+    key(&mut app, Key::Char(' '));
+    assert_ne!(auto(&app), before);
+    key(&mut app, Key::Char('a'));
+    assert_eq!(auto(&app), before);
+    // The theme choice is untouched by the toggle.
+    assert_eq!(flow(&app).choices.theme.as_deref(), Some(THEMES[start]));
+}
+
+#[test]
+fn arrows_set_an_integration_checkbox_on_or_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut app = at(Step::Integrations, tmp.path());
+    assert!(!flow(&app).harnesses[0].files.is_empty());
+    named(&mut app, NamedKey::Right);
+    assert!(flow(&app).harnesses[0].selected);
+    named(&mut app, NamedKey::Right);
+    assert!(flow(&app).harnesses[0].selected, "→ sets on, not flip");
+    named(&mut app, NamedKey::Left);
+    assert!(!flow(&app).harnesses[0].selected);
+    key(&mut app, Key::Char(' '));
+    assert!(flow(&app).harnesses[0].selected);
+    key(&mut app, Key::Char('h'));
+    assert!(!flow(&app).harnesses[0].selected);
 }
