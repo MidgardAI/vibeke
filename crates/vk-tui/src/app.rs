@@ -2027,6 +2027,19 @@ impl App {
         if crate::gateway::key(self, &ev) {
             return;
         }
+        // Raw mode makes ctrl+c an input key rather than a signal. With no pane to
+        // receive it, leave through the normal detach path. This also works when a
+        // surrounding multiplexer captures our prefix or detach is unbound.
+        if ev.kind != KeyKind::Release
+            && ev.key == Key::Char('c')
+            && ev.mods == Mods::CTRL
+            && self.focused_pane().is_none()
+            && matches!(self.mode, Mode::Normal | Mode::Prefix(_))
+        {
+            self.mode = Mode::Normal;
+            self.action("detach", None);
+            return;
+        }
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         let from_card = matches!(
             mode,
@@ -3451,6 +3464,10 @@ pub(crate) fn test_interaction(
     }))
     .unwrap()
 }
+
+#[cfg(test)]
+#[path = "empty_tests.rs"]
+mod empty_tests;
 
 #[cfg(test)]
 mod clipboard_tests {

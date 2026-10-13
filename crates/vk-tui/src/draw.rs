@@ -1040,7 +1040,9 @@ pub(crate) fn compose_with_sidebar(
     let mut cursor = None;
     if rects.is_empty() && floats.is_empty() {
         let msg = if app.m().connected() {
-            "no panes — prefix+c for a new tab, prefix+shift+n for a workspace"
+            "no panes — ctrl+c to exit"
+        } else if app.focused_pane().is_none() {
+            "connecting… — ctrl+c to exit"
         } else {
             "connecting…"
         };
@@ -1048,9 +1050,41 @@ pub(crate) fn compose_with_sidebar(
             area.x + 2,
             area.y + 1,
             msg,
-            t.dim(),
+            t.text(),
             area.w.saturating_sub(2),
         );
+        if app.m().connected() {
+            let mut y = area.y + 2;
+            for (action, label) in [
+                ("detach", "detach"),
+                ("new_tab", "create a tab"),
+                ("new_workspace", "create a workspace"),
+            ] {
+                if action == "new_tab" && app.focused_ws().is_none() {
+                    continue;
+                }
+                let Some(binding) = app.keymap.binding_for(action) else {
+                    continue;
+                };
+                let binding = match binding.strip_prefix("prefix+") {
+                    Some(keys) => format!(
+                        "{} then {keys}",
+                        vk_term::keygrammar::format_key(&app.keymap.prefix)
+                    ),
+                    None => binding,
+                };
+                if y < area.y.saturating_add(area.h) {
+                    g.put_str(
+                        area.x + 2,
+                        y,
+                        &format!("{binding} to {label}"),
+                        t.dim(),
+                        area.w.saturating_sub(2),
+                    );
+                    y += 1;
+                }
+            }
+        }
     }
     draw_borders(app, g, area, &rects, focused.as_deref());
     for (pid, r) in &rects {

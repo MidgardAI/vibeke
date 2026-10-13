@@ -47,6 +47,9 @@ These are the default keys. Press **Ctrl+B** before each key:
 
 Your configuration can change these keys. Run `vibeke keys` to see active bindings. See [customize keys and appearance](customize.md).
 
+After you close the last pane, press **Ctrl+C** to exit from the empty screen.
+Inside a pane, **Ctrl+C** goes to the program running there.
+
 ## Setup and integrations
 
 First-run setup checks terminal support and offers integrations for detected agents.
