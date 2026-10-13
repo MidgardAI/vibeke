@@ -131,8 +131,11 @@ at}>`. It stays `Pending` until `redemptions.len() == uses` or the share expires
    but unexpired, unrevoked invitation for this purpose only; a new device key is refused with
    `used`.
 2. Otherwise it checks the count, creates the device, records the redemption, and writes the
-   pairing, in that order. On start-up the gateway reconciles: a redemption whose device is
-   missing is dropped; a share device whose pairing lacks its redemption is added back.
+   pairing, in that order. On start-up the gateway reconciles: a share device whose pairing
+   lacks its redemption is added back. A redemption is never dropped: it counts toward `uses`
+   even when its device is gone.
+3. Revoking a device marks its redemption `revoked` (a tombstone). A retry with that device key
+   is refused with `revoked`; the use is not given back.
 
 Clients keep the invitation key after a transient failure (network, timeout, host offline) and
 delete it only after a definitive refusal (`used`, `expired`, `revoked`, `forbidden`), so a
@@ -462,10 +465,10 @@ are published.
 |---|---|---|
 | `GET /v1/github/users/{login}` | Bearer account | `{id, login}` from the GitHub API (cached 1 h); 404 `unknown_user` |
 | `GET /v1/attest/start?aud&nonce&return` | none | checks `return` against the app origins and the parameter shapes; stores them in a signed cookie (`vk_attest`, `Path=/v1/attest`, 10 min, HttpOnly, Secure, SameSite=Lax); redirects to GitHub (`read:user`) |
-| `GET /v1/attest/callback` | cookie | exchanges the code, upserts the account, signs the attestation, clears the cookie, redirects to `return#t=<attestation>` |
+| `GET /v1/attest/callback` | cookie | exchanges the code, upserts the account, signs the attestation, clears the cookie, redirects to `<return>#/attest?t=<attestation>` |
 
 The GitHub OAuth app gets a second callback URL (`/v1/attest/callback`). A failed sign-in
-redirects to `return#error=<code>`. Rate limits as for the device flow (10/min per IP).
+redirects to `<return>#/attest?error=<code>`. Rate limits as for the device flow (10/min per IP).
 
 ### 6.3 Encrypted blobs
 
