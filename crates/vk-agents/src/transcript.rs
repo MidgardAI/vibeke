@@ -162,6 +162,37 @@ pub fn parse_task_notification(text: &str) -> Option<TaskNotification> {
 
 /// Cap on remembered tool inputs (for background labels).
 const INPUTS_MAX: usize = 4000;
+/// The agent path of a Codex thread the user started.
+const CODEX_ROOT: &str = "/root";
+
+/// A Codex sub-agent (multi-agent `spawn_agent`), keyed by its agent path (`/root/name`) or,
+/// for the older tool set, its agent id.
+#[derive(Debug, Default)]
+struct CodexAgent {
+    /// The id its first run is reported under: the child thread id when known, else the key.
+    base: String,
+    /// The id of the current (or last) run: `base`, then `base#2`, `base#3` for later runs
+    /// (`followup_task`), so an end of one run never hides the start of the next.
+    id: String,
+    runs: u32,
+    running: bool,
+    /// An end arrived before anything named the agent as started: its start is not reported.
+    ended_early: bool,
+}
+
+/// A Codex collaboration tool call that starts, restarts, ends or lists sub-agents.
+#[derive(Debug, Clone)]
+struct CodexCall {
+    tool: String,
+    /// `namespace: collaboration` (agents addressed by path) rather than the older tool set
+    /// (agents addressed by id).
+    v2: bool,
+    /// The agent it addresses (a path for `v2`).
+    target: Option<String>,
+    /// Older tool set: agent ids a wait addresses.
+    targets: Vec<String>,
+    label: Option<String>,
+}
 
 /// What the transcript says the harness is doing right now (for `reconcile`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +222,13 @@ pub struct Parser {
     model: Option<String>,
     turns_done: u32,
     last_codex_total: Option<u64>,
+    /// This Codex thread's agent path (`/root`, or the one its `session_meta` names).
+    codex_self: String,
+    codex_agents: HashMap<String, CodexAgent>,
+    codex_calls: HashMap<String, CodexCall>,
+    /// The rollout has `SubAgentActivity` items, which say when sub-agents start and end;
+    /// inter-agent messages are then not used as ends.
+    codex_activity: bool,
     activity: Option<Activity>,
     totals: TurnUsage,
     /// A title the user gave the session (Claude `/rename`, pi/omp `/name`); wins over `auto_title`.
@@ -220,6 +258,10 @@ impl Parser {
             model: None,
             turns_done: 0,
             last_codex_total: None,
+            codex_self: CODEX_ROOT.to_string(),
+            codex_agents: HashMap::new(),
+            codex_calls: HashMap::new(),
+            codex_activity: false,
             activity: None,
             totals: TurnUsage::default(),
             user_title: None,
@@ -630,6 +672,16 @@ impl Parser {
         let p = &v["payload"];
         let pty = p.get("type").and_then(Value::as_str).unwrap_or("");
         match v.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                // A sub-agent's own rollout names its path; relative targets resolve below it.
+                if let Some(path) = p
+                    .get("agent_path")
+                    .and_then(Value::as_str)
+                    .filter(|a| a.starts_with('/'))
+                {
+                    self.codex_self = path.to_string();
+                }
+            }
             Some("turn_context") => {
                 if let Some(m) = p.get("model").and_then(Value::as_str) {
                     self.model = Some(m.to_string());
@@ -701,6 +753,9 @@ impl Parser {
                             .unwrap_or("completed");
                         self.bg_ended(&pid, status, ts, out);
                     }
+                    if item.get("type").and_then(Value::as_str) == Some("SubAgentActivity") {
+                        self.codex_subagent_activity(item, ts, out);
+                    }
                 }
                 "exec_command_end" => {
                     let id = p.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -740,6 +795,10 @@ impl Parser {
                     self.activity = Some(Activity::Working);
                     self.remember_input(id, cmd.as_deref());
                     self.tool_use(id, name, cmd, ts, out);
+                    if pty == "function_call" {
+                        let ns = p.get("namespace").and_then(Value::as_str);
+                        self.codex_collab_call(id, name, ns, &args);
+                    }
                 }
                 "function_call_output" | "custom_tool_call_output" => {
                     let id = p.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -757,10 +816,306 @@ impl Parser {
                     for sid in codex_session_ids(pty, p.get("output")) {
                         self.bg_started(&sid, "shell", Some(id), None, ts, out);
                     }
+                    // Kept after its output: a `SubAgentActivity` item may still name the call.
+                    if let Some(call) = self.codex_calls.get(id).cloned() {
+                        self.codex_collab_output(id, call, p.get("output"), ts, out);
+                    }
                 }
+                "agent_message" => self.codex_agent_message(p, ts, out),
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    // ---- Codex sub-agents ------------------------------------------------------------------
+    //
+    // Codex runs a sub-agent as a child thread of the same process. `spawn_agent` returns at
+    // once while the child works, so every sub-agent is background work until it ends.
+    //
+    // Current tool set (`namespace: collaboration`): `spawn_agent {task_name}` answers
+    // `{"task_name": "/root/name"}`; `followup_task {target}` gives a finished agent a new task;
+    // `interrupt_agent {target}` answers `{"previous_status"}`; `list_agents` answers
+    // `{"agents": [{agent_name, agent_status}]}`. Newer versions also write `event_msg`
+    // `item_completed` items `{type: SubAgentActivity, id: <call id>, kind: started |
+    // interacted | completed | interrupted, agent_thread_id, agent_path}`. Without them, the
+    // child's `agent_message` to its parent with `Message Type: FINAL_ANSWER` ends it.
+    //
+    // Older tool set (no namespace): `spawn_agent` answers `{agent_id, nickname}`,
+    // `send_input {id}` starts a turn, `wait_agent {targets}` answers `{status: {id: status}}`,
+    // `close_agent {target}` ends it.
+
+    /// The path a collaboration target names: relative names resolve below this thread.
+    fn codex_agent_path(&self, target: &str) -> String {
+        if target.starts_with('/') {
+            target.to_string()
+        } else {
+            format!("{}/{}", self.codex_self.trim_end_matches('/'), target)
+        }
+    }
+
+    /// Remember a collaboration call that starts, restarts, ends or lists sub-agents.
+    fn codex_collab_call(&mut self, id: &str, name: &str, ns: Option<&str>, args: &Value) {
+        let v2 = ns == Some("collaboration");
+        let older = ns.is_none()
+            && (matches!(
+                name,
+                "spawn_agent" | "send_input" | "wait_agent" | "close_agent"
+            ) || (name == "wait" && args.get("ids").is_some_and(Value::is_array)));
+        let tracked = matches!(
+            name,
+            "spawn_agent" | "followup_task" | "interrupt_agent" | "list_agents"
+        );
+        if id.is_empty() || !((v2 && tracked) || older) {
+            return;
+        }
+        let s = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .filter(|v| !v.trim().is_empty())
+        };
+        let target = s("target").or_else(|| s("id")).map(|t| {
+            if v2 {
+                self.codex_agent_path(t)
+            } else {
+                t.to_string()
+            }
+        });
+        let targets = args
+            .get("targets")
+            .or_else(|| args.get("ids"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let label = (name == "spawn_agent")
+            .then(|| codex_spawn_label(args))
+            .flatten();
+        if self.codex_calls.len() >= INPUTS_MAX {
+            self.codex_calls.clear();
+        }
+        self.codex_calls.insert(
+            id.to_string(),
+            CodexCall {
+                tool: name.to_string(),
+                v2,
+                target,
+                targets,
+                label,
+            },
+        );
+    }
+
+    /// The output of a remembered collaboration call.
+    fn codex_collab_output(
+        &mut self,
+        call_id: &str,
+        call: CodexCall,
+        output: Option<&Value>,
+        ts: Option<i64>,
+        out: &mut Vec<Event>,
+    ) {
+        let text = output_text(output);
+        // `collab tool failed: …` (a thread limit, an unknown target): nothing changed.
+        let failed = text.trim_start().starts_with("collab tool failed");
+        let o: Value = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
+        let s = |k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty());
+        match (call.tool.as_str(), call.v2) {
+            ("spawn_agent", true) => {
+                if let Some(path) = s("task_name") {
+                    let path = self.codex_agent_path(path);
+                    self.codex_agent_start(&path, None, Some(call_id), call.label, ts, out);
+                }
+            }
+            ("spawn_agent", false) => {
+                if let Some(agent) = s("agent_id") {
+                    let label = call.label.or_else(|| s("nickname").map(str::to_string));
+                    let agent = agent.to_string();
+                    self.codex_agent_start(&agent, Some(&agent), Some(call_id), label, ts, out);
+                }
+            }
+            // A new task (or input) starts a turn of the child. With activity items, their
+            // `interacted` entry says so (and this output may follow the child's end).
+            ("followup_task", true) | ("send_input", false) => {
+                if !failed
+                    && !self.codex_activity
+                    && let Some(t) = call.target.as_deref()
+                {
+                    self.codex_agent_start(t, None, Some(call_id), None, ts, out);
+                }
+            }
+            ("interrupt_agent", true) => {
+                if !failed && let Some(t) = call.target.as_deref() {
+                    self.codex_agent_end(t, "interrupted", ts, out);
+                }
+            }
+            ("close_agent", false) => {
+                if !failed && let Some(t) = call.target.as_deref() {
+                    self.codex_agent_end(t, "closed", ts, out);
+                }
+            }
+            // A snapshot of every agent: ends the ones that no longer run.
+            ("list_agents", true) => {
+                for a in o
+                    .get("agents")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let (Some(name), Some(status)) = (
+                        a.get("agent_name").and_then(Value::as_str),
+                        a.get("agent_status").and_then(status_word),
+                    ) else {
+                        continue;
+                    };
+                    let name = self.codex_agent_path(name);
+                    if !codex_status_running(&status)
+                        && self.codex_agents.get(&name).is_some_and(|g| g.running)
+                    {
+                        self.codex_agent_end(&name, &status, ts, out);
+                    }
+                }
+            }
+            ("wait_agent" | "wait", false) => {
+                let Some(m) = o.get("status").and_then(Value::as_object) else {
+                    return;
+                };
+                for (agent, st) in m {
+                    if let Some(status) = status_word(st)
+                        && !codex_status_running(&status)
+                        && (call.targets.is_empty() || call.targets.contains(agent))
+                    {
+                        self.codex_agent_end(agent, &status, ts, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `SubAgentActivity`: the harness's own record of a sub-agent starting, getting a new
+    /// task, and ending.
+    fn codex_subagent_activity(&mut self, item: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
+        let s = |k: &str| {
+            item.get(k)
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let thread = s("agent_thread_id");
+        let Some(key) = s("agent_path")
+            .map(|p| self.codex_agent_path(&p))
+            .or_else(|| thread.clone())
+        else {
+            return;
+        };
+        self.codex_activity = true;
+        let call_id = s("id");
+        let call = call_id
+            .as_deref()
+            .and_then(|c| self.codex_calls.get(c))
+            .cloned();
+        match s("kind").as_deref().unwrap_or("") {
+            "started" => {
+                let label = call.and_then(|c| c.label);
+                self.codex_agent_start(&key, thread.as_deref(), call_id.as_deref(), label, ts, out);
+            }
+            // `send_message` also interacts, but only `followup_task` starts a turn.
+            "interacted" => {
+                if call.is_some_and(|c| matches!(c.tool.as_str(), "followup_task" | "send_input")) {
+                    self.codex_agent_start(
+                        &key,
+                        thread.as_deref(),
+                        call_id.as_deref(),
+                        None,
+                        ts,
+                        out,
+                    );
+                }
+            }
+            kind @ ("completed" | "interrupted" | "errored" | "failed" | "shutdown" | "closed") => {
+                self.codex_agent_end(&key, kind, ts, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// A child's final answer to this thread ends its run (rollouts without activity items).
+    fn codex_agent_message(&mut self, p: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
+        if self.codex_activity
+            || p.get("recipient").and_then(Value::as_str) != Some(self.codex_self.as_str())
+        {
+            return;
+        }
+        let Some(author) = p
+            .get("author")
+            .and_then(Value::as_str)
+            .filter(|a| a.starts_with('/') && *a != self.codex_self)
+        else {
+            return;
+        };
+        let head = p
+            .pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if head.starts_with("Message Type: FINAL_ANSWER") {
+            let author = author.to_string();
+            self.codex_agent_end(&author, "completed", ts, out);
+        }
+    }
+
+    fn codex_agent_start(
+        &mut self,
+        key: &str,
+        thread: Option<&str>,
+        call_id: Option<&str>,
+        label: Option<String>,
+        ts: Option<i64>,
+        out: &mut Vec<Event>,
+    ) {
+        let a = self.codex_agents.entry(key.to_string()).or_default();
+        if a.base.is_empty() {
+            a.base = thread.unwrap_or(key).to_string();
+        }
+        if a.running {
+            return;
+        }
+        if a.ended_early {
+            a.ended_early = false;
+            a.runs += 1;
+            return;
+        }
+        a.runs += 1;
+        a.running = true;
+        a.id = if a.runs == 1 {
+            a.base.clone()
+        } else {
+            format!("{}#{}", a.base, a.runs)
+        };
+        let id = a.id.clone();
+        let label = label.or_else(|| {
+            key.rsplit('/')
+                .next()
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+        });
+        self.bg_started(&id, "subagent", call_id, label, ts, out);
+    }
+
+    fn codex_agent_end(&mut self, key: &str, status: &str, ts: Option<i64>, out: &mut Vec<Event>) {
+        let a = self.codex_agents.entry(key.to_string()).or_default();
+        if a.running {
+            a.running = false;
+            let id = a.id.clone();
+            self.bg_ended(&id, status, ts, out);
+        } else if a.runs == 0 {
+            // Written before the record that starts it: that start is not reported.
+            a.base = key.to_string();
+            a.ended_early = true;
         }
     }
 
@@ -1090,6 +1445,49 @@ fn codex_session_ids(pty: &str, output: Option<&Value>) -> Vec<String> {
         ids.push(id);
     }
     ids
+}
+
+/// A tool output as text: a string, or its text blocks joined.
+fn output_text(output: Option<&Value>) -> String {
+    match output {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// A Codex sub-agent's label from its `spawn_agent` arguments: the task name (and agent
+/// type). The task text itself is often encrypted (`gAAAA…`) and then not used.
+fn codex_spawn_label(args: &Value) -> Option<String> {
+    let s = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    let task = s("task_name").or_else(|| s("message").filter(|m| !m.starts_with("gAAAA")));
+    match (task, s("agent_type")) {
+        (Some(t), Some(ty)) => Some(format!("{t} ({ty})")),
+        (Some(t), None) => Some(t.to_string()),
+        (None, ty) => ty.map(str::to_string),
+    }
+}
+
+/// A Codex agent status as a word: `"running"`, or the key of `{"completed": "…"}`.
+fn status_word(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(m) => m.keys().next().cloned(),
+        _ => None,
+    }
+}
+
+fn codex_status_running(status: &str) -> bool {
+    matches!(status, "running" | "pending_init" | "pendingInit")
 }
 
 fn n64(v: &Value, k: &str) -> u64 {
@@ -1633,5 +2031,300 @@ mod tests {
         let b = bg(&ev);
         assert_eq!(b.len(), 1, "{b:?}");
         assert!(matches!(b[0], Event::BgEnded { id, .. } if id == "81684"));
+    }
+
+    /// Background events as `start <id> <kind> <label> <tool>` / `end <id> <status>`.
+    fn bg_brief(ev: &[Event]) -> Vec<String> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Event::BgStarted {
+                    id,
+                    kind,
+                    label,
+                    tool_use_id,
+                    ..
+                } => Some(format!(
+                    "start {id} {kind} {label} {}",
+                    tool_use_id.as_deref().unwrap_or("-")
+                )),
+                Event::BgEnded { id, status, .. } => Some(format!("end {id} {status}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn codex_call(t: &str, call: &str, name: &str, args: Value) -> Value {
+        json!({"timestamp": t, "type": "response_item", "payload": {"type": "function_call",
+            "name": name, "namespace": "collaboration", "arguments": args.to_string(), "call_id": call}})
+    }
+
+    fn codex_out(t: &str, call: &str, output: &str) -> Value {
+        json!({"timestamp": t, "type": "response_item", "payload": {"type": "function_call_output",
+            "call_id": call, "output": output}})
+    }
+
+    fn codex_activity(t: &str, call: &str, kind: &str, thread: &str, path: &str) -> Value {
+        json!({"timestamp": t, "type": "event_msg", "payload": {"type": "item_completed",
+            "thread_id": "root-thread", "turn_id": "turn-1",
+            "item": {"type": "SubAgentActivity", "model": null, "reasoning_effort": null,
+                "id": call, "kind": kind, "agent_thread_id": thread, "agent_path": path}}})
+    }
+
+    fn codex_agent_msg(t: &str, kind: &str, from: &str, to: &str) -> Value {
+        let head = format!("Message Type: {kind}\nTask name: {to}\nSender: {from}\nPayload:\n");
+        json!({"timestamp": t, "type": "response_item", "payload": {"type": "agent_message",
+            "id": format!("amsg-{t}"), "author": from, "recipient": to,
+            "content": [{"type": "input_text", "text": head},
+                {"type": "encrypted_content", "encrypted_content": "gAAAAxyz"}]}})
+    }
+
+    /// Shapes from codex-cli 0.158–0.162 rollouts (ids and names changed).
+    #[test]
+    fn codex_subagents_follow_activity_items() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            json!({"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"root-thread","source":"cli","thread_source":"user"}}),
+            codex_call(
+                "2026-01-01T00:00:01Z",
+                "c1",
+                "spawn_agent",
+                json!({"task_name": "client_perf", "message": "gAAAAencrypted"}),
+            ),
+            codex_activity("2026-01-01T00:00:01Z", "c1", "started", "t1", "/root/client_perf"),
+            codex_out("2026-01-01T00:00:01Z", "c1", r#"{"task_name":"/root/client_perf"}"#),
+            codex_call(
+                "2026-01-01T00:00:02Z",
+                "c2",
+                "spawn_agent",
+                json!({"task_name": "review_login", "agent_type": "code-reviewer", "message": "gAAAAx"}),
+            ),
+            codex_activity("2026-01-01T00:00:02Z", "c2", "started", "t2", "/root/review_login"),
+            codex_out("2026-01-01T00:00:02Z", "c2", r#"{"task_name":"/root/review_login"}"#),
+            codex_activity(
+                "2026-01-01T00:00:05Z",
+                "subagent-completed-x",
+                "completed",
+                "t2",
+                "/root/review_login",
+            ),
+            // Delivered after the activity item: not a second end.
+            codex_agent_msg("2026-01-01T00:00:06Z", "FINAL_ANSWER", "/root/review_login", "/root"),
+            // A message does not start a turn of the child.
+            codex_call(
+                "2026-01-01T00:00:07Z",
+                "c3",
+                "send_message",
+                json!({"target": "review_login", "message": "gAAAAx"}),
+            ),
+            codex_activity("2026-01-01T00:00:07Z", "c3", "interacted", "t2", "/root/review_login"),
+            codex_out("2026-01-01T00:00:07Z", "c3", ""),
+            // A follow-up task does: a new run under a new id.
+            codex_call(
+                "2026-01-01T00:00:08Z",
+                "c4",
+                "followup_task",
+                json!({"target": "review_login", "message": "gAAAAx"}),
+            ),
+            codex_activity("2026-01-01T00:00:08Z", "c4", "interacted", "t2", "/root/review_login"),
+            codex_out("2026-01-01T00:00:08Z", "c4", ""),
+            codex_activity(
+                "2026-01-01T00:00:09Z",
+                "subagent-completed-y",
+                "completed",
+                "t2",
+                "/root/review_login",
+            ),
+            codex_activity(
+                "2026-01-01T00:00:10Z",
+                "subagent-completed-z",
+                "completed",
+                "t1",
+                "/root/client_perf",
+            ),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            [
+                "start t1 subagent client_perf c1",
+                "start t2 subagent review_login (code-reviewer) c2",
+                "end t2 completed",
+                "start t2#2 subagent review_login c4",
+                "end t2#2 completed",
+                "end t1 completed",
+            ]
+        );
+    }
+
+    /// codex-cli 0.146 rollouts: no activity items.
+    #[test]
+    fn codex_subagents_without_activity_items() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            codex_call(
+                "2026-01-01T00:00:01Z",
+                "c1",
+                "spawn_agent",
+                json!({"task_name": "design_a11y", "fork_turns": "all", "message": "gAAAAx"}),
+            ),
+            codex_out("2026-01-01T00:00:01Z", "c1", r#"{"task_name":"/root/design_a11y"}"#),
+            codex_call(
+                "2026-01-01T00:00:02Z",
+                "c2",
+                "spawn_agent",
+                json!({"task_name": "product_flows", "message": "gAAAAx"}),
+            ),
+            codex_out("2026-01-01T00:00:02Z", "c2", r#"{"task_name":"/root/product_flows"}"#),
+            codex_call("2026-01-01T00:00:03Z", "c3", "list_agents", json!({})),
+            codex_out(
+                "2026-01-01T00:00:03Z",
+                "c3",
+                r#"{"agents":[{"agent_name":"/root","agent_status":"running"},{"agent_name":"/root/design_a11y","agent_status":"running"},{"agent_name":"/root/product_flows","agent_status":"running"}]}"#,
+            ),
+            codex_agent_msg("2026-01-01T00:00:04Z", "MESSAGE", "/root/design_a11y", "/root"),
+            codex_agent_msg("2026-01-01T00:00:05Z", "FINAL_ANSWER", "/root/product_flows", "/root"),
+            codex_call(
+                "2026-01-01T00:00:06Z",
+                "c4",
+                "interrupt_agent",
+                json!({"target": "/root/design_a11y"}),
+            ),
+            codex_out("2026-01-01T00:00:06Z", "c4", r#"{"previous_status":"running"}"#),
+            codex_call(
+                "2026-01-01T00:00:07Z",
+                "c5",
+                "followup_task",
+                json!({"target": "/root/design_a11y", "message": "gAAAAx"}),
+            ),
+            codex_out("2026-01-01T00:00:07Z", "c5", ""),
+            codex_call(
+                "2026-01-01T00:00:08Z",
+                "c6",
+                "followup_task",
+                json!({"target": "product_flows", "message": "gAAAAx"}),
+            ),
+            codex_out(
+                "2026-01-01T00:00:08Z",
+                "c6",
+                "collab tool failed: agent thread limit reached",
+            ),
+            codex_call("2026-01-01T00:00:09Z", "c7", "list_agents", json!({})),
+            codex_out(
+                "2026-01-01T00:00:09Z",
+                "c7",
+                r#"{"agents":[{"agent_name":"/root","agent_status":"running"},{"agent_name":"/root/design_a11y","agent_status":"interrupted"},{"agent_name":"/root/product_flows","agent_status":{"completed":"Findings"}}]}"#,
+            ),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            [
+                "start /root/design_a11y subagent design_a11y c1",
+                "start /root/product_flows subagent product_flows c2",
+                "end /root/product_flows completed",
+                "end /root/design_a11y interrupted",
+                "start /root/design_a11y#2 subagent design_a11y c5",
+                "end /root/design_a11y#2 interrupted",
+            ]
+        );
+    }
+
+    /// The older tool set addresses agents by id (shapes from its tool schemas).
+    #[test]
+    fn codex_subagents_of_the_older_tool_set() {
+        let call = |t: &str, id: &str, name: &str, args: Value| {
+            json!({"timestamp": t, "type": "response_item", "payload": {"type": "function_call",
+                "name": name, "arguments": args.to_string(), "call_id": id}})
+        };
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            call(
+                "2026-01-01T00:00:01Z",
+                "c1",
+                "spawn_agent",
+                json!({"message": "Review the parser"}),
+            ),
+            codex_out(
+                "2026-01-01T00:00:01Z",
+                "c1",
+                r#"{"agent_id":"a1","nickname":"Euler"}"#,
+            ),
+            // Code mode's `wait` (for a script cell) is not an agent wait.
+            call(
+                "2026-01-01T00:00:02Z",
+                "c2",
+                "wait",
+                json!({"cell_id": "1", "yield_time_ms": 1000}),
+            ),
+            codex_out(
+                "2026-01-01T00:00:02Z",
+                "c2",
+                r#"{"status":{"a1":"shutdown"}}"#,
+            ),
+            call(
+                "2026-01-01T00:00:03Z",
+                "c3",
+                "wait_agent",
+                json!({"targets": ["a1"], "timeout_ms": 30000}),
+            ),
+            codex_out(
+                "2026-01-01T00:00:03Z",
+                "c3",
+                r#"{"status":{"a1":{"completed":"done"}},"timed_out":false}"#,
+            ),
+            call(
+                "2026-01-01T00:00:04Z",
+                "c4",
+                "send_input",
+                json!({"id": "a1", "message": "And the tests"}),
+            ),
+            codex_out("2026-01-01T00:00:04Z", "c4", r#"{"submission_id":"s1"}"#),
+            call(
+                "2026-01-01T00:00:05Z",
+                "c5",
+                "close_agent",
+                json!({"target": "a1"}),
+            ),
+            codex_out(
+                "2026-01-01T00:00:05Z",
+                "c5",
+                r#"{"previous_status":"running"}"#,
+            ),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            [
+                "start a1 subagent Review the parser c1",
+                "end a1 completed",
+                "start a1#2 subagent a1 c4",
+                "end a1#2 closed",
+            ]
+        );
+    }
+
+    /// A sub-agent's own rollout: its children live below its path, and the task its parent
+    /// sends it is not an end.
+    #[test]
+    fn codex_subagent_rollout_resolves_paths_below_its_own() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            json!({"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"child-thread",
+                "source":{"subagent":{"thread_spawn":{"parent_thread_id":"root-thread","depth":1,"agent_path":"/root/worker","agent_nickname":"Hooke","agent_role":null}}},
+                "thread_source":"subagent","parent_thread_id":"root-thread","agent_path":"/root/worker"}}),
+            codex_agent_msg("2026-01-01T00:00:01Z", "NEW_TASK", "/root", "/root/worker"),
+            codex_call(
+                "2026-01-01T00:00:02Z",
+                "c1",
+                "spawn_agent",
+                json!({"task_name": "tests", "message": "gAAAAx"}),
+            ),
+            codex_out("2026-01-01T00:00:02Z", "c1", r#"{"task_name":"/root/worker/tests"}"#),
+            codex_agent_msg("2026-01-01T00:00:03Z", "FINAL_ANSWER", "/root/worker/tests", "/root/worker"),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            [
+                "start /root/worker/tests subagent tests c1",
+                "end /root/worker/tests completed",
+            ]
+        );
     }
 }

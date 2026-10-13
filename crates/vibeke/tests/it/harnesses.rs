@@ -993,3 +993,76 @@ fn run_bound_mid_session_learns_its_transcript_from_any_hook() {
     );
     assert_eq!(run["resume_argv"], json!(["claude", "--resume", "cl-1"]));
 }
+
+/// Fake Codex whose process also runs a sub-agent thread and a memory consolidation thread
+/// (no rollout): their hooks come from the same process as the pane's thread.
+const FAKE_CODEX_THREADS: &str = r#"
+import json, os, subprocess, sys, time
+VB = os.environ["VIBEKE_BIN"]
+def h(ev, p):
+    subprocess.run([VB, "hook", "codex", ev], input=json.dumps(p).encode(),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+d = sys.argv[1]
+root = {"session_id": "cx-root", "transcript_path": d + "/root.jsonl", "cwd": d}
+child = {"session_id": "cx-child", "transcript_path": d + "/child.jsonl", "cwd": d}
+mem = {"session_id": "cx-mem", "transcript_path": None, "cwd": d}
+h("SessionStart", dict(root, source="startup"))
+h("UserPromptSubmit", dict(root, prompt="split the work"))
+h("SubagentStart", dict(root, agent_id="cx-child", agent_type="default"))
+h("SessionStart", dict(mem, source="startup"))
+h("UserPromptSubmit", dict(mem, prompt="Consolidate memories"))
+h("SessionEnd", dict(mem, reason="other"))
+h("UserPromptSubmit", dict(child, agent_id="cx-child", prompt="do part one"))
+h("PostToolUse", dict(child, agent_id="cx-child", tool_name="Bash",
+                      tool_input={"command": "ls"}, tool_use_id="ct1", tool_response="ok"))
+h("Stop", dict(child, last_assistant_message="part one done"))
+open(d + "/threads", "w").close()
+while not os.path.exists(d + "/go"):
+    time.sleep(0.05)
+h("SubagentStop", dict(root, agent_id="cx-child", agent_type="default"))
+h("Stop", dict(root, last_assistant_message="All parts done."))
+open(d + "/done", "w").close()
+time.sleep(60)
+"#;
+
+#[test]
+fn codex_subagent_and_internal_thread_hooks_leave_the_pane_run_alone() {
+    let Some(py) = python3() else {
+        eprintln!("skipping: no python3 for the fake harness");
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex.py");
+    std::fs::write(&agent, FAKE_CODEX_THREADS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    let line = format!("{py} {} {}", agent.display(), d.display());
+    s.json(&["pane", "run", &pane, &line]);
+    s.until("other threads reported", 20, || {
+        d.join("threads").exists().then_some(())
+    });
+    let run = s.until("codex run identified", 15, || {
+        s.run_of(&pane)
+            .filter(|r| r["harness"] == "codex" && r["harness_session_id"] == "cx-root")
+    });
+    assert_eq!(
+        run["transcript_path"],
+        format!("{}/root.jsonl", d.display()),
+        "{run}"
+    );
+    assert_eq!(
+        run["execution"]["value"], "Working",
+        "a child's Stop does not end the turn: {run}"
+    );
+    assert_ne!(run["last_message"], "part one done", "{run}");
+    std::fs::write(d.join("go"), "").unwrap();
+    s.until("turn done", 20, || d.join("done").exists().then_some(()));
+    let after = s.until("turn finished", 15, || {
+        s.run_of(&pane)
+            .filter(|r| r["last_message"] == "All parts done.")
+    });
+    assert_eq!(after["id"], run["id"], "{after}");
+    assert_eq!(after["harness_session_id"], "cx-root");
+    assert_eq!(after["execution"]["value"], "Idle");
+}

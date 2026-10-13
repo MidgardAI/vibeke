@@ -9,6 +9,7 @@
 //! | `item/completed` `agentMessage` | transcript + last message |
 //! | `turn/completed {status}` | `Stop` / `Interrupt` / `StopFailure` |
 //! | `thread/tokenUsage/updated` | usage (session total) |
+//! | `thread/backgroundTerminals/list`, `item/completed` `subAgentActivity` / `collabAgentToolCall`, a child thread's `turn/started` / `turn/completed` | `BgTasks` (terminals and running sub-agents) |
 //! | `account/rateLimits/updated` | run rate limit (most constrained window; 100 % → rate limited) |
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, legacy `execCommandApproval`/`applyPatchApproval`, `item/permissions/requestApproval` | approval: `accept` / `acceptForSession` / `decline` |
 //! | `item/tool/requestUserInput`, `mcpServer/elicitation/request` | question |
@@ -19,8 +20,13 @@
 //!
 //! Reconcile after a restart: `thread/read` (a turn the journal shows running but the thread
 //! reports idle is completed), `thread/resume` when the thread is no longer loaded.
+//!
+//! Sub-agents (multi-agent `spawn_agent`) run as child threads of the same app-server. A
+//! notification that names another thread (`params.threadId`) is never this thread's: a child's
+//! `turn/completed` must not end this thread's turn. A known child's turns say whether it runs.
 
 use super::*;
+use std::collections::BTreeMap;
 
 /// Lists a thread's background terminals (unified exec processes that outlive their turn).
 const BG_LIST: &str = "thread/backgroundTerminals/list";
@@ -51,6 +57,12 @@ pub struct Codex {
     model: Option<String>,
     /// Chosen through `agent.set_model`: sent with every `turn/start` (persisted in the record).
     model_override: Option<String>,
+    /// The last background-terminal list, as `BgTasks` entries.
+    terminals: Vec<Value>,
+    /// Running sub-agents: child thread id → (label, id of the item that started it).
+    agents: BTreeMap<String, (String, Option<String>)>,
+    /// This thread's sub-agent threads, with their last label.
+    children: HashMap<String, String>,
 }
 
 fn id_str(id: &Value) -> String {
@@ -82,6 +94,9 @@ impl Codex {
             limited: false,
             model: rec.model.clone(),
             model_override: rec.model.clone(),
+            terminals: vec![],
+            agents: BTreeMap::new(),
+            children: HashMap::new(),
         }
     }
 
@@ -154,9 +169,9 @@ impl Codex {
     }
 
     /// `thread/backgroundTerminals/list` result `{data: [{itemId, processId, command, ...}]}` as
-    /// a `BgTasks` signal (the whole set, Claude hook shape).
-    fn bg_tasks(r: &Value) -> Value {
-        let list: Vec<Value> = r
+    /// `BgTasks` entries (Claude hook shape).
+    fn terminal_tasks(r: &Value) -> Vec<Value> {
+        r
             .get("data")
             .and_then(Value::as_array)
             .into_iter()
@@ -179,8 +194,179 @@ impl Codex {
                 };
                 Some(json!({"id": id, "type": "shell", "status": "running", "command": command, "tool_use_id": t.get("itemId")}))
             })
+            .collect()
+    }
+
+    /// The whole background set (terminals and running sub-agents) as a `BgTasks` signal.
+    fn send_bg(&self, cx: &mut Cx) {
+        let mut list = self.terminals.clone();
+        list.extend(self.agents.iter().map(|(id, (label, item))| {
+            json!({"id": id, "type": "subagent", "status": "running", "description": label, "tool_use_id": item})
+        }));
+        cx.signal("BgTasks", json!({"background_tasks": list}));
+    }
+
+    /// A sub-agent thread runs (it was spawned, or a turn of it started).
+    fn agent_running(
+        &mut self,
+        cx: &mut Cx,
+        thread: &str,
+        label: Option<String>,
+        item: Option<String>,
+    ) {
+        if thread.is_empty() || Some(thread) == self.thread.as_deref() {
+            return;
+        }
+        let fresh = label.filter(|l| !l.is_empty());
+        let known = self.children.get(thread).filter(|l| !l.is_empty()).cloned();
+        let label = fresh.clone().or(known);
+        self.children
+            .insert(thread.to_string(), label.clone().unwrap_or_default());
+        let changed = match self.agents.get_mut(thread) {
+            // Known already (its turn started first): keep it, learn a better label.
+            Some((l, i)) => match fresh.filter(|_| l == "subagent") {
+                Some(label) => {
+                    *l = label;
+                    *i = i.take().or(item);
+                    true
+                }
+                None => false,
+            },
+            None => {
+                let label = label.unwrap_or_else(|| "subagent".into());
+                self.agents.insert(thread.to_string(), (label, item));
+                true
+            }
+        };
+        if changed {
+            self.send_bg(cx);
+        }
+    }
+
+    /// A sub-agent thread finished, failed, was interrupted or closed.
+    fn agent_ended(&mut self, cx: &mut Cx, thread: &str) {
+        if self.agents.remove(thread).is_some() {
+            self.send_bg(cx);
+        }
+    }
+
+    /// `item/completed` `subAgentActivity` `{id, kind: started | interacted | completed |
+    /// interrupted, agentThreadId, agentPath}` (the rollout's `SubAgentActivity`).
+    fn sub_agent_activity(&mut self, cx: &mut Cx, item: &Value) {
+        let s = |a: &str, b: &str| {
+            item.get(a)
+                .or_else(|| item.get(b))
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+        };
+        let Some(thread) = s("agentThreadId", "agent_thread_id").map(str::to_string) else {
+            return;
+        };
+        let label = s("agentPath", "agent_path")
+            .and_then(|p| p.rsplit('/').next())
+            .filter(|n| !n.is_empty())
+            .map(str::to_string);
+        let item_id = s("id", "id").map(str::to_string);
+        match s("kind", "kind").unwrap_or("") {
+            "started" => self.agent_running(cx, &thread, label, item_id),
+            // A message or a new task: the child's own `turn/started` says whether it runs.
+            "interacted" => {
+                self.children.entry(thread).or_default();
+            }
+            "completed" | "interrupted" | "errored" | "failed" | "shutdown" | "closed" => {
+                self.agent_ended(cx, &thread)
+            }
+            _ => {}
+        }
+    }
+
+    /// `item/completed` `collabAgentToolCall` `{id, tool, status, receiverThreadIds, prompt,
+    /// agentsStates: {threadId: {status, message}}}` (the older multi-agent tools).
+    fn collab_tool_call(&mut self, cx: &mut Cx, item: &Value) {
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed");
+        if status == "failed" || status == "inProgress" {
+            return;
+        }
+        let tool = item.get("tool").and_then(Value::as_str).unwrap_or("");
+        let receivers: Vec<String> = item
+            .get("receiverThreadIds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
             .collect();
-        json!({"background_tasks": list})
+        let item_id = item.get("id").and_then(Value::as_str).map(str::to_string);
+        let label = item
+            .get("prompt")
+            .and_then(Value::as_str)
+            .and_then(|p| p.lines().map(str::trim).find(|l| !l.is_empty()))
+            .map(str::to_string);
+        match tool {
+            // Both start a turn of the child; their states predate it.
+            "spawnAgent" | "spawn_agent" | "sendInput" | "send_input" => {
+                for r in &receivers {
+                    let label = label.clone().filter(|_| tool.starts_with("spawn"));
+                    self.agent_running(cx, r, label, item_id.clone());
+                }
+                return;
+            }
+            "closeAgent" | "close_agent" => {
+                for r in &receivers {
+                    self.agent_ended(cx, r);
+                }
+            }
+            _ => {}
+        }
+        // A wait reports agents that reached a final status.
+        if let Some(states) = item.get("agentsStates").and_then(Value::as_object) {
+            for (thread, st) in states {
+                let s = st
+                    .get("status")
+                    .or(Some(st))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !s.is_empty() && !matches!(s, "pendingInit" | "pending_init" | "running") {
+                    self.agent_ended(cx, thread);
+                }
+            }
+        }
+    }
+
+    /// Whether a thread is a sub-agent of this one: known from its spawn, or its
+    /// `thread/started` names this thread as its parent.
+    fn is_child_thread(&self, t: &Value) -> bool {
+        let Some(own) = self.thread.as_deref() else {
+            return false;
+        };
+        let id = t.get("id").and_then(Value::as_str).unwrap_or("");
+        if self.children.contains_key(id) {
+            return true;
+        }
+        [
+            "/source/subAgent/thread_spawn/parent_thread_id",
+            "/source/subagent/thread_spawn/parent_thread_id",
+            "/source/subAgent/threadSpawn/parentThreadId",
+            "/parentThreadId",
+            "/parent_thread_id",
+        ]
+        .iter()
+        .any(|p| t.pointer(p).and_then(Value::as_str) == Some(own))
+    }
+
+    /// A notification of another thread: only a known child's turns matter (whether it runs).
+    fn other_thread(&mut self, cx: &mut Cx, method: &str, thread: &str) {
+        if !self.children.contains_key(thread) {
+            return;
+        }
+        match method {
+            "turn/started" => self.agent_running(cx, thread, None, None),
+            "turn/completed" => self.agent_ended(cx, thread),
+            _ => {}
+        }
     }
 
     fn inflight_has(&self, method: &str) -> bool {
@@ -439,7 +625,8 @@ impl Adapter for Codex {
                     }
                     "model/list" => cx.reply(id_str(id), Ok(self.models_result(&r))),
                     BG_LIST => {
-                        cx.signal("BgTasks", Self::bg_tasks(&r));
+                        self.terminals = Self::terminal_tasks(&r);
+                        self.send_bg(cx);
                         // Something ended while this list was on its way: it may be stale.
                         if self.bg_dirty {
                             self.list_bg(cx);
@@ -512,13 +699,27 @@ impl Adapter for Codex {
             }
             (Some(m), None) => {
                 let p = v.get("params").cloned().unwrap_or(Value::Null);
+                // A sub-agent's (or another thread's) notification: never this thread's state.
+                if let (Some(t), Some(own)) = (
+                    p.get("threadId").and_then(Value::as_str),
+                    self.thread.as_deref(),
+                ) && t != own
+                {
+                    let t = t.to_string();
+                    self.other_thread(cx, m, &t);
+                    return;
+                }
                 match m {
                     "thread/started" => {
-                        if let Some(t) = p.pointer("/thread/id").and_then(Value::as_str)
-                            && self.thread.is_none()
-                        {
-                            self.thread = Some(t.to_string());
-                            cx.session(t);
+                        let th = p.get("thread").cloned().unwrap_or(Value::Null);
+                        if let Some(t) = th.get("id").and_then(Value::as_str) {
+                            if self.thread.is_none() {
+                                self.thread = Some(t.to_string());
+                                cx.session(t);
+                            } else if Some(t) != self.thread.as_deref() && self.is_child_thread(&th)
+                            {
+                                self.children.entry(t.to_string()).or_default();
+                            }
                         }
                     }
                     "thread/settings/updated" => {
@@ -561,6 +762,8 @@ impl Adapter for Codex {
                             .unwrap_or("")
                             .to_string();
                         match item.get("type").and_then(Value::as_str) {
+                            Some("subAgentActivity") => self.sub_agent_activity(cx, &item),
+                            Some("collabAgentToolCall") => self.collab_tool_call(cx, &item),
                             Some("agentMessage") => {
                                 let t = item.get("text").and_then(Value::as_str).unwrap_or("");
                                 self.last_msg = Some(t.to_string());

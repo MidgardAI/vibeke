@@ -1842,6 +1842,119 @@ fn pi_session_stats_are_the_usage_total() {
     );
 }
 
+/// The `BgTasks` set of the last signal: (id, type, label).
+fn last_bg(cx: &Cx) -> Vec<(String, String, String)> {
+    let (_, p) = cx
+        .signals
+        .iter()
+        .rev()
+        .find(|(e, _)| e == "BgTasks")
+        .expect("a BgTasks signal");
+    p["background_tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+            (
+                s("id"),
+                s("type"),
+                if t["description"].is_string() {
+                    s("description")
+                } else {
+                    s("command")
+                },
+            )
+        })
+        .collect()
+}
+
+/// Codex sub-agents are child threads of the same app-server: they are background work of the
+/// parent, and their notifications never settle the parent's turn.
+#[test]
+fn codex_subagents_are_background_work_and_their_turns_are_not_the_parents() {
+    let mut r = rec(Kind::AppServer, Some("th-1"));
+    r.processed = 1;
+    let mut a = codex::Codex::new(&r);
+    step(
+        &mut a,
+        json!({"method": "turn/started", "params": {"threadId": "th-1", "turn": {"id": "tu-1"}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "turnId": "tu-1", "item": {"type": "subAgentActivity", "id": "call-1", "kind": "started", "agentThreadId": "ch-1", "agentPath": "/root/client_perf"}}}),
+    );
+    assert_eq!(signals(&cx), ["BgTasks"]);
+    assert_eq!(
+        last_bg(&cx),
+        [("ch-1".into(), "subagent".into(), "client_perf".into())]
+    );
+    assert_eq!(
+        cx.signals[0].1["background_tasks"][0]["tool_use_id"],
+        "call-1"
+    );
+    // The child's own items and its turn end: not the parent's.
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "ch-1", "turnId": "tc-1", "item": {"type": "agentMessage", "id": "m1", "text": "part one done"}}}),
+    );
+    assert!(cx.view.is_empty() && cx.signals.is_empty());
+    let cx = step(
+        &mut a,
+        json!({"method": "turn/completed", "params": {"threadId": "ch-1", "turn": {"id": "tc-1", "status": "completed"}}}),
+    );
+    assert_eq!(signals(&cx), ["BgTasks"], "no Stop for the parent");
+    assert!(last_bg(&cx).is_empty());
+    assert!(a.busy(), "the parent's turn goes on");
+    // A follow-up task: the child's next turn runs again, under its label.
+    let cx = step(
+        &mut a,
+        json!({"method": "turn/started", "params": {"threadId": "ch-1", "turn": {"id": "tc-2"}}}),
+    );
+    assert_eq!(
+        last_bg(&cx),
+        [("ch-1".into(), "subagent".into(), "client_perf".into())]
+    );
+    // An older-tool wait reports it completed.
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "collabAgentToolCall", "id": "w1", "tool": "wait", "status": "completed", "receiverThreadIds": ["ch-1"], "agentsStates": {"ch-1": {"status": "completed", "message": "done"}}}}}),
+    );
+    assert!(last_bg(&cx).is_empty());
+    // An older-tool spawn names the child in `receiverThreadIds`; its prompt labels it.
+    let cx = step(
+        &mut a,
+        json!({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "collabAgentToolCall", "id": "s2", "tool": "spawnAgent", "status": "completed", "receiverThreadIds": ["ch-2"], "prompt": "Review the parser\nin detail", "agentsStates": {"ch-2": {"status": "pendingInit"}}}}}),
+    );
+    assert_eq!(
+        last_bg(&cx),
+        [("ch-2".into(), "subagent".into(), "Review the parser".into())]
+    );
+    // An unknown thread's notifications are ignored; a thread that names this one as its
+    // parent is a child.
+    let cx = step(
+        &mut a,
+        json!({"method": "turn/started", "params": {"threadId": "other", "turn": {"id": "x"}}}),
+    );
+    assert!(cx.signals.is_empty());
+    step(
+        &mut a,
+        json!({"method": "thread/started", "params": {"thread": {"id": "ch-3", "source": {"subAgent": {"thread_spawn": {"parent_thread_id": "th-1", "depth": 1}}}}}}),
+    );
+    let cx = step(
+        &mut a,
+        json!({"method": "turn/started", "params": {"threadId": "ch-3", "turn": {"id": "t3"}}}),
+    );
+    assert_eq!(last_bg(&cx).len(), 2);
+    // The parent's own turn end still settles it.
+    let cx = step(
+        &mut a,
+        json!({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "completed"}}}),
+    );
+    assert_eq!(signals(&cx), ["Stop"]);
+    assert!(!a.busy());
+}
+
 /// Codex `account/rateLimits/updated` (04 §6.2): the most constrained window becomes the run's
 /// rate limit; a window at 100 % reports rate limited (once).
 #[test]

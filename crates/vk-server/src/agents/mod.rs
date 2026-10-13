@@ -6,6 +6,7 @@ pub mod acp;
 pub mod arbiter;
 pub mod bg;
 pub mod channel;
+mod codex_threads;
 mod gemini;
 #[cfg(test)]
 mod golden;
@@ -3721,6 +3722,20 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 } else {
                     json!({})
                 }));
+            }
+            // Another thread of the pane's Codex process (a sub-agent, an internal helper):
+            // never rebinds, settles or clears the pane's run.
+            if method == "adapter.signal" && h.family() == harness::Family::Codex {
+                match codex_threads::classify(server, &pane, &event, &payload) {
+                    codex_threads::Thread::Own => {}
+                    codex_threads::Thread::Internal => return Some(Ok(json!({}))),
+                    codex_threads::Thread::Child => {
+                        if let Some(p) = codex_threads::child_signal(&event, &payload) {
+                            route::signal(server, &pane, h, &event, &p);
+                        }
+                        return Some(Ok(json!({})));
+                    }
+                }
             }
             if method == "adapter.signal" {
                 // Spec 19 §4.3: a person's leading mention is sent instead of starting a turn,
