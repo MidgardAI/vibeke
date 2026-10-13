@@ -243,7 +243,7 @@ You can also choose **Design review** in the **People** form (`prefix+alt+v`). B
 
 The designer picks an element with a click or an area with a drag, writes a note for each pick and sends them. When the agent changes the app, hot reload shows the change at the same link. If the browser cannot run the preview itself, the screen shows your host's browser instead. That view cannot leave the preview.
 
-A review link reaches only that preview. It does not give access to terminals, files, git, agents or other previews. Your host runs the page in its own browser and streams it to the designer, end-to-end encrypted. The designer cannot use that browser to open other addresses.
+A review link reaches only that preview. It does not give access to terminals, files, git, agents or other previews. The page runs in the designer's own browser, and every request goes end-to-end encrypted through your host to your dev server. Each review link gets its own web address, so its cookies stay separate. An app that calls another port on your computer, such as an API on a different port, cannot reach it from a review. A preview served over `https://`, or a browser that blocks service workers, gets a picture stream from your host's browser instead.
 
 See [work with a teammate](../sharing.md#share-a-running-app-for-design-review) for who can open a link and how held notes work.
 

@@ -126,7 +126,7 @@ A **design review link** lets a designer try one preview from a web browser. The
 2. Create the link: `vibeke share review v4`, or use the **People** form and choose **Design review**.
 3. Send the link. The designer opens it and signs in with GitHub when the link asks for it.
 
-Your host runs the page in its own browser and streams it to the designer, end-to-end encrypted. The designer can scroll, click and type. They pick elements or areas, write a note for each pick and send the notes. When the agent changes the app, the designer sees the new version at the same link.
+The page runs in the designer's own browser. Every request goes end-to-end encrypted through your host to your dev server, and hot reload works. The designer can scroll, click, type and use their browser's developer tools. They pick elements or areas, write a note for each pick and send the notes. When the agent changes the app, the designer sees the new version at the same link.
 
 A review link reaches only that one preview. It cannot reach terminals, files, git, agents or other previews.
 
