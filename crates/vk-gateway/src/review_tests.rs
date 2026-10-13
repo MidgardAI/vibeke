@@ -329,6 +329,15 @@ fn sending_holds_or_delivers_but_never_chooses_the_agent() {
     .unwrap();
     assert!(r.get("hold").is_none());
     assert!(r.get("copy_only").is_none());
+    // "Send now" is the owner's: a reviewer's `force` never reaches the server.
+    let r = authorize(
+        &gw,
+        &direct,
+        "browser.annotations_send",
+        json!({"draft": "d1", "force": true}),
+    )
+    .unwrap();
+    assert!(r.get("force").is_none(), "{r}");
     let held = reviewer("held", false);
     let r = authorize(
         &gw,

@@ -215,7 +215,7 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
           onPageNote={(text) => void notes.setPageNote(text)}
           onRemove={(n) => void notes.remove(n)}
           onSend={() => void notes.send().then(() => setNotesOpen(false))}
-          onSendNow={() => void notes.sendNow()}
+          onSendNow={canControl ? () => void notes.sendNow() : undefined}
           onCopy={() => void notes.copy()}
           onClear={() => void notes.clear()}
         />

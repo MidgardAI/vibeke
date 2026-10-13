@@ -387,7 +387,8 @@ fn socks_route_through_bridge() {
     }
     assert!(
         app.seen.lock().unwrap().is_empty(),
-        "nothing reached the app"
+        "nothing reached the app: {:?}",
+        app.seen.lock().unwrap()
     );
     let st = s.json(&["preview", "status"]);
     assert!(st["rejected"].as_u64().unwrap() >= 1, "{st}");
@@ -729,7 +730,8 @@ fn proxy_mode_and_mirror_through_bridge() {
     }
     assert!(
         app.seen.lock().unwrap().is_empty(),
-        "nothing reached the app"
+        "nothing reached the app: {:?}",
+        app.seen.lock().unwrap()
     );
 
     // The one-time link → 303 + host-only HttpOnly SameSite=Strict cookie.

@@ -37,7 +37,7 @@ pub const QUIET_INPUT: Duration = Duration::from_secs(3);
 /// quiet now.
 pub(crate) fn typing_wait(server: &Server, pane: &str) -> Option<Duration> {
     let rt = server.pane_rt(pane)?;
-    let last = (*rt.last_input.lock().unwrap())?;
+    let last = (*rt.last_typed.lock().unwrap())?;
     QUIET_INPUT
         .checked_sub(last.elapsed())
         .filter(|d| !d.is_zero())

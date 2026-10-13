@@ -1860,7 +1860,7 @@ async fn deliver(server: &Arc<Server>, m: &TaskMessage) -> (MessageState, Option
     if let Err(why) = send_safety(server, m) {
         return (MessageState::Failed, Some(format!("not sent: {why}")));
     }
-    deliver_text(server, &m.run, &m.native_conversation_id, &m.text).await
+    deliver_text(server, &m.run, &m.native_conversation_id, &m.text, false).await
 }
 
 /// Whether a turn numbered `n0` or later started on `run` in `conversation` with `text` in its
@@ -1885,13 +1885,16 @@ pub(crate) fn turn_matches(
 }
 
 /// The prompt-input delivery itself (caller has just checked safety): paste under the pane's
-/// input lock, recheck, submit, then wait for a matching turn. Shared by task messages and
-/// drafts.
+/// input lock, recheck, submit, then wait for a matching turn. Shared by task messages, drafts
+/// and page notes. `force` is the owner's "send now" ([`prompt_input_check`]): the recheck then
+/// only requires that nothing opened and that the box shows our text (after a draft of the
+/// user's, which the owner chose to send with it).
 pub(crate) async fn deliver_text(
     server: &Arc<Server>,
     run_id: &str,
     conversation: &str,
     text: &str,
+    force: bool,
 ) -> (MessageState, Option<String>) {
     let m = DeliveryTarget {
         run: run_id,
@@ -1925,36 +1928,47 @@ pub(crate) async fn deliver_text(
         );
     }
     tokio::time::sleep(Duration::from_millis(80)).await;
-    // Recheck before submitting: still idle, nothing opened, nobody focused, and the input box
-    // holds exactly our text (never a user draft merged with it).
-    let ok =
-        {
-            let focus_free =
-                !server.clients.lock().unwrap().values().any(|cl| {
-                    cl.focus.pane.as_deref() == Some(run.pane.as_str()) && cl.kind == "tui"
-                });
-            let quiet = server.with_core(|c| {
-                c.run(m.run)
-                    .is_some_and(|r| r.execution.value == Execution::Idle)
-                    && !c
-                        .model
-                        .interactions
-                        .iter()
-                        .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
-            });
-            let shown = server
-                .pane_rt(&run.pane)
-                .and_then(|rt| input_text(&rt.screen.lock().unwrap().engine.screen_text()));
-            let norm = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
-            focus_free
-                && quiet
-                && shown.is_some_and(|t| {
-                    norm(&t) == norm(m.text) || norm(m.text).starts_with(&norm(&t)) && !t.is_empty()
-                })
-        };
-    if !ok {
+    // Recheck before submitting: still idle, nothing opened, nobody typed into the pane just
+    // now (people's input meanwhile waits in the automation hold), and the input box holds
+    // exactly our text (never a user draft merged with it).
+    let changed: Option<&str> = {
+        let typed = !force && crate::mentions::delivery::typing_wait(server, &run.pane).is_some();
+        let quiet = server.with_core(|c| {
+            c.run(m.run)
+                .is_some_and(|r| force || r.execution.value == Execution::Idle)
+                && !c
+                    .model
+                    .interactions
+                    .iter()
+                    .any(|i| i.pane == run.pane && i.status == InteractionStatus::Open)
+        });
+        let shown = server
+            .pane_rt(&run.pane)
+            .and_then(|rt| input_text(&rt.screen.lock().unwrap().engine.screen_text()));
+        let norm = |x: &str| x.split_whitespace().collect::<Vec<_>>().join(" ");
+        let ours = shown.is_some_and(|t| {
+            norm(&t) == norm(m.text)
+                || norm(m.text).starts_with(&norm(&t)) && !t.is_empty()
+                || force && norm(&t).ends_with(&norm(m.text))
+        });
+        if typed {
+            Some("someone typed in the pane")
+        } else if !quiet {
+            Some("the agent started working or a question opened")
+        } else if !ours {
+            Some("the input box does not show exactly the pasted text")
+        } else {
+            None
+        }
+    };
+    if let Some(why) = changed {
         server.agents.unlock_input(&run.pane);
-        return (MessageState::DeliveryUnknown, Some("conditions changed after pasting; the text may be in the input box but was not submitted — check the pane".into()));
+        return (
+            MessageState::DeliveryUnknown,
+            Some(format!(
+                "{why} after pasting; the text may be in the input box but was not submitted — check the pane"
+            )),
+        );
     }
     crate::render::write_and_ack(
         server,

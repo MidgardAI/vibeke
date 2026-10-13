@@ -1558,7 +1558,8 @@ async fn deliver_inner(server: &Arc<Server>, id: &str, force: bool) -> Outcome {
             ensure_retry(&server2);
             return;
         }
-        let (state, detail) = crate::tracking::deliver_text(&server2, &run_id, &conv, &text).await;
+        let (state, detail) =
+            crate::tracking::deliver_text(&server2, &run_id, &conv, &text, force).await;
         match state {
             MessageState::Delivered => {
                 transition(

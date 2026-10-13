@@ -220,7 +220,12 @@ fn track_after_the_fact() {
         let st = m["message"]["state"].as_str()?.to_string();
         (st != "sending").then_some(st)
     });
-    assert_eq!(st, "delivered");
+    assert_eq!(
+        st,
+        "delivered",
+        "{}",
+        s.api("task.message.get", json!({"message": mid})).unwrap()
+    );
     let ig = s.api("task.intent.get", json!({"task": task})).unwrap();
     assert_eq!(
         ig["uncommunicated"].as_array().unwrap().len(),

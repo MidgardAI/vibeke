@@ -120,6 +120,10 @@ pub struct PaneRt {
     /// Size most recently requested from the holder.
     pub want_size: Mutex<(u16, u16)>,
     pub last_input: Mutex<Option<Instant>>,
+    /// The last keystroke, paste or click a person sent from a client (not Vibeke's own
+    /// writes, not the API): the "someone is typing" gate of deliveries
+    /// (`mentions::delivery::typing_wait`).
+    pub last_typed: Mutex<Option<Instant>>,
     /// The holder runs in pipe mode (headless harness; learned from `HelloOk`).
     pipe: std::sync::atomic::AtomicBool,
     /// A cwd check is scheduled ([`CWD_CHECK_DELAY`] after output).
@@ -146,6 +150,7 @@ impl PaneRt {
             status: Mutex::new(None),
             want_size: Mutex::new((cols, rows)),
             last_input: Mutex::new(None),
+            last_typed: Mutex::new(None),
             pipe: std::sync::atomic::AtomicBool::new(false),
             cwd_check: std::sync::atomic::AtomicBool::new(false),
         });

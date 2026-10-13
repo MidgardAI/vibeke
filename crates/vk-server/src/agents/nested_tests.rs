@@ -1,4 +1,4 @@
-use super::nested::{Proc, ancestors, harness_of, under};
+use super::nested::{Proc, ancestors, harness_of, nested_same, under};
 use std::collections::HashMap;
 use vk_hold::procinfo::ProcInfo;
 
@@ -82,4 +82,29 @@ fn pane_command_itself_can_be_the_harness() {
     .collect();
     let c = ancestors(310, |x| t.get(&x).cloned());
     assert_eq!(harness_of(&c, 300).map(|x| x.pid), Some(300));
+}
+
+/// A Claude started from the pane Claude's tool shell is nested; the pane Claude's own hooks,
+/// and hooks a harness runs from a helper process of its own, are not.
+#[test]
+fn same_harness_started_from_a_tool_shell_is_nested() {
+    let mut t = table();
+    for x in [
+        p(800, 400, "/Users/u/.local/share/claude/versions/2.1.296"),
+        p(810, 800, "/bin/sh"),
+        p(900, 300, "/Users/u/.local/share/claude/helper"),
+        p(910, 900, "/bin/sh"),
+    ] {
+        t.insert(x.pid, x);
+    }
+    let chain = |pid: u32| ancestors(pid, |x| t.get(&x).cloned());
+    let outer = harness_of(&chain(310), 200).unwrap();
+    // The pane's Claude itself.
+    assert!(!nested_same(&chain(310), outer));
+    // claude (800) under the tool zsh (400) under the pane's claude (300).
+    assert!(nested_same(&chain(810), outer));
+    // A helper of the pane's claude, without a shell in between: still the pane's agent.
+    assert!(!nested_same(&chain(910), outer));
+    // Not under the recorded agent at all.
+    assert!(!nested_same(&chain(700), outer));
 }

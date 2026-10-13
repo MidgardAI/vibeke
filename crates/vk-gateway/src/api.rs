@@ -1723,12 +1723,16 @@ impl Call<'_> {
             }
             "browser.annotations_send" => {
                 req(&p, "draft")?;
-                self.server(method, pick(&p, &["draft", "agent", "copy_only"]))
+                // `force` ("send now") is the owner's; a review device goes through
+                // `review.rs`, which forwards only `draft` (and the server refuses `force` with
+                // an `author`).
+                self.server(method, pick(&p, &["draft", "agent", "copy_only", "force"]))
                     .await
             }
             "browser.annotations_release" => {
                 req(&p, "draft")?;
-                self.server(method, pick(&p, &["draft", "agent"])).await
+                self.server(method, pick(&p, &["draft", "agent", "force"]))
+                    .await
             }
             "browser.annotations_discard" => {
                 req(&p, "draft")?;

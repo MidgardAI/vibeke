@@ -901,7 +901,7 @@ async fn send(server: &Arc<Server>, ctx: &Ctx, scope: Option<&str>, p: &Value) -
         crate::tracking::until_quiet(&srv, &run_id).await;
         let (state, detail) = match crate::tracking::prompt_input_safety(&srv, &run_id, &conv) {
             Err(why) => (MessageState::Failed, Some(format!("not sent: {why}"))),
-            Ok(()) => crate::tracking::deliver_text(&srv, &run_id, &conv, &text).await,
+            Ok(()) => crate::tracking::deliver_text(&srv, &run_id, &conv, &text, false).await,
         };
         finish(&srv, &did, &send_id, state, detail, keep);
         release(&srv, &did);
