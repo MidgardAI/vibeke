@@ -454,7 +454,6 @@ export const en = {
     sentState: { held: (owner: string) => `Waiting for ${owner || 'the owner'}`, queued: 'Waiting for the agent', sending: 'Sending', delivered: 'Delivered', unconfirmed: 'Not confirmed', open: 'Not sent' } as Record<string, string | ((owner: string) => string)>,
     sentCount: (n: number) => `${n} ${n === 1 ? 'note' : 'notes'}`,
     send: 'Send',
-    added: 'Note added',
     forget: 'Leave this review',
   },
 

@@ -108,6 +108,7 @@ function PreviewSurface({
   const openError = slot && slot.error != null ? errorMessage(slot.error) : null;
   const [address, setAddress] = useState(preview.url);
   const [editing, setEditing] = useState(false);
+  const [focusNote, setFocusNote] = useState<number | null>(null);
   const [shot, setShot] = useState<string | null>(null);
   const [covered, setCovered] = useState(false);
   const [pageShown, setPageShown] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible');
@@ -174,6 +175,8 @@ function PreviewSurface({
         .add({ ...p.pick, url: st?.url || preview.url, ...(st?.title ? { title: st.title } : {}), ...(p.viewport ? { viewport: p.viewport } : {}), ...(p.image_b64 ? { image_b64: p.image_b64 } : {}) })
         .then((note) => {
           if (note && p.image_b64) setThumbs((m) => new Map(m).set(note.n, `data:image/png;base64,${p.image_b64}`));
+          // The cursor goes to the new note's text box in the side column.
+          if (note) setFocusNote(note.n);
         });
     });
     return () => {
@@ -316,6 +319,7 @@ function PreviewSurface({
             <p className="text-xs text-muted">{s.annotateHint}</p>
             <AnnotationNotes
               className="flex-1"
+              focus={focusNote}
               draft={notes.draft}
               thumbs={thumbs}
               busy={notes.busy}

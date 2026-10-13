@@ -3,7 +3,7 @@
 // (a bottom sheet). Thumbnails exist only for picks this device captured; notes picked on the host
 // show text only, because the screenshot is a file on the host.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Clipboard, Send, Trash2, X } from 'lucide-react';
 import type { AnnotationDraft, AnnotationNote } from '@vibeke/core';
 import { t } from '../i18n';
@@ -22,23 +22,29 @@ export interface AnnotationNotesProps {
   onCopy(): void;
   onClear(): void;
   className?: string;
+  /** The note just picked: its text box gets the cursor, so the reviewer can type at once. */
+  focus?: number | null;
+  /** False inside a sheet that already shows the title. */
+  heading?: boolean;
 }
 
-export function AnnotationNotes({ draft, thumbs, busy, onEdit, onPageNote, onRemove, onSend, onCopy, onClear, className }: AnnotationNotesProps) {
+export function AnnotationNotes({ draft, thumbs, busy, onEdit, onPageNote, onRemove, onSend, onCopy, onClear, className, focus, heading = true }: AnnotationNotesProps) {
   const s = t.annotate;
   const notes = draft?.notes.filter((n) => n.kind !== 'page') ?? [];
   const editable = isEditable(draft);
   const hasContent = notes.length > 0 || !!draft?.page_note;
   return (
     <section aria-label={s.notesLabel} className={cx('flex min-h-0 flex-col gap-3', className)}>
-      <div className="flex items-center gap-2">
-        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{s.title}</h3>
-        {draft && <Pill>{s.state[draft.state]}</Pill>}
-      </div>
+      {(heading || draft) && (
+        <div className="flex items-center gap-2">
+          {heading ? <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{s.title}</h3> : <span className="flex-1" />}
+          {draft && <Pill>{s.state[draft.state]}</Pill>}
+        </div>
+      )}
       <div className="vk-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {notes.length === 0 && <p className="text-sm text-muted">{s.empty}</p>}
         {notes.map((n) => (
-          <NoteCard key={n.n} note={n} thumb={thumbs?.get(n.n)} editable={editable} onEdit={onEdit} onRemove={onRemove} />
+          <NoteCard key={n.n} note={n} thumb={thumbs?.get(n.n)} editable={editable} focused={focus === n.n} onEdit={onEdit} onRemove={onRemove} />
         ))}
         {draft && <PageNote key={draft.id} value={draft.page_note ?? ''} disabled={!editable} onCommit={onPageNote} />}
       </div>
@@ -60,9 +66,30 @@ export function AnnotationNotes({ draft, thumbs, busy, onEdit, onPageNote, onRem
 const area =
   'vk-focus w-full resize-none rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg placeholder:text-faint pointer-coarse:text-base disabled:opacity-60';
 
-function NoteCard({ note, thumb, editable, onEdit, onRemove }: { note: AnnotationNote; thumb?: string; editable: boolean; onEdit(n: number, note: string): void; onRemove(n: number): void }) {
+function NoteCard({
+  note,
+  thumb,
+  editable,
+  focused: wanted,
+  onEdit,
+  onRemove,
+}: {
+  note: AnnotationNote;
+  thumb?: string;
+  editable: boolean;
+  focused?: boolean;
+  onEdit(n: number, note: string): void;
+  onRemove(n: number): void;
+}) {
   const s = t.annotate;
   const [text, setText] = useState(note.note);
+  const box = useRef<HTMLTextAreaElement>(null);
+  // A new pick: put the cursor in its text box and bring it into view.
+  useEffect(() => {
+    if (!wanted || !editable || !box.current) return;
+    box.current.focus({ preventScroll: true });
+    box.current.scrollIntoView?.({ block: 'nearest' });
+  }, [wanted, editable]);
   // The host's copy changed (an edit from another surface): follow it unless this box is being typed in.
   const [focused, setFocused] = useState(false);
   useEffect(() => {
@@ -96,6 +123,7 @@ function NoteCard({ note, thumb, editable, onEdit, onRemove }: { note: Annotatio
       </div>
       {thumb && <img src={thumb} alt={s.screenshot} className="mb-1.5 max-h-28 w-full rounded border border-border object-contain object-left bg-white" />}
       <textarea
+        ref={box}
         aria-label={s.noteLabel(note.n)}
         placeholder={s.notePlaceholder}
         rows={2}
@@ -103,6 +131,10 @@ function NoteCard({ note, thumb, editable, onEdit, onRemove }: { note: Annotatio
         disabled={!editable}
         onFocus={() => setFocused(true)}
         onChange={(e) => setText(e.target.value)}
+        // ⌘/ctrl+enter saves the note (the box loses focus, which saves it).
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) e.currentTarget.blur();
+        }}
         onBlur={commit}
         className={area}
       />

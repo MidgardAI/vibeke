@@ -32,6 +32,7 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
   const [busy, setBusy] = useState(false);
   const [annotating, setAnnotating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [focusNote, setFocusNote] = useState<number | null>(null);
   const notes = useAnnotations(hostId, 'session', id, annotating);
   const mineRef = useRef(false);
   const setControl = (v: boolean) => {
@@ -162,7 +163,10 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
           annotating
             ? (p) =>
                 void notes.pick({ x: p.x, y: p.y }).then((n) => {
-                  if (n) setNotesOpen(true);
+                  if (n) {
+        setFocusNote(n.n);
+        setNotesOpen(true);
+      }
                 })
             : mine
               ? (p) => void call(() => conn()!.request('browser.click', { session: id, x: p.x, y: p.y }))
@@ -201,8 +205,10 @@ export function Screencast({ hostId, session: initial, canControl, onClose }: { 
 
       {mine && <Controls session={id} hostId={hostId} busy={busy} call={call} />}
 
-      <Sheet open={notesOpen} onClose={() => setNotesOpen(false)} title={t.annotate.title}>
+      <Sheet open={notesOpen} onClose={() => (setNotesOpen(false), setFocusNote(null))} title={t.annotate.title}>
         <AnnotationNotes
+          heading={false}
+          focus={focusNote}
           draft={notes.draft}
           busy={notes.busy}
           onEdit={(n, text) => void notes.edit(n, text)}

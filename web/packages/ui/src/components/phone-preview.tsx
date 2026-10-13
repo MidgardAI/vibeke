@@ -62,6 +62,7 @@ export function PhonePreview({
   const [sid, setSid] = useState<string | null>(null);
   const [annotating, setAnnotating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [focusNote, setFocusNote] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ a: Pt; b: Pt } | null>(null);
   const gesture = useRef<{ id: number; start: Pt; region: boolean; cancelled: boolean; timer: ReturnType<typeof setTimeout> | null } | null>(null);
   const notes = useAnnotations(hostId, 'session', sid, annotating);
@@ -351,7 +352,10 @@ export function PhonePreview({
     if (cancel || g.cancelled || !id) return;
     const { x, y, w, h } = pickParams(id, g.start, end, g.region);
     void notes.pick({ x, y, ...(w !== undefined ? { w, h } : {}) }).then((n) => {
-      if (n) setNotesOpen(true);
+      if (n) {
+        setFocusNote(n.n);
+        setNotesOpen(true);
+      }
     });
   };
   // A wheel (mouse or trackpad in a desktop browser) scrolls the page.
@@ -533,8 +537,10 @@ export function PhonePreview({
           </div>
         )}
       </div>
-      <Sheet open={notesOpen} onClose={() => setNotesOpen(false)} title={t.annotate.title}>
+      <Sheet open={notesOpen} onClose={() => (setNotesOpen(false), setFocusNote(null))} title={t.annotate.title}>
         <AnnotationNotes
+          heading={false}
+          focus={focusNote}
           draft={notes.draft}
           busy={notes.busy}
           onEdit={(n, text) => void notes.edit(n, text)}

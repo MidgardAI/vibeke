@@ -209,6 +209,8 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   }, [info, sid, contentOrigin]);
   const [annotating, setAnnotating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  // The note just picked: the notes open with the cursor in its text box.
+  const [focusNote, setFocusNote] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const controller = useRef<ReviewController | null>(null);
   const bridge = useRef<HTMLIFrameElement>(null);
@@ -219,7 +221,7 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   const addPick = useCallback(
     async (p: PickPayload) => {
       try {
-        await conn.request('browser.annotation_add', {
+        const r = await conn.request('browser.annotation_add', {
           target: { preview: previewId },
           kind: p.kind,
           selector: p.selector,
@@ -233,8 +235,10 @@ function Reviewer({ record }: { record: ReviewRecord }) {
           viewport: p.viewport,
           capture: true,
         });
-        app.toast(t.review.added, 'ok', 1500);
         await conn.refresh();
+        // Open the notes on the new one, so the reviewer writes what should change right away.
+        setFocusNote(typeof r?.note?.n === 'number' ? r.note.n : null);
+        setNotesOpen(true);
       } catch (e) {
         app.toast(errorMessage(e), 'error');
       }
@@ -400,9 +404,18 @@ function Reviewer({ record }: { record: ReviewRecord }) {
             </div>
           )}
         </div>
-        <Sheet open={notesOpen} onClose={() => setNotesOpen(false)} title={t.annotate.title}>
+        <Sheet
+          open={notesOpen}
+          onClose={() => {
+            setNotesOpen(false);
+            setFocusNote(null);
+          }}
+          title={t.annotate.title}
+        >
           <div className="space-y-4">
             <AnnotationNotes
+              heading={false}
+              focus={focusNote}
               draft={draft}
               busy={busy}
               onEdit={(n, note) => void run(() => conn.request('browser.annotation_update', { draft: draft!.id, n, note }))}
