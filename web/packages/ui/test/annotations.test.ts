@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { AnnotationDraft, AnnotationNote } from '@vibeke/core';
-import { dragged, isEditable, keepThumbs, noteTitle, pickParams, regionStyle, sendOutcome } from '../src/lib/annotations';
+import { dragged, isEditable, keepThumbs, noteTitle, pickParams, regionStyle, sendOutcome, waitReason } from '../src/lib/annotations';
+import { waitingDrafts } from '../src/components/held-drafts';
 
 const note = (n: number, extra: Partial<AnnotationNote> = {}): AnnotationNote => ({ n, kind: 'element', note: '', ...extra });
 const draft = (notes: AnnotationNote[], state: AnnotationDraft['state'] = 'open'): AnnotationDraft => ({ id: 'd1', target: { preview: 'p1' }, url: 'http://localhost/', notes, state, updated_at_ms: 1 });
@@ -63,5 +64,26 @@ describe('note list', () => {
     expect(sendOutcome('sending')).toBe('sending');
     expect(sendOutcome('unconfirmed')).toBe('unconfirmed');
     expect(sendOutcome('open')).toBe('queued');
+  });
+});
+
+describe('waiting notes', () => {
+  test('the reason loses its prefix and starts with a capital', () => {
+    expect(waitReason('waiting: someone is typing in that pane')).toBe('Someone is typing in that pane');
+    expect(waitReason("Waiting:  the agent's input box has text in it ")).toBe("The agent's input box has text in it");
+  });
+
+  test('an empty reason is null', () => {
+    expect(waitReason(undefined)).toBeNull();
+    expect(waitReason('')).toBeNull();
+    expect(waitReason('waiting: ')).toBeNull();
+  });
+
+  test('waitingDrafts keeps queued reviewer drafts, newest first', () => {
+    const author = { label: 'Sam' } as AnnotationDraft['author'];
+    const d = (id: string, state: AnnotationDraft['state'], at: number, withAuthor = true): AnnotationDraft => ({ ...draft([], state), id, updated_at_ms: at, author: withAuthor ? author : null });
+    const list = [d('a', 'queued', 1), d('b', 'held', 5), d('c', 'queued', 3), d('own', 'queued', 9, false), d('e', 'delivered', 7)];
+    expect(waitingDrafts(list).map((x) => x.id)).toEqual(['c', 'a']);
+    expect(waitingDrafts(undefined)).toEqual([]);
   });
 });

@@ -37,6 +37,8 @@ const PASTE_MAX: usize = 64 << 10;
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
+const QUEUED_FALLBACK: &str = "queued: the agent gets it when it is ready";
+
 /// One note of a draft (only the fields the panel shows).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Note {
@@ -56,6 +58,8 @@ pub struct Draft {
     pub id: String,
     pub url: String,
     pub state: String,
+    /// Why a queued draft waits, in words (empty when unknown).
+    pub detail: String,
     pub notes: Vec<Note>,
     pub page_note: String,
 }
@@ -89,6 +93,7 @@ impl Draft {
             id,
             url: s(v, "url"),
             state: s(v, "state"),
+            detail: s(v, "detail"),
             notes,
             page_note: s(v, "page_note"),
         })
@@ -235,10 +240,15 @@ enum Mode {
 pub enum Action {
     None,
     Quit,
-    SaveNote { n: u32, note: String },
+    SaveNote {
+        n: u32,
+        note: String,
+    },
     SavePage(String),
     Remove(u32),
     Send,
+    /// Deliver a queued or unconfirmed draft at once (`force`).
+    SendNow,
     Copy,
     Clear,
 }
@@ -272,6 +282,19 @@ impl Panel {
             .and_then(|n| self.notes().iter().position(|x| x.n == n))
             .unwrap_or(self.sel)
             .min(len.saturating_sub(1));
+    }
+
+    /// The wait reason of a queued draft: its detail without a leading "waiting: ", or the
+    /// generic line when the server gave none.
+    fn waiting_text(&self) -> Option<String> {
+        let d = self.draft.as_ref().filter(|d| d.state == "queued")?;
+        let detail = d.detail.trim();
+        let detail = detail.strip_prefix("waiting:").unwrap_or(detail).trim();
+        Some(if detail.is_empty() {
+            QUEUED_FALLBACK.to_string()
+        } else {
+            format!("waiting: {detail}")
+        })
     }
 
     fn notes(&self) -> &[Note] {
@@ -385,6 +408,17 @@ impl Panel {
                     Action::Copy
                 };
             }
+            Key::Char('S') => {
+                let waiting = self
+                    .draft
+                    .as_ref()
+                    .is_some_and(|d| matches!(d.state.as_str(), "queued" | "unconfirmed"));
+                if !waiting {
+                    self.status = "send now works only while the notes wait".into();
+                    return Action::None;
+                }
+                return Action::SendNow;
+            }
             Key::Char('x') => {
                 if self.draft.is_some() {
                     self.mode = Mode::ConfirmClear;
@@ -486,14 +520,19 @@ impl Panel {
                 target: Target::Page,
                 buf,
             } => format!(" page note: {}█", clean(buf)),
-            _ => format!(" {}", clean(&self.status)),
+            _ => match self.waiting_text() {
+                Some(w) if self.status.is_empty() || self.status.starts_with("queued") => {
+                    format!(" {}", clean(&w))
+                }
+                _ => format!(" {}", clean(&self.status)),
+            },
         };
         out.push(fit(&status, cols));
         let help = match &self.mode {
             Mode::Edit { .. } => " enter save · esc cancel · ctrl-u clear",
             Mode::ConfirmClear => " y clear everything · any other key cancels",
             Mode::List => {
-                " ↑↓ select · enter edit · p page note · d delete · s send · c copy · x clear · q quit"
+                " ↑↓ select · enter edit · p page note · d delete · s send · S send now · c copy · x clear · q quit"
             }
         };
         out.push(format!("\x1b[7m{:<w$}\x1b[0m", fit(help, cols), w = cols));
@@ -664,6 +703,10 @@ where
 pub fn describe_send(v: &Value) -> String {
     let agent = v["agent_pane"].as_str().map(clean);
     match (v["state"].as_str(), v["via"].as_str()) {
+        (Some("delivered"), Some("hook")) => match agent {
+            Some(a) => format!("sent to {a}: delivered with the agent's next step"),
+            None => "sent: delivered with the agent's next step".into(),
+        },
         (Some("delivered"), Some(via)) => match agent {
             Some(a) => format!("sent to {a} ({})", clean(via)),
             None => format!("sent ({})", clean(via)),
@@ -676,7 +719,7 @@ pub fn describe_send(v: &Value) -> String {
         (Some("unconfirmed"), _) => {
             "not confirmed: check the agent and send again if it did not arrive".into()
         }
-        (Some("queued"), _) => "queued: the agent gets it when it is ready".into(),
+        (Some("queued"), _) => QUEUED_FALLBACK.into(),
         _ => "sent".into(),
     }
 }
@@ -801,6 +844,10 @@ where
         ),
         Action::Remove(n) => ("browser.annotation_remove", json!({"draft": id, "n": n})),
         Action::Send => ("browser.annotations_send", json!({"draft": id})),
+        Action::SendNow => (
+            "browser.annotations_send",
+            json!({"draft": id, "force": true}),
+        ),
         Action::Copy => (
             "browser.annotations_send",
             json!({"draft": id, "copy_only": true}),
@@ -810,7 +857,7 @@ where
     match client.call(call.0, call.1).await {
         Ok(v) => {
             match action {
-                Action::Send => panel.status = describe_send(&v),
+                Action::Send | Action::SendNow => panel.status = describe_send(&v),
                 Action::Copy => {
                     let text = v["text"].as_str().unwrap_or("");
                     print!("{}", osc52(text));
@@ -1150,6 +1197,84 @@ mod tests {
             };
             assert!(visible.chars().count() <= 40, "{visible:?}");
         }
+    }
+
+    fn queued_panel(detail: &str) -> Panel {
+        let mut p = panel();
+        if let Some(d) = p.draft.as_mut() {
+            d.state = "queued".into();
+            d.detail = detail.into();
+        }
+        p
+    }
+
+    #[test]
+    fn parses_the_wait_detail() {
+        let d = Draft::parse(&json!({"id": "d", "state": "queued", "detail": "waiting: x"}));
+        assert_eq!(d.unwrap().detail, "waiting: x");
+    }
+
+    #[test]
+    fn queued_status_shows_the_wait_reason() {
+        let p = queued_panel("waiting: someone is typing in that pane");
+        let lines = p.render(20, 80);
+        let status = &lines[lines.len() - 2];
+        assert!(
+            status.contains("waiting: someone is typing in that pane"),
+            "{status:?}"
+        );
+        assert_eq!(status.matches("waiting:").count(), 1);
+        let p = queued_panel("someone is typing");
+        let lines = p.render(20, 80);
+        assert!(lines[lines.len() - 2].contains("waiting: someone is typing"));
+    }
+
+    #[test]
+    fn queued_without_detail_keeps_the_generic_line() {
+        let p = queued_panel("");
+        let lines = p.render(20, 80);
+        assert!(lines[lines.len() - 2].contains("queued: the agent gets it when it is ready"));
+    }
+
+    #[test]
+    fn an_error_status_wins_over_the_wait_reason() {
+        let mut p = queued_panel("waiting: busy");
+        p.status = "failed: nope".into();
+        let lines = p.render(20, 80);
+        assert!(lines[lines.len() - 2].contains("failed: nope"));
+    }
+
+    #[test]
+    fn shift_s_sends_now_only_while_notes_wait() {
+        let mut p = panel();
+        assert_eq!(p.key(Key::Char('S')), Action::None);
+        assert!(p.status.contains("only while"));
+        let mut p = queued_panel("waiting: busy");
+        assert_eq!(p.key(Key::Char('S')), Action::SendNow);
+        p.draft.as_mut().unwrap().state = "unconfirmed".into();
+        assert_eq!(p.key(Key::Char('S')), Action::SendNow);
+        p.draft.as_mut().unwrap().state = "delivered".into();
+        assert_eq!(p.key(Key::Char('S')), Action::None);
+        let mut p = Panel::new("bp");
+        assert_eq!(p.key(Key::Char('S')), Action::None);
+    }
+
+    #[test]
+    fn help_line_lists_send_now() {
+        let lines = panel().render(20, 120);
+        assert!(lines.last().unwrap().contains("S send now"));
+    }
+
+    #[test]
+    fn hook_delivery_wording() {
+        assert_eq!(
+            describe_send(&json!({"state": "delivered", "via": "hook", "agent_pane": "p3"})),
+            "sent to p3: delivered with the agent's next step"
+        );
+        assert_eq!(
+            describe_send(&json!({"state": "delivered", "via": "hook"})),
+            "sent: delivered with the agent's next step"
+        );
     }
 
     #[test]

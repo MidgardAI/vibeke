@@ -547,6 +547,7 @@ export function PhonePreview({
           onPageNote={(text) => void notes.setPageNote(text)}
           onRemove={(n) => void notes.remove(n)}
           onSend={() => void notes.send().then(() => setNotesOpen(false))}
+          onSendNow={() => void notes.sendNow()}
           onCopy={() => void notes.copy()}
           onClear={() => void notes.clear()}
         />

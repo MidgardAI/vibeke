@@ -58,6 +58,13 @@ export function sendOutcome(state: AnnotationState | undefined): 'delivered' | '
   return 'queued';
 }
 
+/** Why a queued draft waits, for a person: the host's `detail` without its "waiting: " prefix, first letter capital. */
+export function waitReason(detail: string | null | undefined): string | null {
+  const text = (detail ?? '').trim().replace(/^waiting:\s*/i, '').trim();
+  if (!text) return null;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** Drafts the notes panel can act on: the host keeps sent drafts around, but they are read-only history. */
 export const isEditable = (d: AnnotationDraft | null): d is AnnotationDraft =>
   !!d && d.state !== 'delivered' && d.state !== 'sending' && d.state !== 'held';
@@ -76,6 +83,8 @@ export interface Annotations {
   setPageNote(note: string): Promise<void>;
   remove(n: number): Promise<void>;
   send(): Promise<void>;
+  /** Owner only: deliver a queued draft now, skipping the idle, typing and input-box checks. */
+  sendNow(): Promise<void>;
   copy(): Promise<void>;
   clear(): Promise<void>;
 }
@@ -187,6 +196,15 @@ export function useAnnotations(hostId: string, kind: 'preview' | 'session', id: 
       await refresh();
     });
   };
+  const sendNow: Annotations['sendNow'] = async () => {
+    const d = draftRef.current;
+    if (!d) return;
+    await run(async () => {
+      const r = await conn()?.request('browser.annotations_send', { draft: d.id, force: true });
+      if (r) app.toast(t.annotate.sent[sendOutcome(r.state)], 'info');
+      await refresh();
+    });
+  };
   const copy: Annotations['copy'] = async () => {
     const d = draftRef.current;
     if (!d) return;
@@ -207,5 +225,5 @@ export function useAnnotations(hostId: string, kind: 'preview' | 'session', id: 
     });
   };
 
-  return { draft, busy, count: draft?.notes.length ?? 0, refresh, add, pick, edit, setPageNote, remove, send, copy, clear };
+  return { draft, busy, count: draft?.notes.length ?? 0, refresh, add, pick, edit, setPageNote, remove, send, sendNow, copy, clear };
 }

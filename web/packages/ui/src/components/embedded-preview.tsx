@@ -327,6 +327,7 @@ function PreviewSurface({
               onPageNote={(text) => void notes.setPageNote(text)}
               onRemove={(n) => void notes.remove(n)}
               onSend={() => void notes.send()}
+              onSendNow={() => void notes.sendNow()}
               onCopy={() => void notes.copy()}
               onClear={() => void notes.clear().then(() => setThumbs(new Map()))}
             />

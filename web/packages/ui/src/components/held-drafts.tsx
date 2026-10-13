@@ -8,7 +8,7 @@ import { hostKind, type AnnotationDraft } from '@vibeke/core';
 import { useApp, useHost } from '../app/hooks';
 import { t } from '../i18n';
 import { errorMessage } from '../lib/answer';
-import { noteTitle } from '../lib/annotations';
+import { noteTitle, waitReason } from '../lib/annotations';
 import { Button } from './ui';
 
 const POLL_MS = 5000;
@@ -16,6 +16,10 @@ const POLL_MS = 5000;
 /** Held drafts of a target's draft list (other states are the reviewers' business). */
 export const heldDrafts = (drafts: readonly AnnotationDraft[] | undefined): AnnotationDraft[] =>
   (drafts ?? []).filter((d) => d && d.state === 'held').sort((a, b) => b.updated_at_ms - a.updated_at_ms);
+
+/** Reviewer drafts that were sent and wait for the agent (the owner may send them now), newest first. */
+export const waitingDrafts = (drafts: readonly AnnotationDraft[] | undefined): AnnotationDraft[] =>
+  (drafts ?? []).filter((d) => d && d.state === 'queued' && !!d.author).sort((a, b) => b.updated_at_ms - a.updated_at_ms);
 
 export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: string }) {
   const app = useApp();
@@ -30,7 +34,7 @@ export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: s
     if (!conn) return;
     try {
       const r = await conn.request('browser.annotations', { preview: previewId });
-      setDrafts(heldDrafts(r.drafts));
+      setDrafts([...heldDrafts(r.drafts), ...waitingDrafts(r.drafts)]);
     } catch {
       // older host or offline: keep the list
     }
@@ -51,15 +55,25 @@ export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: s
 
   if (!owner || drafts.length === 0) return null;
 
-  const act = async (d: AnnotationDraft, how: 'release' | 'discard') => {
+  const act = async (d: AnnotationDraft, how: 'release' | 'discard' | 'now') => {
     const conn = app.conn(hostId);
     if (!conn) return;
     setBusy(d.id);
     try {
-      if (how === 'release') await conn.request('browser.annotations_release', { draft: d.id });
-      else await conn.request('browser.annotations_discard', { draft: d.id });
-      app.toast(how === 'release' ? t.held.released : t.held.discarded, 'ok');
-      setDrafts((l) => l.filter((x) => x.id !== d.id));
+      if (how === 'release') {
+        const r = await conn.request('browser.annotations_release', { draft: d.id });
+        // The agent was busy: the draft now waits, and the next refresh lists it with Send now.
+        app.toast(r.state === 'queued' ? t.annotate.sent.queued : t.held.released, 'ok');
+        if (r.state !== 'queued') setDrafts((l) => l.filter((x) => x.id !== d.id));
+      } else if (how === 'now') {
+        await conn.request('browser.annotations_send', { draft: d.id, force: true });
+        app.toast(t.held.released, 'ok');
+        setDrafts((l) => l.filter((x) => x.id !== d.id));
+      } else {
+        await conn.request('browser.annotations_discard', { draft: d.id });
+        app.toast(t.held.discarded, 'ok');
+        setDrafts((l) => l.filter((x) => x.id !== d.id));
+      }
       void refresh();
     } catch (e) {
       app.toast(errorMessage(e), 'error');
@@ -77,6 +91,8 @@ export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: s
       {drafts.map((d) => {
         // Everything that would be sent, in full: the owner approves exactly this text.
         const notes = d.notes;
+        const waiting = d.state === 'queued';
+        const reason = waiting ? waitReason(d.detail) : null;
         return (
           <div key={d.id} className="rounded-lg border border-border bg-bg p-2">
             <div className="text-sm font-medium">{t.held.from(d.author?.label ?? '?', notes.length + (d.page_note ? 1 : 0))}</div>
@@ -89,13 +105,27 @@ export function HeldDrafts({ hostId, previewId }: { hostId: string; previewId: s
               ))}
             </ol>
             {d.page_note && <p className="mt-1 whitespace-pre-wrap break-words text-xs">{d.page_note}</p>}
+            {waiting && (
+              <p className="mt-1 text-xs text-muted">
+                {t.held.waiting}
+                {reason ? `. ${reason}` : ''}
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
-              <Button size="sm" variant="primary" icon={<Send />} busy={busy === d.id} disabled={!!busy} onClick={() => void act(d, 'release')}>
-                {t.held.release}
-              </Button>
-              <Button size="sm" variant="ghost" icon={<Trash2 />} disabled={!!busy} onClick={() => void act(d, 'discard')}>
-                {t.held.discard}
-              </Button>
+              {waiting ? (
+                <Button size="sm" variant="outline" icon={<Send />} busy={busy === d.id} disabled={!!busy} onClick={() => void act(d, 'now')}>
+                  {t.held.sendNow}
+                </Button>
+              ) : (
+                <>
+                  <Button size="sm" variant="primary" icon={<Send />} busy={busy === d.id} disabled={!!busy} onClick={() => void act(d, 'release')}>
+                    {t.held.release}
+                  </Button>
+                  <Button size="sm" variant="ghost" icon={<Trash2 />} disabled={!!busy} onClick={() => void act(d, 'discard')}>
+                    {t.held.discard}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         );

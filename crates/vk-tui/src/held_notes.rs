@@ -10,6 +10,13 @@
 //!   preview and the notes (`browser.annotations {draft}`), then **Send** (`s` or enter:
 //!   `browser.annotations_release {draft}`, which delivers the draft to the agent) or **Discard**
 //!   (`d`, then `y`: `browser.annotations_discard {draft}`).
+//! - **Waiting**: when the release reply says the draft is `queued` (the agent is busy, someone
+//!   is typing in its pane, or its input box has text), the overlay stays open and shows
+//!   "Waiting for the agent: <detail>". The detail comes from the reply's draft, or from a
+//!   second `browser.annotations {draft}` call. `S` then delivers at once with
+//!   `browser.annotations_send {draft, force: true}`; the draft is no longer held, so
+//!   `browser.annotations_release` does not apply. The overlay closes when the draft is
+//!   delivered or settled.
 //!
 //! Notes are text from another person: control characters are removed and lines are cut to the
 //! width of the view.
@@ -63,6 +70,8 @@ pub struct View {
     /// First body row shown (`j`/`k`, arrows, page keys): the owner reads every note in full
     /// before sending.
     pub scroll: usize,
+    /// The draft was sent but waits (state `queued`): why, in words. Empty when unknown.
+    pub waiting: Option<String>,
 }
 
 #[derive(Default)]
@@ -80,6 +89,14 @@ pub enum Reply {
         draft: String,
     },
     Discard {
+        draft: String,
+    },
+    /// `browser.annotations {draft}` after a release that left the draft queued: reads why.
+    Waiting {
+        draft: String,
+    },
+    /// `browser.annotations_send {draft, force: true}`: Send now.
+    SendNow {
         draft: String,
     },
     /// `preview.list` after connecting: each preview's drafts are read next.
@@ -177,10 +194,38 @@ pub fn on_settled(app: &mut App, mi: usize, v: &Value) {
     let Some(draft) = field(v, "draft").as_str() else {
         return;
     };
-    if field(v, "state").as_str() == Some("held") {
+    let state = field(v, "state").as_str();
+    if state == Some("held") {
+        return;
+    }
+    // A draft the owner sent that still waits keeps its overlay; only the reason may change.
+    if state == Some("queued")
+        && let Some(w) = app
+            .ux
+            .held
+            .view
+            .as_mut()
+            .filter(|w| w.mi == mi && w.draft == draft && w.waiting.is_some())
+    {
+        if let Some(d) = field(v, "detail").as_str() {
+            w.waiting = Some(detail_text(d));
+        }
+        app.dirty = true;
         return;
     }
     forget(app, mi, draft);
+}
+
+/// A wait reason for showing: no leading "waiting:", control characters removed.
+pub fn detail_text(d: &str) -> String {
+    let d = sanitize(d, 200);
+    let d = d.trim();
+    d.strip_prefix("waiting:").unwrap_or(d).trim().to_string()
+}
+
+/// `params` of the call that delivers a queued draft at once.
+pub fn send_now_params(draft: &str) -> Value {
+    json!({"draft": draft, "force": true})
 }
 
 fn forget(app: &mut App, mi: usize, draft: &str) {
@@ -325,6 +370,7 @@ pub fn open(app: &mut App, mi: usize, draft: &str) {
         error: None,
         confirm: false,
         scroll: 0,
+        waiting: None,
     });
     app.mode = Mode::Popup(Popup::HeldNotes);
     // By preview, the server lists every draft of the target with its author and state; the
@@ -394,6 +440,24 @@ fn send(app: &mut App) {
     );
 }
 
+fn send_now(app: &mut App) {
+    let Some(v) = app.ux.held.view.as_mut() else {
+        return;
+    };
+    if v.busy.is_some() || v.waiting.is_none() {
+        return;
+    }
+    v.busy = Some("sending the notes now…".into());
+    v.error = None;
+    let (mi, draft) = (v.mi, v.draft.clone());
+    app.command_on(
+        mi,
+        "browser.annotations_send",
+        send_now_params(&draft),
+        pend(Reply::SendNow { draft }),
+    );
+}
+
 fn discard(app: &mut App) {
     let Some(v) = app.ux.held.view.as_mut() else {
         return;
@@ -431,10 +495,14 @@ pub fn key(app: &mut App, ev: KeyEvent) {
         }
         return;
     }
+    let waiting = v.waiting.is_some();
     match ev.key {
         Key::Named(NamedKey::Escape) | Key::Char('q') if plain => close(app),
+        Key::Char('S') if plain => send_now(app),
+        Key::Named(NamedKey::Enter) | Key::Char('s') if plain && waiting => {}
         Key::Named(NamedKey::Enter) => send(app),
         Key::Char('s') if plain => send(app),
+        Key::Char('d') if plain && waiting => {}
         Key::Char('d') if plain => v.confirm = true,
         Key::Char('j') | Key::Named(NamedKey::Down) if plain => v.scroll += 1,
         Key::Char('k') | Key::Named(NamedKey::Up) if plain => v.scroll = v.scroll.saturating_sub(1),
@@ -475,6 +543,41 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
             }
         }
         Reply::Release { draft } => match res {
+            Ok(x) if x["state"].as_str() == Some("queued") => {
+                // No longer held, so off the inbox; the overlay stays to show the wait.
+                let before = app.ux.held.items.len();
+                app.ux
+                    .held
+                    .items
+                    .retain(|h| !(h.mi == mi && h.draft == draft));
+                if app.ux.held.items.len() != before {
+                    crate::inbox::invalidate(app);
+                }
+                let detail = x["draft"]["detail"]
+                    .as_str()
+                    .or_else(|| x["detail"].as_str())
+                    .map(detail_text);
+                let known = detail.is_some();
+                if let Some(v) = app
+                    .ux
+                    .held
+                    .view
+                    .as_mut()
+                    .filter(|v| v.mi == mi && v.draft == draft)
+                {
+                    v.busy = None;
+                    v.error = None;
+                    v.waiting = Some(detail.unwrap_or_default());
+                }
+                if !known {
+                    app.command_on(
+                        mi,
+                        "browser.annotations",
+                        json!({"draft": draft}),
+                        pend(Reply::Waiting { draft }),
+                    );
+                }
+            }
             Ok(_) => {
                 let n = app
                     .ux
@@ -492,6 +595,50 @@ pub fn on_reply(app: &mut App, mi: usize, r: Reply, res: Result<Value, RpcErr>) 
                 } else {
                     "sent the notes to the agent".to_string()
                 });
+            }
+            Err(e) => settle_error(app, mi, &draft, e),
+        },
+        Reply::Waiting { draft } => {
+            let Ok(x) = res else { return };
+            let Some(d) = pick_draft(&x, &draft) else {
+                return;
+            };
+            if let Some(s) = d["state"].as_str()
+                && s != "queued"
+                && s != "unconfirmed"
+            {
+                forget(app, mi, &draft);
+                return;
+            }
+            let detail = d["detail"].as_str().map(detail_text);
+            if let Some(v) = app
+                .ux
+                .held
+                .view
+                .as_mut()
+                .filter(|v| v.mi == mi && v.draft == draft && v.waiting.is_some())
+            {
+                v.waiting = Some(detail.unwrap_or_default());
+            }
+        }
+        Reply::SendNow { draft } => match res {
+            Ok(x) if x["state"].as_str() == Some("queued") => {
+                if let Some(v) = app
+                    .ux
+                    .held
+                    .view
+                    .as_mut()
+                    .filter(|v| v.mi == mi && v.draft == draft)
+                {
+                    v.busy = None;
+                    if let Some(d) = x["draft"]["detail"].as_str() {
+                        v.waiting = Some(detail_text(d));
+                    }
+                }
+            }
+            Ok(_) => {
+                forget(app, mi, &draft);
+                app.toast("sent the notes to the agent");
             }
             Err(e) => settle_error(app, mi, &draft, e),
         },
@@ -616,7 +763,11 @@ pub fn draw(app: &App, g: &mut Grid) {
         t.bold(t.fg),
     );
     a.line(
-        "They wait for you. Send them to the agent, or discard them.",
+        if v.waiting.is_some() {
+            "You sent them. The agent has not got them yet."
+        } else {
+            "They wait for you. Send them to the agent, or discard them."
+        },
         t.dim(),
     );
     a.line("", t.text());
@@ -666,9 +817,22 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.line(&format!("⏳ {b}"), t.s(t.yellow));
     } else if let Some(e) = &v.error {
         a.line(&format!("✗ {e}"), t.s(t.red));
+    } else if let Some(w) = &v.waiting {
+        let text = if w.is_empty() {
+            "Waiting for the agent".to_string()
+        } else {
+            format!("Waiting for the agent: {w}")
+        };
+        a.line(&text, t.s(t.yellow));
     }
     a.footer(
-        if more {
+        if v.waiting.is_some() {
+            if more {
+                "S send now · j/k scroll · esc close"
+            } else {
+                "S send now · esc close"
+            }
+        } else if more {
             "s/enter send to the agent · d discard · j/k scroll · esc close"
         } else {
             "s/enter send to the agent · d discard · esc close"

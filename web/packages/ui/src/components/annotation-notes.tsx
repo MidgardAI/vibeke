@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Clipboard, Send, Trash2, X } from 'lucide-react';
 import type { AnnotationDraft, AnnotationNote } from '@vibeke/core';
 import { t } from '../i18n';
-import { isEditable, noteTitle } from '../lib/annotations';
+import { isEditable, noteTitle, waitReason } from '../lib/annotations';
 import { Button, IconButton, Pill, cx } from './ui';
 
 export interface AnnotationNotesProps {
@@ -19,6 +19,8 @@ export interface AnnotationNotesProps {
   onPageNote(note: string): void;
   onRemove(n: number): void;
   onSend(): void;
+  /** Owner surfaces only: deliver a queued draft now. Reviewers never get it. */
+  onSendNow?(): void;
   onCopy(): void;
   onClear(): void;
   className?: string;
@@ -28,17 +30,29 @@ export interface AnnotationNotesProps {
   heading?: boolean;
 }
 
-export function AnnotationNotes({ draft, thumbs, busy, onEdit, onPageNote, onRemove, onSend, onCopy, onClear, className, focus, heading = true }: AnnotationNotesProps) {
+export function AnnotationNotes({ draft, thumbs, busy, onEdit, onPageNote, onRemove, onSend, onSendNow, onCopy, onClear, className, focus, heading = true }: AnnotationNotesProps) {
   const s = t.annotate;
   const notes = draft?.notes.filter((n) => n.kind !== 'page') ?? [];
   const editable = isEditable(draft);
   const hasContent = notes.length > 0 || !!draft?.page_note;
+  const waiting = draft?.state === 'queued' || draft?.state === 'unconfirmed';
+  const reason = waiting ? waitReason(draft?.detail) : null;
   return (
     <section aria-label={s.notesLabel} className={cx('flex min-h-0 flex-col gap-3', className)}>
       {(heading || draft) && (
         <div className="flex items-center gap-2">
           {heading ? <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{s.title}</h3> : <span className="flex-1" />}
           {draft && <Pill>{s.state[draft.state]}</Pill>}
+        </div>
+      )}
+      {draft && waiting && (reason || (onSendNow && draft.state === 'queued')) && (
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 text-xs text-muted">{reason}</p>
+          {onSendNow && draft.state === 'queued' && (
+            <Button size="sm" variant="outline" icon={<Send />} disabled={busy} onClick={onSendNow}>
+              {s.sendNow}
+            </Button>
+          )}
         </div>
       )}
       <div className="vk-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
