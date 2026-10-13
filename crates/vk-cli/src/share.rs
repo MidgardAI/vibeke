@@ -683,7 +683,11 @@ where
             };
             // An older gateway ignores `teams`: never hand out a link the team cannot open.
             if params.get("teams").is_some_and(|t| !t.is_null()) && first.get("teams").is_none() {
-                let _ = gateway_call(client, "handoff.cancel", json!({"id": job})).await;
+                if let Err(e) =
+                    gateway_call(client, "handoff.link.cancel", json!({"job": job})).await
+                {
+                    eprintln!("vibeke handoff link: cancelling job {job} failed: {e}");
+                }
                 eprintln!(
                     "vibeke handoff link: this host's gateway cannot make team links yet (update vibeke); the link was cancelled"
                 );

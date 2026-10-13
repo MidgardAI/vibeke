@@ -299,7 +299,7 @@ impl Gateway {
         pair::device_ticket(&self.keys, &device.id, device.expires_at)
     }
 
-    fn disconnect(&self, id: &str) {
+    pub(crate) fn disconnect(&self, id: &str) {
         if let Some(conns) = self.live.lock().unwrap().remove(id) {
             for c in conns {
                 let _ = c.try_send(ConnCmd::Revoked);

@@ -3,7 +3,8 @@
 //! (`GET /v1/teams/{id}`): when such a device claims again or reconnects and the last
 //! confirmation is older than [`RECHECK`], and every [`SWEEP`] for every such device. A device
 //! whose account left the team is revoked. When the account server cannot answer, a stale device
-//! is refused (fail closed) but kept, so it works again once membership can be confirmed.
+//! is refused and its open sessions are closed (fail closed), but the device is kept, so it works
+//! again once membership can be confirmed.
 
 use crate::Gateway;
 use crate::api::ApiError;
@@ -86,9 +87,14 @@ pub async fn run(gw: Arc<Gateway>) {
         let now = now_s();
         let due: Vec<Device> = gw.devices().into_iter().filter(|d| stale(d, now)).collect();
         for d in due {
-            // Unreachable account server: keep the device; its next reconnect is refused until
-            // membership can be confirmed.
-            let _ = confirm(&gw, &d).await;
+            // Left the team: `confirm` revoked it. The account server could not answer: close
+            // its open sessions too (fail closed) but keep the device; reconnects are refused
+            // until membership can be confirmed again.
+            if let Err(e) = confirm(&gw, &d).await
+                && e.kind != "revoked"
+            {
+                gw.disconnect(&d.id);
+            }
         }
     }
 }
