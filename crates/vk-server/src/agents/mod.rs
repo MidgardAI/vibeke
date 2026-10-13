@@ -1680,6 +1680,21 @@ fn identify(server: &Arc<Server>, run: &str, h: Harness, p: &Value) {
     });
 }
 
+/// Remember the pane's harness process, then drop transcript tasks older than it (a replay
+/// after a restart can add them before the first hook names the process).
+fn record_harness_proc(
+    server: &Arc<Server>,
+    pane: &str,
+    h: Harness,
+    pid: Option<u32>,
+    event: &str,
+) {
+    nested::record(server, pane, h, pid, event);
+    if let Some(run) = server.with_core(|c| c.run_for_pane(pane).cloned()) {
+        bg::drop_older_than_process(server, &run);
+    }
+}
+
 fn on_signal(server: &Arc<Server>, pane: &str, h: Harness, event: &str, p: &Value) {
     let run = bound_run(server, pane, h);
     // SessionStart is observed after the run's session id is updated below, so a binding never
@@ -3711,7 +3726,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 if let Some(out) =
                     crate::mentions::hooks::before_signal(server, &pane, h, &event, &payload)
                 {
-                    nested::record(server, &pane, h, pid, &event);
+                    record_harness_proc(server, &pane, h, pid, &event);
                     return Some(Ok(json!({"hook_output": out})));
                 }
                 // A typed envelope is observed (items, turns, events) without its nonce and
@@ -3719,14 +3734,14 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
                 let observed = crate::mentions::hooks::sanitize_payload(&event, &payload);
                 let observed = observed.as_ref().unwrap_or(&payload);
                 route::signal(server, &pane, h, &event, observed);
-                nested::record(server, &pane, h, pid, &event);
+                record_harness_proc(server, &pane, h, pid, &event);
                 let reply = crate::collision::signal_reply(server, &pane, h, &event, observed);
                 Ok(crate::mentions::hooks::merge_reply(
                     reply,
                     crate::mentions::hooks::after_signal(server, &pane, h, &event, &payload),
                 ))
             } else {
-                nested::record(server, &pane, h, pid, &event);
+                record_harness_proc(server, &pane, h, pid, &event);
                 gate(server, &pane, h, &event, &payload).await
             }
         }

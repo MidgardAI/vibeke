@@ -273,7 +273,7 @@ pub fn predates_process(server: &Server, run: &AgentRun, since_ms: i64) -> bool 
 
 /// Drop transcript tasks that started before the harness process: a replay can add them before
 /// the first hook names the process.
-fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
+pub(super) fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
     if !run
         .bg_tasks
         .iter()
@@ -297,7 +297,6 @@ fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
 
 /// Hook payloads: Claude `Stop` carries the session's whole background set.
 pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
-    drop_older_than_process(server, run);
     match event {
         // Claude `Stop`, and `BgTasks` from headless adapters (Claude stream-json
         // `background_tasks_changed`, Codex `thread/backgroundTerminals/list`).
