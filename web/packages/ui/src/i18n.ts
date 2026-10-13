@@ -95,6 +95,16 @@ export const en = {
     gone: 'This item is no longer open',
   },
 
+  queued: {
+    title: (n: number) => plural(n, '1 message waits for the agent', `${n} messages wait for the agent`),
+    label: 'Queued',
+    hint: 'The agent reads queued messages when it can. Send now stops its current step and gives them to it.',
+    noText: 'The message text is not shown',
+    sendNow: 'Send now',
+    sent: 'Sent to the agent',
+    nothing: 'The agent already has the message',
+    failed: 'Could not send now',
+  },
   bg: {
     count: (n: number) => `${n} in background`,
     title: 'Running in background',

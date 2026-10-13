@@ -1066,3 +1066,93 @@ fn codex_subagent_and_internal_thread_hooks_leave_the_pane_run_alone() {
     assert_eq!(after["harness_session_id"], "cx-root");
     assert_eq!(after["execution"]["value"], "Idle");
 }
+
+/// Fake Claude Code for Send now: it records a queued message in its transcript, reads the pane
+/// in raw mode and takes the queue when `chat:sendNow` (`ctrl+x ctrl+s`) arrives.
+const FAKE_CLAUDE_QUEUE: &str = r#"
+import datetime, json, os, subprocess, sys, time, tty
+VB = os.environ["VIBEKE_BIN"]
+d = sys.argv[1]
+tp = d + "/claude.jsonl"
+def h(ev, p):
+    subprocess.run([VB, "hook", "claude", ev], input=json.dumps(p).encode(),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+def line(o):
+    with open(tp, "a") as f:
+        f.write(json.dumps(o) + "\n")
+line({"type": "user", "timestamp": now(), "uuid": "u1", "message": {"role": "user", "content": "long job"}})
+base = {"session_id": "cl-q", "transcript_path": tp}
+h("SessionStart", dict(base, source="startup"))
+h("UserPromptSubmit", dict(base, prompt="long job"))
+line({"type": "queue-operation", "operation": "enqueue", "timestamp": now(), "sessionId": "cl-q", "content": "also run the tests"})
+tty.setraw(0)
+open(d + "/ready", "w").close()
+got = b""
+while b"\x18\x13" not in got:
+    got += os.read(0, 64)
+with open(d + "/keys", "wb") as f:
+    f.write(got)
+line({"type": "queue-operation", "operation": "dequeue", "timestamp": now(), "sessionId": "cl-q"})
+open(d + "/done", "w").close()
+time.sleep(60)
+"#;
+
+#[test]
+fn send_now_delivers_a_message_claude_queued() {
+    let Some(py) = python3() else {
+        eprintln!("skipping: no python3 for the fake harness");
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_claude_queue.py");
+    std::fs::write(&agent, FAKE_CLAUDE_QUEUE).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    let line = format!("{py} {} {}", agent.display(), d.display());
+    s.json(&["pane", "run", &pane, &line]);
+    s.until("claude ready", 20, || {
+        d.join("ready").exists().then_some(())
+    });
+    let run = s.until("claude run identified", 15, || {
+        s.run_of(&pane)
+            .filter(|r| r["harness"] == "claude" && r["harness_session_id"] == "cl-q")
+    });
+    let id = run["id"].as_str().unwrap().to_string();
+    let queued = |s: &Session| -> Option<Vec<Value>> {
+        let v = s.api("agent.queued", json!({"target": id})).ok()?;
+        v["items"].as_array().cloned()
+    };
+    let items = s.until("the queued message is listed", 20, || {
+        queued(&s).filter(|it| !it.is_empty())
+    });
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["text"], "also run the tests");
+    assert_eq!(items[0]["source"], "transcript");
+    assert!(items[0]["id"].as_str().is_some_and(|i| !i.is_empty()));
+
+    // No keybindings.json in the test home: the default chord.
+    let r = s
+        .api("agent.send_now", json!({"target": id}))
+        .expect("send now");
+    assert_eq!(r["keys"], json!(["ctrl+x", "ctrl+s"]), "{r}");
+    assert_eq!(r["sent"], 1);
+    s.until("the harness took the queue", 15, || {
+        d.join("done").exists().then_some(())
+    });
+    let keys = std::fs::read(d.join("keys")).unwrap();
+    assert!(
+        keys.windows(2).any(|w| w == b"\x18\x13"),
+        "keys the harness read: {keys:?}"
+    );
+    s.until("the queue is empty", 20, || {
+        queued(&s).filter(|it| it.is_empty())
+    });
+    // Nothing waits any more: Send now refuses instead of pressing keys.
+    let e = s
+        .api("agent.send_now", json!({"target": id}))
+        .expect_err("nothing queued");
+    assert!(e.to_string().contains("nothing"), "{e}");
+}

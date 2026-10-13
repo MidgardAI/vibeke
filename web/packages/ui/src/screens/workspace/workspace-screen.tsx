@@ -42,6 +42,7 @@ import { HandoffSheet } from '../handoff';
 import { usePaneActions, type PaneActions } from '../pane/actions';
 import { ActionBelt, type BeltTab } from '../pane/belt';
 import { Composer } from '../pane/composer';
+import { QueuedInputs } from '../../components/queued-inputs';
 import { ShareSheet } from '../share';
 import { BgChip } from '../../components/bg-chip';
 import { Conversation } from './conversation';
@@ -629,6 +630,8 @@ function PaneBody({
             </Notice>
           )}
         </div>
+        {/* Messages the agent's harness holds until it can read them, with Send now. */}
+        {!zen && run && <QueuedInputs hostId={hostId} run={run} canSend={canType} />}
         {/* Terminal: the key belt stays on screen (keys, quick replies, agent commands). */}
         {!zen && term && <div data-belt>{beltEl}</div>}
         {!zen && canType && (

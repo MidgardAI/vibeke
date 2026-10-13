@@ -318,6 +318,20 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
     ("agent", "interrupt", "agent.interrupt", &["target"], ""),
     (
         "agent",
+        "queued",
+        "agent.queued",
+        &["target"],
+        "messages the harness holds until it can take them",
+    ),
+    (
+        "agent",
+        "send-now",
+        "agent.send_now",
+        &["target"],
+        "make the harness deliver its queued messages now",
+    ),
+    (
+        "agent",
         "send-keys",
         "agent.send_keys",
         &["target", "keys..."],

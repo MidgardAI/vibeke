@@ -160,6 +160,17 @@ pub fn parse_task_notification(text: &str) -> Option<TaskNotification> {
     })
 }
 
+/// A message the user typed while the harness worked, which waits in the harness's own queue
+/// (Claude `queue-operation` lines). Background-task notices are not listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedInput {
+    pub text: String,
+    pub ts_ms: Option<i64>,
+}
+
+/// Cap on remembered queue entries (a harness that never writes a dequeue cannot grow memory).
+const QUEUE_MAX: usize = 64;
+
 /// Cap on remembered tool inputs (for background labels).
 const INPUTS_MAX: usize = 4000;
 /// The agent path of a Codex thread the user started.
@@ -237,6 +248,9 @@ pub struct Parser {
     auto_title: Option<String>,
     /// The first prompt, the fallback title.
     first_prompt: Option<String>,
+    /// Claude's input queue as its `queue-operation` lines describe it, oldest first. Task
+    /// notices stay in it so a `dequeue` (which names no content) pops the right entry.
+    queue: Vec<QueuedInput>,
     /// Lines that were not valid JSON.
     pub skipped: u64,
 }
@@ -267,6 +281,7 @@ impl Parser {
             user_title: None,
             auto_title: None,
             first_prompt: None,
+            queue: vec![],
             skipped: 0,
         }
     }
@@ -305,6 +320,15 @@ impl Parser {
     /// from the file head instead of the stream).
     pub fn set_auto_title(&mut self, t: Option<String>) {
         self.auto_title = t;
+    }
+
+    /// Messages waiting in the harness's queue (user input only), oldest first.
+    pub fn queued_inputs(&self) -> Vec<QueuedInput> {
+        self.queue
+            .iter()
+            .filter(|q| !q.text.trim_start().starts_with("<task-notification>"))
+            .cloned()
+            .collect()
     }
 
     fn prompt_seen(&mut self, text: &str) {
@@ -509,6 +533,42 @@ impl Parser {
 
     // ---- Claude ----------------------------------------------------------------------------
 
+    /// Claude's queue: `enqueue` (content) appends; `dequeue` pops the front (the next turn
+    /// takes it); `remove` (content, e.g. `absorbed_mid_turn` or `delivered_to_agent`) drops that
+    /// entry; `popAll` moves every entry back into the input box.
+    fn claude_queue_op(&mut self, v: &Value, ts: Option<i64>) {
+        let content = user_text(v.get("content"));
+        match v.get("operation").and_then(Value::as_str) {
+            Some("enqueue") => {
+                if let Some(text) = content {
+                    if self.queue.len() >= QUEUE_MAX {
+                        self.queue.remove(0);
+                    }
+                    self.queue.push(QueuedInput { text, ts_ms: ts });
+                }
+            }
+            Some("dequeue") => {
+                if !self.queue.is_empty() {
+                    self.queue.remove(0);
+                }
+            }
+            Some("remove") => match content {
+                Some(text) => {
+                    if let Some(i) = self.queue.iter().position(|q| q.text == text) {
+                        self.queue.remove(i);
+                    }
+                }
+                None => {
+                    if !self.queue.is_empty() {
+                        self.queue.remove(0);
+                    }
+                }
+            },
+            Some("popAll" | "pop_all" | "clear") => self.queue.clear(),
+            _ => {}
+        }
+    }
+
     fn claude(&mut self, v: &Value, out: &mut Vec<Event>) {
         let ts = v
             .get("timestamp")
@@ -641,6 +701,9 @@ impl Parser {
                     && let Some(c) = v.get("content").and_then(Value::as_str)
                 {
                     self.claude_task_ended(c, ts, out);
+                }
+                if !sidechain {
+                    self.claude_queue_op(v, ts);
                 }
             }
             Some("custom-title") => {
@@ -2019,6 +2082,52 @@ mod tests {
             matches!(b[2], Event::BgEnded { id, status, .. } if id == "bg1" && status == "completed")
         );
         assert!(matches!(b[3], Event::BgEnded { id, .. } if id == "ag1"));
+    }
+
+    #[test]
+    fn claude_queue_follows_queue_operations() {
+        let note = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+        let op = |op: &str, content: Option<&str>, t: u32| {
+            let mut v = json!({"type":"queue-operation","operation":op,"timestamp":format!("2026-01-01T00:00:{t:02}Z"),"sessionId":"s"});
+            if let Some(c) = content {
+                v["content"] = json!(c);
+            }
+            v
+        };
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        p.feed(&lines(&[
+            op("enqueue", Some(note), 1),
+            op("enqueue", Some("first"), 2),
+            op("enqueue", Some("second"), 3),
+        ]));
+        let q = p.queued_inputs();
+        assert_eq!(q.len(), 2, "task notices are not listed: {q:?}");
+        assert_eq!(q[0].text, "first");
+        assert_eq!(q[0].ts_ms, parse_rfc3339_ms("2026-01-01T00:00:02Z"));
+        // The dequeue pops the notice (the front), not a user message.
+        p.feed(&lines(&[op("dequeue", None, 4)]));
+        assert_eq!(p.queued_inputs().len(), 2);
+        // Absorbed mid-turn: removed by content.
+        let mut rm = op("remove", Some("second"), 5);
+        rm["reason"] = json!("absorbed_mid_turn");
+        p.feed(&lines(&[rm]));
+        let q = p.queued_inputs();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].text, "first");
+        p.feed(&lines(&[op("dequeue", None, 6)]));
+        assert!(p.queued_inputs().is_empty());
+        // popAll takes everything back into the input box.
+        p.feed(&lines(&[
+            op("enqueue", Some("a"), 7),
+            op("enqueue", Some("b"), 8),
+        ]));
+        p.feed(&lines(&[op("popAll", Some("a\nb"), 9)]));
+        assert!(p.queued_inputs().is_empty());
+        // Unknown operations and sidechain lines change nothing.
+        let mut side = op("enqueue", Some("sub"), 10);
+        side["isSidechain"] = json!(true);
+        p.feed(&lines(&[op("peek", Some("x"), 10), side]));
+        assert!(p.queued_inputs().is_empty());
     }
 
     #[test]

@@ -68,6 +68,7 @@ const SERVER_READ_ONLY: &[&str] = &[
     "agent.harnesses",
     "agent.commands",
     "agent.models",
+    "agent.queued",
     "agent.wait",
     "interaction.get",
     "interaction.list",
@@ -156,6 +157,10 @@ pub fn required_scope(method: &str) -> Option<Scope> {
         // changes what the agent runs, like a prompt.
         "agent.commands" | "agent.models" => View,
         "agent.set_model" => Full,
+        // Send now: what waits in the harness's queue is a read; delivering it now interrupts
+        // the agent with text the user sent, like a prompt.
+        "agent.queued" => View,
+        "agent.send_now" => Full,
         // Mention names (spec 19): the composer lists and suggests names; naming a pane lets
         // other agents of its workspace message it.
         "mention.list" | "mention.suggest" => View,
@@ -1294,7 +1299,7 @@ impl Call<'_> {
                     .await
             }
             "agent.interrupt" => self.server("agent.interrupt", pick(&p, &["target"])).await,
-            "agent.commands" | "agent.models" => {
+            "agent.commands" | "agent.models" | "agent.queued" | "agent.send_now" => {
                 req(&p, "target")?;
                 self.server(method, pick(&p, &["target"])).await
             }
@@ -2834,6 +2839,9 @@ mod tests {
         assert_eq!(required_scope("agent.set_model"), Some(Scope::Full));
         assert!(is_mutating("agent.set_model"));
         assert!(!is_mutating("agent.models") && !is_mutating("agent.commands"));
+        assert_eq!(required_scope("agent.queued"), Some(Scope::View));
+        assert_eq!(required_scope("agent.send_now"), Some(Scope::Full));
+        assert!(!is_mutating("agent.queued") && is_mutating("agent.send_now"));
         assert_eq!(required_scope("pane.send_keys"), Some(Scope::Full));
         assert_eq!(required_scope("server.stop"), None);
         assert!(is_mutating("interaction.answer"));

@@ -546,6 +546,7 @@ pub fn is_run_targeted(method: &str) -> bool {
             | "agent.rename"
             | "agent.release"
             | "agent.set_model"
+            | "agent.send_now"
     )
 }
 

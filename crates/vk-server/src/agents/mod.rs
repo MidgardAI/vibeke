@@ -21,6 +21,7 @@ mod nested;
 mod nested_tests;
 mod opencode;
 mod polish;
+pub mod queued;
 mod route;
 pub mod screen;
 pub mod screen_ask;
@@ -89,6 +90,9 @@ pub const METHODS: &[(&str, bool)] = &[
     ("agent.models", false),
     ("agent.set_model", true),
     ("adapter.control", true),
+    // Send now: messages waiting in the harness's own queue (`queued.rs`).
+    ("agent.queued", false),
+    ("agent.send_now", true),
 ];
 
 /// Gate timeout (04 §7.2): after this the hook returns no decision and the native dialog shows.
@@ -553,6 +557,10 @@ impl Agents {
             let sc = rt.screen.lock().unwrap();
             screen::snapshot_of(&sc.engine)
         };
+        // Codex shows its pending steers only on screen (Send now, `queued.rs`).
+        if h.family() == harness::Family::Codex {
+            queued::from_codex_screen(server, &run, &snap.lines);
+        }
         let (m, pending) = {
             let mut i = self.inner.lock().unwrap();
             let hold = i.holds.entry(pane.to_string()).or_default();
@@ -3264,6 +3272,9 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
         return Some(r);
     }
     if let Some(r) = models::api(server, ctx, method, p).await {
+        return Some(r);
+    }
+    if let Some(r) = queued::api(server, ctx, method, p).await {
         return Some(r);
     }
     Some(match method {

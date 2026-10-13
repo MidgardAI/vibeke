@@ -177,6 +177,7 @@ fn default_format(h: Harness) -> Option<Format> {
 
 pub fn untrack(run: &str) {
     REG.lock().unwrap().tails.retain(|_, t| t.run != run);
+    super::queued::forget(run);
 }
 
 /// Paths currently tailed: `(run, path, offset)`.
@@ -234,16 +235,22 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
             }
             let title = t.parser.title().map(str::to_string);
             if bytes.is_empty() {
-                (vec![], None, None, title)
+                (vec![], None, None, title, None)
             } else {
                 let ev = t.parser.feed(&bytes);
                 let totals = t.parser.totals().clone();
                 let model = t.parser.model().map(str::to_string);
                 let title = t.parser.title().map(str::to_string);
-                (ev, Some(totals), model, title)
+                // Claude records its input queue in the transcript (Send now, `queued.rs`).
+                let queue =
+                    (t.parser.format() == Format::ClaudeJsonl).then(|| t.parser.queued_inputs());
+                (ev, Some(totals), model, title, queue)
             }
         };
-        let (ev, totals, model, title) = events;
+        let (ev, totals, model, title, queue) = events;
+        if let Some(q) = queue {
+            super::queued::from_transcript(server, &run, q);
+        }
         total += ev.len();
         if let Some(totals) = totals {
             apply(server, &run, &harness, &ev, &totals, model.as_deref());

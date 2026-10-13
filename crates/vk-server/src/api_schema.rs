@@ -662,6 +662,13 @@ agent.models :: {target: Target} => {models: [{id: string, label: string, descri
 # scope default only where the harness can save a default (Codex, pi), else invalid_params; pi saves every switch as its default, so a pi switch
 # with scope session is refused with conflict, details {reason: persists_default, harness} and nothing changes: confirm with the user, resend with scope default
 agent.set_model :: {target: Target, model: string, scope?: session|default = session} => {run: AgentRun, default_changed: bool}
+# messages the harness holds because they were sent while it worked (Claude Code queue from its transcript, Codex pending steers from its screen);
+# text is redacted; source transcript|screen; an ended or headless run has none
+agent.queued :: {target: Target} => {run: string, items: [{id: string, text: string, since_ms: int, source: string}]}
+# makes the harness deliver its queued messages now: Claude Code gets its chat:sendNow key (from ~/.claude/keybindings.json, default ctrl+x ctrl+s),
+# Codex gets Esc (only while the run works and its screen shows pending steers); conflict with details {reason: nothing_queued|dialog_open};
+# unsupported with details {reason: headless|harness|no_send_now_key}
+agent.send_now :: {target: Target} => {run: AgentRun, sent: int, keys: [string]}
 
 # --- interactions ---
 interaction.list :: {status?: open|string, run?: Target, workspace?: Target, kind?: string} => {interactions: [Interaction]}
@@ -1206,6 +1213,7 @@ agent.harness_version_unvalidated :: {run: string, pane: string} => {harness: st
 agent.turn_usage :: {run: string, pane: string} => {turn: int, native_id: string, model: string|null, input: int, output: int, cache_read: int, cache_write: int, cost_usd: number|null, cost_source: string, source: string}
 agent.cwd_changed :: {run: string, pane: string} => {cwd: string, old_cwd: string|null}
 agent.bg_tasks_changed :: {run: string, pane: string} => {count: int, ids: [string]}
+agent.queued_changed :: {run: string, pane: string} => {count: int, ids: [string]}
 agent.drift_detected :: {run: string, pane: string} => {harness: string, version: string, observations: int, disagreements: int, unknown_resolutions: int, answer_failures: int, rate: number}
 harness.manifest_loaded :: {manifest: string} => {id: string, version: string, source: string, serial: int, verified: string}
 agent.exited :: {run: string, pane: string} => {reason: string, harness: string}

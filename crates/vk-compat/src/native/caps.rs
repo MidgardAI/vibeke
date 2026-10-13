@@ -487,14 +487,18 @@ pub fn need(method: &str) -> Need {
         "ui.contribute" => Ui,
         "events.read" | "events.wait" | "events.subscribe" | "events.unsubscribe" => Events,
         "pane.read" | "pane.wait_output" | "pane.wait_idle" | "search.query" | "agent.read"
-        | "interaction.list" | "interaction.get" | "git.status" | "git.diff" | "git.log"
-        | "fs.list" | "fs.read" | "notification.list" | "pane.can_see_paths" => Cap("panes_read"),
+        | "agent.queued" | "interaction.list" | "interaction.get" | "git.status" | "git.diff"
+        | "git.log" | "fs.list" | "fs.read" | "notification.list" | "pane.can_see_paths" => {
+            Cap("panes_read")
+        }
         "pane.split" | "pane.close" | "pane.zoom" | "pane.resize" | "pane.equalize"
         | "pane.rename" | "pane.send_text" | "pane.send_keys" | "pane.send_bytes" | "pane.run"
         | "pane.mark_unread" | "pane.mark_seen" | "pane.pin" | "tab.create"
         | "workspace.create" | "notification.read" => Cap("panes_write"),
         "agent.start" | "agent.resume" | "agent.prompt" | "agent.interrupt" | "agent.send_keys"
-        | "agent.rename" | "agent.release" | "agent.stop" | "agent.kill" => Cap("agents_control"),
+        | "agent.rename" | "agent.release" | "agent.stop" | "agent.kill" | "agent.send_now" => {
+            Cap("agents_control")
+        }
         "interaction.answer" | "interaction.cancel" => Cap("interactions_answer"),
         m if m.starts_with("task.") || m.starts_with("worktree.") => Cap("tasks_write"),
         "browser.eval" | "browser.script" => Cap("browser_script"),

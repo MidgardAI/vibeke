@@ -188,6 +188,17 @@ export interface AgentRun {
 }
 
 /** One background shell, monitor or subagent of a run (`AgentRun.bg_tasks`). */
+/** A message waiting in the harness's own queue (`agent.queued`). */
+export interface QueuedInput {
+  /** Stable while the message waits. */
+  id: string;
+  /** The message, with secrets redacted. May be empty when the harness cut it off. */
+  text: string;
+  since_ms: number;
+  /** `transcript` (Claude Code) or `screen` (Codex). */
+  source: string;
+}
+
 export interface BgTask {
   /** The harness's task id, or `pid:<pgid>` for a child process. */
   id: string;
@@ -1156,6 +1167,10 @@ export interface AppApi {
   'agent.models': { params: { target: string }; result: AgentModels };
   'agent.set_model': { params: { target: string; model: string; scope?: 'session' | 'default' }; result: { run: AgentRun } };
   'agent.interrupt': { params: { target: string }; result: Record<string, never> };
+  /** Messages the harness holds because they were sent while it worked. Older servers: method_not_found. */
+  'agent.queued': { params: { target: string }; result: { run: string; items: QueuedInput[] } };
+  /** Make the harness deliver its queued messages now. Conflict `nothing_queued` when nothing waits. */
+  'agent.send_now': { params: { target: string }; result: { run: AgentRun; sent: number; keys: string[] } };
   'agent.transcript': {
     /** `limit` ≤ 200; `before` = a page's `next_before` (turns with n < before). `image` = an image item's `ref`: the result then has `image` (≤ 4 MiB) and no `turns`; older servers ignore it and return a page. */
     params: { target: string; limit?: number; before?: number; image?: string };
@@ -1576,6 +1591,7 @@ export const MUTATING_METHODS: ReadonlySet<string> = new Set([
   'agent.prompt',
   'agent.set_model',
   'agent.interrupt',
+  'agent.send_now',
   'agent.start',
   'mention.set',
   'mention.clear',
