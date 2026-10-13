@@ -21,4 +21,6 @@ pub use install::{
 };
 pub use mcp::{McpStatus, mcp_config_file, mcp_status, plan_mcp_install, plan_mcp_uninstall};
 pub use risk::{Risk, assess};
-pub use skill::{SKILL, SkillState, skill_file, skill_state};
+pub use skill::{
+    REMOTE_SKILL, SKILL, SkillState, remote_skill_file, remote_skill_state, skill_file, skill_state,
+};

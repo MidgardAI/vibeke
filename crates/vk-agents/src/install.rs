@@ -965,6 +965,25 @@ pub fn status(h: Harness, dirs: &Dirs) -> Status {
         )),
         SkillState::Unreadable(e) => st.problems.push(e),
     }
+    if h == Harness::Hermes {
+        let (path, remote) = crate::skill::remote_skill_state(dirs);
+        match remote {
+            SkillState::Current => {}
+            SkillState::Missing => {
+                st.missing_events.push("skill:vibeke-remote".to_string());
+                st.state = InstallState::Partial;
+            }
+            SkillState::Outdated(v) => st.todo.push(format!(
+                "skill_outdated: {} is from {v}, this build bundles {VERSION}; reinstall",
+                path.display()
+            )),
+            SkillState::Foreign => st.problems.push(format!(
+                "{} is not managed by Vibeke (install leaves it alone)",
+                path.display()
+            )),
+            SkillState::Unreadable(e) => st.problems.push(e),
+        }
+    }
     st
 }
 
@@ -993,6 +1012,12 @@ pub fn refresh_managed(dirs: &Dirs) -> Vec<(Harness, Vec<PathBuf>)> {
             files.extend(p.files.into_iter().take(2).filter(|f| f.before.is_some()));
         }
         if let Ok(Some(f)) = crate::skill::plan_skill(h, dirs, true, &mut notes)
+            && f.before.is_some()
+        {
+            files.push(f);
+        }
+        if h == Harness::Hermes
+            && let Ok(Some(f)) = crate::skill::plan_remote_skill(dirs, true, &mut notes)
             && f.before.is_some()
         {
             files.push(f);
@@ -1525,6 +1550,7 @@ fn plan_hermes(dirs: &Dirs, install: bool) -> Result<Plan> {
         install,
         &mut notes,
     )?);
+    files.extend(crate::skill::plan_remote_skill(dirs, install, &mut notes)?);
     Ok(Plan {
         harness: Harness::Hermes,
         kind: if install {
@@ -2947,6 +2973,77 @@ mod tests {
         fs::create_dir_all(init.parent().unwrap()).unwrap();
         fs::write(&init, "def register(ctx): pass\n").unwrap();
         assert!(plan_install(Harness::Hermes, &d, Path::new(BIN)).is_err());
+    }
+
+    #[test]
+    fn hermes_gets_the_remote_skill_next_to_the_main_one() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        fs::create_dir_all(&d.hermes).unwrap();
+        let remote = d.hermes.join("skills/vibeke-remote/SKILL.md");
+        let main = d.hermes.join("skills/vibeke/SKILL.md");
+        let p = plan_install(Harness::Hermes, &d, Path::new(BIN)).unwrap();
+        assert!(p.files.iter().any(|f| f.path == remote && f.changed()));
+        apply(&p).unwrap();
+        assert_eq!(
+            fs::read_to_string(&remote).unwrap(),
+            crate::skill::remote_skill_content()
+        );
+        assert!(main.is_file());
+        assert_eq!(status(Harness::Hermes, &d).state, InstallState::Installed);
+        // A missing remote skill makes the integration partial.
+        fs::remove_file(&remote).unwrap();
+        let st = status(Harness::Hermes, &d);
+        assert_eq!(st.state, InstallState::Partial, "{st:?}");
+        assert!(
+            st.missing_events
+                .contains(&"skill:vibeke-remote".to_string())
+        );
+        // An outdated one is reported.
+        fs::write(
+            &remote,
+            crate::skill::remote_skill_content().replace(VERSION, "0.0.1"),
+        )
+        .unwrap();
+        assert!(
+            status(Harness::Hermes, &d)
+                .todo
+                .iter()
+                .any(|t| t.starts_with("skill_outdated"))
+        );
+        install(Harness::Hermes, &d);
+        assert_eq!(
+            fs::read_to_string(&remote).unwrap(),
+            crate::skill::remote_skill_content()
+        );
+        // Uninstall removes it and its directory.
+        apply(&plan_uninstall(Harness::Hermes, &d).unwrap()).unwrap();
+        assert!(!remote.exists() && !remote.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn a_foreign_remote_skill_is_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let d = dirs(&t);
+        fs::create_dir_all(&d.hermes).unwrap();
+        let remote = d.hermes.join("skills/vibeke-remote/SKILL.md");
+        fs::create_dir_all(remote.parent().unwrap()).unwrap();
+        fs::write(
+            &remote,
+            "---\nname: vibeke-remote\ndescription: mine\n---\n",
+        )
+        .unwrap();
+        let p = plan_install(Harness::Hermes, &d, Path::new(BIN)).unwrap();
+        assert!(p.files.iter().all(|f| f.path != remote));
+        assert!(p.notes.iter().any(|n| n.contains("not managed by Vibeke")));
+        apply(&p).unwrap();
+        assert!(
+            fs::read_to_string(&remote)
+                .unwrap()
+                .contains("description: mine")
+        );
+        apply(&plan_uninstall(Harness::Hermes, &d).unwrap()).unwrap();
+        assert!(remote.is_file());
     }
 
     #[test]

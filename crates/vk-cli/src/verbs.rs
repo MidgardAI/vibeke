@@ -606,6 +606,7 @@ const EXTRA: &[(&str, &[&str])] = &[
     ("doctor", &[]),
     ("forget", &[]),
     ("handoff", crate::handoff::VERBS),
+    ("share", &["watch", "review", "list", "revoke"]),
     ("security", &["keychain"]),
     ("update", &[]),
     (

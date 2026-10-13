@@ -22,6 +22,10 @@ use std::path::PathBuf;
 /// The skill text `vibeke --skill` prints.
 pub const SKILL: &str = include_str!("../../vibeke/skill/SKILL.md");
 
+/// The companion skill for the Hermes messaging gateway (`vibeke-remote`): starts agents and
+/// shares links from outside any pane.
+pub const REMOTE_SKILL: &str = include_str!("../../vibeke/skill/remote/SKILL.md");
+
 const MARKER_PREFIX: &str = "<!-- managed by vibeke (vibeke-skill@";
 
 /// Where `h` reads the Vibeke skill.
@@ -33,15 +37,29 @@ pub fn skill_file(h: Harness, dirs: &Dirs) -> PathBuf {
     }
 }
 
+/// Where Hermes reads the `vibeke-remote` skill.
+pub fn remote_skill_file(dirs: &Dirs) -> PathBuf {
+    dirs.hermes.join("skills/vibeke-remote/SKILL.md")
+}
+
 /// The installed file: the front matter, our marker line, then the body.
 pub fn skill_content() -> String {
+    with_marker(SKILL)
+}
+
+/// The installed `vibeke-remote` file.
+pub fn remote_skill_content() -> String {
+    with_marker(REMOTE_SKILL)
+}
+
+fn with_marker(skill: &str) -> String {
     let marker = format!(
         "{MARKER_PREFIX}{}); reinstall overwrites -->\n",
         crate::install::VERSION
     );
-    match split_front_matter(SKILL) {
+    match split_front_matter(skill) {
         Some((front, body)) => format!("{front}{marker}{body}"),
-        None => format!("{marker}{SKILL}"),
+        None => format!("{marker}{skill}"),
     }
 }
 
@@ -72,12 +90,20 @@ pub enum SkillState {
 }
 
 pub fn skill_state(h: Harness, dirs: &Dirs) -> (PathBuf, SkillState) {
-    let path = skill_file(h, dirs);
+    state_of(skill_file(h, dirs), &skill_content())
+}
+
+/// State of the Hermes `vibeke-remote` skill.
+pub fn remote_skill_state(dirs: &Dirs) -> (PathBuf, SkillState) {
+    state_of(remote_skill_file(dirs), &remote_skill_content())
+}
+
+fn state_of(path: PathBuf, content: &str) -> (PathBuf, SkillState) {
     let state = match read_file(&resolve_symlink(&path)) {
         Ok(None) => SkillState::Missing,
         Ok(Some((text, _))) => match marker_version(&text) {
             None => SkillState::Foreign,
-            Some(_) if text == skill_content() => SkillState::Current,
+            Some(_) if text == content => SkillState::Current,
             Some(v) => SkillState::Outdated(v),
         },
         Err(e) => SkillState::Unreadable(format!("{e:#}")),
@@ -105,7 +131,41 @@ pub(crate) fn plan_skill(
     install: bool,
     notes: &mut Vec<String>,
 ) -> Result<Option<FileChange>> {
-    let path = resolve_symlink(&skill_file(h, dirs));
+    plan_file(
+        resolve_symlink(&skill_file(h, dirs)),
+        skill_content,
+        Some(h),
+        dirs,
+        install,
+        notes,
+    )
+}
+
+/// The `vibeke-remote` skill's part of the Hermes install or uninstall plan.
+pub(crate) fn plan_remote_skill(
+    dirs: &Dirs,
+    install: bool,
+    notes: &mut Vec<String>,
+) -> Result<Option<FileChange>> {
+    plan_file(
+        resolve_symlink(&remote_skill_file(dirs)),
+        remote_skill_content,
+        None,
+        dirs,
+        install,
+        notes,
+    )
+}
+
+/// `shared_with`: the harness whose skill file other harnesses may read too.
+fn plan_file(
+    path: PathBuf,
+    content: fn() -> String,
+    shared_with: Option<Harness>,
+    dirs: &Dirs,
+    install: bool,
+    notes: &mut Vec<String>,
+) -> Result<Option<FileChange>> {
     let existing = read_file(&path)?;
     let ours = existing
         .as_ref()
@@ -124,7 +184,7 @@ pub(crate) fn plan_skill(
         None if install => (None, None),
         None => return Ok(None),
     };
-    if !install {
+    if !install && let Some(h) = shared_with {
         let users: Vec<&str> = sharing(h)
             .filter(|&o| crate::install::hooks_present(o, dirs))
             .map(Harness::id)
@@ -141,7 +201,7 @@ pub(crate) fn plan_skill(
     Ok(Some(FileChange {
         path,
         before,
-        after: install.then(skill_content),
+        after: install.then(content),
         stamp,
         remove: !install,
     }))
@@ -192,5 +252,30 @@ mod tests {
         assert_eq!(sharing(Harness::Claude).count(), 0);
         assert!(sharing(Harness::Codex).any(|h| h == Harness::Pi));
         assert!(!sharing(Harness::Codex).any(|h| h == Harness::Claude));
+    }
+
+    #[test]
+    fn the_remote_skill_has_no_pane_guard_and_its_own_file() {
+        let c = remote_skill_content();
+        assert!(c.starts_with("---\nname: vibeke-remote\n"), "{c}");
+        assert_eq!(marker_version(&c).as_deref(), Some(crate::install::VERSION));
+        assert!(!REMOTE_SKILL.contains("VIBEKE:-"));
+        for flag in ["--any-github", "--link", "share review", "handoff link"] {
+            assert!(REMOTE_SKILL.contains(flag), "{flag}");
+        }
+        let d = Dirs {
+            claude: "/c".into(),
+            codex: "/x".into(),
+            pi: "/p".into(),
+            omp: "/o".into(),
+            opencode: "/oc".into(),
+            gemini: "/g".into(),
+            agents: "/a".into(),
+            hermes: "/h".into(),
+        };
+        assert_eq!(
+            remote_skill_file(&d),
+            PathBuf::from("/h/skills/vibeke-remote/SKILL.md")
+        );
     }
 }

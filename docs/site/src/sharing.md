@@ -72,7 +72,73 @@ What each level allows, always limited to the shared pane or workspace:
 
 No level can create or revoke access, hand work off, or pair hosts.
 
-Whoever opens a share link first gets the access: send it privately.
+A link made in the app or the People form works for the first person who opens it. Send it privately. To limit a link to named people, use a GitHub link (see below).
+
+## Limit a link to GitHub accounts
+
+A **GitHub link** opens only for the GitHub accounts you name. The person who opens it signs in with GitHub first. Vibeke checks the account id, not the name, so a renamed account keeps its access.
+
+- You can name accounts, or allow any GitHub account.
+- One link works for several people. It opens up to 20 times by default (at most 100) until it expires. Each person becomes a separate device with their own GitHub login.
+- Your host must be signed in to an account (`vibeke login`). Without it, Vibeke refuses to make the link. It never falls back to a link that anyone can open.
+- Opening the link in an old app shows "This link needs a newer Vibeke app".
+- The desktop app opens GitHub links in your system browser.
+
+To set the default accounts for the command line, add their GitHub logins to your config:
+
+```toml
+[sharing]
+github = ["alice", "bob"]
+```
+
+## Share a running app for design review
+
+A **design review link** lets a designer try one preview in their own browser. They do not need a terminal or an account on your host.
+
+1. The agent or you declare the preview (see [previews and browsers](concepts/previews.md#share-a-preview-for-design-review)).
+2. Create the link: `vibeke share review v4`, or use the **People** form and choose **Design review**.
+3. Send the link. The designer opens it and signs in with GitHub when the link asks for it.
+
+The designer can scroll, type and use the page as usual. They pick elements or areas, write a note for each pick and send the notes. When the agent changes the app, the designer sees the new version at the same link. Requests to your app travel end-to-end encrypted through your host.
+
+A review link reaches only that one preview. It cannot reach terminals, files, git, agents or other previews.
+
+### Notes: direct or held
+
+- **Direct** (default for GitHub links): the notes go to the agent when the designer sends them.
+- **Held** (default for links that anyone can open): the notes wait for you. You get a notification, such as "3 review notes from @alice on v4". You see the notes in the preview's notes list, with **Send to agent** and **Discard**. The designer sees "waiting for" you until you decide. Only your own devices can release held notes.
+
+Each designer has their own notes. Two designers on one preview never change each other's notes. The agent sees who wrote them.
+
+## Share from the command line
+
+These commands work from any terminal on the host, and from programs that run on the host outside a pane, such as a chat bot. They need the gateway (`vibeke gateway on`). An agent inside a pane cannot create links.
+
+```sh
+vibeke share watch --workspace <workspace>      # a link to watch a workspace
+vibeke share watch --pane <pane> --scope approve # watch and approve one pane
+vibeke share review v4                           # a review link for preview v4
+vibeke share review v4 --notes held --ttl 8h
+vibeke share list                                # open links and the devices they made
+vibeke share revoke <id>                         # close a link and every device it made
+```
+
+Choose who may open the link:
+
+| Option | Who can open it |
+| --- | --- |
+| none | The GitHub accounts in `[sharing] github` |
+| `--github alice,bob` | Those GitHub accounts |
+| `--any-github` | Any GitHub account |
+| `--link` | The first person who opens it, like a link made in the app |
+
+Other options: `--uses N` (how many people may open it), `--ttl 30m|24h|7d` (how long it works), `--label` (a name shown in **People**), `--scope view|approve` (for `watch`) and `--notes direct|held` (for `review`). `--pane @current` and `--workspace @current` mean the pane you run the command in.
+
+The commands print only the link. Add `--json` to see the full result. If the config has no GitHub accounts and you pass no option, the command stops and asks you to set `[sharing] github` or pass `--github`. Use `--any-github` and `--link` with care: they let more people in.
+
+## See who has access
+
+**People** (`prefix+alt+d`, then `tab`) lists each device with its GitHub login, and groups the devices under the link they came from. `x` revokes the selected entry. Revoking a link revokes every device it made. The **People** form (`prefix+alt+v`) has a **Kind** field (**Watch** or **Design review**) and a **Who** field (**Anyone with the link**, **GitHub** with your default accounts, or **Any GitHub account**). For a review it also has **Notes**. A created link shows how many uses are left.
 
 ## Revoke access
 
@@ -82,6 +148,7 @@ You can also list and revoke invitations from the command line. See [manage invi
 
 ## Next steps
 
-- [Move work to another host](handoff.md) to transfer work between your own machines.
+- [Move work to another host](handoff.md) to transfer work between your own machines, or to send a session as a link.
+- [Previews and browsers](concepts/previews.md) to declare the app you share for review.
 - [Phone and browser access](mobile.md) for device pairing, access levels and recovery.
 - [Security model](security.md) to see what a shared pane can reach.
