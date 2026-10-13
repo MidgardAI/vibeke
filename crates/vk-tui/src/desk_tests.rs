@@ -275,3 +275,114 @@ fn older_server_is_explained() {
     reply_err(&mut app, 0, req, "method_not_found", json!({}));
     assert!(screen(&app).contains("no session desk"));
 }
+
+// ---- key convention: tab strip, filter chips and the resume choice --------------------------------------
+
+fn shift_tab() -> KeyEvent {
+    KeyEvent::new(Key::Named(NamedKey::Tab), vk_proto::input::Mods::SHIFT)
+}
+
+#[test]
+fn filter_chips_are_a_focusable_row() {
+    let (mut app, mut rxs) = fleet();
+    open_and_search(&mut app, &mut rxs[0]);
+    // Up from the top row focuses the first chip.
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(app.desk.as_ref().unwrap().chip, Some(0));
+    let s = screen(&app);
+    assert!(s.contains("‹repo: /src/api›"), "{s}");
+    assert!(s.contains("pick a filter"), "{s}");
+    // enter changes the focused chip: repo off, then back on with shift+space.
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert_eq!(p, json!({"text": "login"}));
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Space),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert_eq!(p["repo"], "/src/api");
+    // → moves to the harness chip; space goes forward, shift+space back.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(app.desk.as_ref().unwrap().chip, Some(1));
+    app.on_key(named(NamedKey::Space));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert_eq!(p["harness"], "claude");
+    app.on_key(KeyEvent::new(
+        Key::Named(NamedKey::Space),
+        vk_proto::input::Mods::SHIFT,
+    ));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert!(p.get("harness").is_none());
+    app.on_key(named(NamedKey::Left));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(app.desk.as_ref().unwrap().chip, Some(2), "the chips wrap");
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert_eq!(p["since"], "7d");
+    // The letters keep working while a chip is focused.
+    app.on_key(ch('D'));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
+    assert_eq!(p["since"], "30d");
+    // ↓ returns to the list.
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(app.desk.as_ref().unwrap().chip, None);
+}
+
+#[test]
+fn desk_tab_strip_switches_with_arrows_and_shift_tab() {
+    let (mut app, mut rxs) = fleet();
+    open_and_search(&mut app, &mut rxs[0]);
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(app.desk.as_ref().unwrap().tab, Tab::Sessions);
+    let (_, _) = only(&commands(&mut rxs[0]), "desk.sessions");
+    app.on_key(shift_tab());
+    assert_eq!(app.desk.as_ref().unwrap().tab, Tab::Results);
+    // Up, Up: chips, then the strip.
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Up));
+    let d = app.desk.as_ref().unwrap();
+    assert!(d.strip.focused);
+    assert_eq!(d.chip, None);
+    let s = screen(&app);
+    assert!(s.contains("‹ Results ›"), "{s}");
+    assert!(s.contains(crate::formkeys::STRIP_HINT), "{s}");
+    app.on_key(named(NamedKey::Right));
+    let (_, _) = only(&commands(&mut rxs[0]), "desk.sessions");
+    let d = app.desk.as_ref().unwrap();
+    assert_eq!(d.tab, Tab::Sessions);
+    assert!(d.strip.focused);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(app.desk.as_ref().unwrap().tab, Tab::Results);
+    app.on_key(named(NamedKey::Down));
+    assert!(!app.desk.as_ref().unwrap().strip.focused);
+    assert!(screen(&app).contains(crate::formkeys::LIST_TABS_HINT));
+}
+
+#[test]
+fn resume_target_moves_with_arrows() {
+    let (mut app, mut rxs) = fleet();
+    app.machines[0].focus.pane = Some("p2".into());
+    open_and_search(&mut app, &mut rxs[0]);
+    app.on_key(ch('j'));
+    app.on_key(ch('r'));
+    let target = |app: &crate::app::App| match &app.desk.as_ref().unwrap().sub {
+        Sub::Resume { target, .. } => target.clone(),
+        other => panic!("not resuming: {other:?}"),
+    };
+    assert_eq!(target(&app), ResumeTarget::NewTab);
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(target(&app), ResumeTarget::Pane("p2".into()));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(target(&app), ResumeTarget::NewTab);
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(target(&app), ResumeTarget::Pane("p2".into()));
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(target(&app), ResumeTarget::NewTab);
+    // t and p still pick directly, and enter confirms.
+    app.on_key(ch('p'));
+    assert_eq!(target(&app), ResumeTarget::Pane("p2".into()));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "desk.resume");
+    assert_eq!(p["pane"], "p2");
+}

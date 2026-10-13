@@ -495,3 +495,121 @@ fn text_editor_edits_lines() {
     assert_eq!(one.text(), "a b c");
     assert!(!one.key(&ctl('x')));
 }
+
+// ---- key convention: tab strip and send fields ---------------------------------------------------------
+
+fn shift_tab() -> KeyEvent {
+    KeyEvent::new(Key::Named(NamedKey::Tab), Mods::SHIFT)
+}
+
+#[test]
+fn tab_strip_switches_with_arrows_and_shift_tab() {
+    let (mut app, mut rxs) = fleet();
+    open_with_list(&mut app, &mut rxs[0]);
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Drafts);
+    // tab goes to Notes, shift+tab comes back.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Notes);
+    app.on_key(shift_tab());
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Drafts);
+    // Up from a row below the top moves the selection; from the top it focuses the strip.
+    app.on_key(ch('j'));
+    app.on_key(named(NamedKey::Up));
+    let v = app.drafts.as_ref().unwrap();
+    assert_eq!((v.sel, v.strip.focused), (0, false));
+    app.on_key(named(NamedKey::Up));
+    assert!(app.drafts.as_ref().unwrap().strip.focused);
+    let s = screen(&app);
+    assert!(s.contains("‹ Drafts ›"), "{s}");
+    assert!(s.contains(crate::formkeys::STRIP_HINT), "{s}");
+    app.on_key(named(NamedKey::Right));
+    let v = app.drafts.as_ref().unwrap();
+    assert_eq!(v.tab, super::Tab::Notes);
+    assert!(v.strip.focused, "the strip keeps the focus while switching");
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Drafts);
+    // Down goes back into the tab; esc on the strip does not close the view.
+    app.on_key(named(NamedKey::Down));
+    assert!(!app.drafts.as_ref().unwrap().strip.focused);
+    app.on_key(named(NamedKey::Up));
+    app.on_key(named(NamedKey::Escape));
+    let v = app.drafts.as_ref().unwrap();
+    assert!(!v.strip.focused);
+    assert!(matches!(app.mode, Mode::Popup(Popup::Drafts)));
+    assert!(screen(&app).contains(crate::formkeys::LIST_TABS_HINT));
+}
+
+#[test]
+fn notes_tab_reaches_the_strip_with_up() {
+    let (mut app, mut rxs) = fleet();
+    app.action("notes", None);
+    let (req, _) = only(&commands(&mut rxs[0]), "notes.get");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"notes": {"workspace": "W1", "text": "remember", "rev": 3}}),
+    );
+    app.on_key(named(NamedKey::Up));
+    let v = app.drafts.as_ref().unwrap();
+    assert!(v.strip.focused);
+    assert!(screen(&app).contains("‹ Notes ›"));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Drafts);
+    // While editing, the editor owns every key: Up moves the cursor, not the focus.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(app.drafts.as_ref().unwrap().tab, super::Tab::Notes);
+    app.on_key(named(NamedKey::Down));
+    app.on_key(ch('e'));
+    assert!(app.drafts.as_ref().unwrap().notes.editing.is_some());
+    app.on_key(named(NamedKey::Up));
+    assert!(!app.drafts.as_ref().unwrap().strip.focused);
+}
+
+#[test]
+fn send_fields_move_with_tab_and_toggle_with_arrows() {
+    let (mut app, mut rxs) = fleet();
+    open_with_list(&mut app, &mut rxs[0]);
+    app.on_key(ch('s'));
+    let (req, _) = only(&commands(&mut rxs[0]), "draft.check");
+    reply(
+        &mut app,
+        0,
+        req,
+        json!({"run": "r1", "pane": "p1", "harness": "claude", "send_path": "prompt_input", "follow_up": "prompt_input", "steer": false, "hidden_attachments": []}),
+    );
+    let flow = |app: &App| match &app.drafts.as_ref().unwrap().sub {
+        Sub::Send(f) => f.clone(),
+        other => panic!("not sending: {other:?}"),
+    };
+    assert_eq!(flow(&app).focus, SendField::Targets);
+    // ←/→ and space do nothing on the target list.
+    app.on_key(named(NamedKey::Right));
+    app.on_key(named(NamedKey::Space));
+    assert!(!flow(&app).include_notes);
+    // tab moves to the toggle; ←, → and space flip it.
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(flow(&app).focus, SendField::Notes);
+    assert!(screen(&app).contains("› [ ] include notes"));
+    app.on_key(named(NamedKey::Right));
+    assert!(flow(&app).include_notes);
+    app.on_key(named(NamedKey::Left));
+    assert!(!flow(&app).include_notes);
+    app.on_key(named(NamedKey::Space));
+    assert!(flow(&app).include_notes);
+    // shift+tab goes back to the targets; ↓ past the last target reaches the toggle, ↑ returns.
+    app.on_key(shift_tab());
+    assert_eq!(flow(&app).focus, SendField::Targets);
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(flow(&app).focus, SendField::Notes);
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(flow(&app).focus, SendField::Targets);
+    // `i` still flips the toggle from anywhere.
+    app.on_key(ch('i'));
+    assert!(!flow(&app).include_notes);
+    // enter sends from either field.
+    app.on_key(named(NamedKey::Tab));
+    app.on_key(named(NamedKey::Enter));
+    let (_, p) = only(&commands(&mut rxs[0]), "draft.send");
+    assert_eq!(p["include_notes"], false);
+}

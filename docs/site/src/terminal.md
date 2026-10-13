@@ -68,6 +68,14 @@ See [agents and interactions](concepts/agents.md).
 
 Press `prefix+alt+i` to view new images. The sidebar also lists recent images. See [previews and browsers](concepts/previews.md#images-in-the-terminal-interface).
 
+## Drafts, notes and the session desk
+
+**Drafts and Notes** (`:drafts`, `:notes` in the command palette) are two tabs. **Results and Sessions** in the session desk (`:desk`) are two tabs too. Switch tabs with `tab` and `shift+tab`. You can also press `up` from the top row, then use `left` and `right`. Press `down`, `enter` or `esc` to go back into the tab.
+
+When you send a draft (`s`), the send view has two fields: the list of targets and **include notes**. Press `tab` or `shift+tab` to move between them. On the list, `up` and `down` pick a target. On **include notes**, `left`, `right` and `space` turn it on or off. The `i` key still works.
+
+The desk shows three filter chips: repository, harness and date. Press `up` from the top result to select the chips. Use `left` and `right` to pick a chip. Press `enter` or `space` to change its value, or `shift+space` to go back one value. The keys `R`, `h` and `D` still change the chips. When you resume a session (`r`), choose the target with `left`, `right`, `up` or `down`, then press `enter`. The keys `t` and `p` still work.
+
 ## Phone and desktop access
 
 The desktop app has a **Connect to this Mac/computer** flow.

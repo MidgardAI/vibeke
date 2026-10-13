@@ -19,6 +19,7 @@
 
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::draw::truncate;
+use crate::formkeys::{self, Nav, Strip, StripKey};
 use crate::screen::{Grid, Rect as SRect};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -434,10 +435,19 @@ pub struct SendFlow {
     pub check: Option<Value>,
     pub check_err: Option<String>,
     pub include_notes: bool,
+    /// Which field has the keys: the target list or the "include notes" toggle.
+    pub focus: SendField,
     pub phase: SendPhase,
     /// Generated when the flow opens; a warned retry gets a fresh key.
     pub idem: String,
     pub retry: bool,
+}
+
+/// The two fields of the send view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendField {
+    Targets,
+    Notes,
 }
 
 impl SendFlow {
@@ -500,6 +510,8 @@ pub struct DraftsView {
     pub origin: Origin,
     pub default_run: Option<String>,
     pub tab: Tab,
+    /// The tab strip has the keys (↑ from the top row).
+    pub strip: Strip,
     pub items: Vec<DraftItem>,
     pub sel: usize,
     pub selected: BTreeSet<String>,
@@ -601,6 +613,7 @@ fn open(
         origin,
         default_run,
         tab,
+        strip: Strip::default(),
         items: Vec::new(),
         sel: 0,
         selected: BTreeSet::new(),
@@ -838,6 +851,7 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             _ => v.notice = Some("Not deleted".into()),
         },
         Sub::Send(f) => send_key(app, &mut v, f, ev),
+        Sub::None if v.strip.focused && !notes_busy(&v) => strip_key(app, &mut v, ev),
         Sub::None => {
             if v.tab == Tab::Notes {
                 notes_key(app, &mut v, ev);
@@ -852,6 +866,35 @@ pub fn key(app: &mut App, ev: KeyEvent) {
     }
 }
 
+/// The notes tab is being edited or waits for a conflict answer: it owns every key.
+fn notes_busy(v: &DraftsView) -> bool {
+    v.tab == Tab::Notes && (v.notes.editing.is_some() || v.notes.conflict)
+}
+
+/// Show the other tab (there are two), loading the notes the first time.
+fn switch_tab(app: &mut App, v: &mut DraftsView) {
+    v.tab = match v.tab {
+        Tab::Drafts => Tab::Notes,
+        Tab::Notes => Tab::Drafts,
+    };
+    if v.tab == Tab::Notes && !v.notes.loaded {
+        app.drafts = Some(v.clone());
+        load_notes(app);
+        if let Some(x) = app.drafts.take() {
+            *v = x;
+        }
+    }
+}
+
+/// A key while the tab strip is focused: ←/→ and tab switch, ↓, enter and esc go back.
+fn strip_key(app: &mut App, v: &mut DraftsView, ev: KeyEvent) {
+    let mut strip = v.strip;
+    if let StripKey::Switch(_) = strip.key(&ev) {
+        switch_tab(app, v);
+    }
+    v.strip = strip;
+}
+
 /// Returns true when the view closed.
 fn list_key(app: &mut App, v: &mut DraftsView, ev: KeyEvent) -> bool {
     let n = v.items.len();
@@ -861,17 +904,9 @@ fn list_key(app: &mut App, v: &mut DraftsView, ev: KeyEvent) -> bool {
             close(app);
             return true;
         }
-        Key::Named(NamedKey::Tab) => {
-            v.tab = Tab::Notes;
-            if !v.notes.loaded {
-                app.drafts = Some(v.clone());
-                load_notes(app);
-                if let Some(x) = app.drafts.take() {
-                    *v = x;
-                }
-            }
-        }
+        Key::Named(NamedKey::Tab) if formkeys::tab_step(&ev).is_some() => switch_tab(app, v),
         Key::Char('j') | Key::Named(NamedKey::Down) => v.sel = (v.sel + 1).min(n.saturating_sub(1)),
+        Key::Char('k') | Key::Named(NamedKey::Up) if v.sel == 0 => v.strip.focused = true,
         Key::Char('k') | Key::Named(NamedKey::Up) => v.sel = v.sel.saturating_sub(1),
         Key::Char('r') => {
             app.drafts = Some(v.clone());
@@ -985,6 +1020,7 @@ fn list_key(app: &mut App, v: &mut DraftsView, ev: KeyEvent) -> bool {
                 check: None,
                 check_err: None,
                 include_notes: false,
+                focus: SendField::Targets,
                 phase: if d.unknown() && !d.send.as_ref().is_some_and(|s| s.reconciled) {
                     SendPhase::ReconcileFirst
                 } else {
@@ -1126,7 +1162,55 @@ fn save(app: &mut App, v: &mut DraftsView, e: &mut Editing) {
     );
 }
 
+/// The two fields of the send view. tab / shift+tab switch between them. On the target list,
+/// ↑/↓ (`j`/`k`) pick a target; ↓ past the last target moves on to the toggle and ↑ comes back.
+/// On the toggle, ←/→ (`h`/`l`) and space flip "include notes". True when the key was used.
+fn send_field_key(app: &mut App, v: &DraftsView, f: &mut SendFlow, ev: &KeyEvent) -> bool {
+    if let Some(by) = formkeys::tab_step(ev) {
+        let at = f.focus as usize;
+        f.focus = if formkeys::wrap(at, by, 2) == 0 {
+            SendField::Targets
+        } else {
+            SendField::Notes
+        };
+        return true;
+    }
+    let n = formkeys::nav(ev, false);
+    let by = formkeys::step(n);
+    match (f.focus, n) {
+        (SendField::Targets, Nav::Next | Nav::Prev) => {
+            let by = by.unwrap_or(1);
+            let to = f.sel as i64 + by as i64;
+            if to >= f.targets.len() as i64 {
+                f.focus = SendField::Notes;
+            } else if to >= 0 {
+                f.sel = to as usize;
+                f.check = None;
+                f.phase = SendPhase::Checking;
+                check(app, v, f);
+            }
+            true
+        }
+        (SendField::Notes, Nav::Next) => true,
+        (SendField::Notes, Nav::Prev) => {
+            f.focus = SendField::Targets;
+            true
+        }
+        (SendField::Notes, Nav::Inc | Nav::Dec | Nav::Toggle) => {
+            f.include_notes = !f.include_notes;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn send_key(app: &mut App, v: &mut DraftsView, mut f: SendFlow, ev: KeyEvent) {
+    if matches!(f.phase, SendPhase::Ready | SendPhase::Checking)
+        && send_field_key(app, v, &mut f, &ev)
+    {
+        v.sub = Sub::Send(f);
+        return;
+    }
     match (&f.phase, ev.key) {
         (_, Key::Named(NamedKey::Escape)) => return,
         (SendPhase::Sending, _) => {}
@@ -1160,22 +1244,6 @@ fn send_key(app: &mut App, v: &mut DraftsView, mut f: SendFlow, ev: KeyEvent) {
             send(app, v, &mut f);
         }
         (SendPhase::Sent(_) | SendPhase::Failed(_), Key::Named(NamedKey::Enter)) => return,
-        (SendPhase::Ready | SendPhase::Checking, Key::Char('j') | Key::Named(NamedKey::Down))
-            if f.sel + 1 < f.targets.len() =>
-        {
-            f.sel += 1;
-            f.check = None;
-            f.phase = SendPhase::Checking;
-            check(app, v, &f);
-        }
-        (SendPhase::Ready | SendPhase::Checking, Key::Char('k') | Key::Named(NamedKey::Up))
-            if f.sel > 0 =>
-        {
-            f.sel -= 1;
-            f.check = None;
-            f.phase = SendPhase::Checking;
-            check(app, v, &f);
-        }
         (SendPhase::Ready | SendPhase::Checking, Key::Char('i')) => {
             f.include_notes = !f.include_notes
         }
@@ -1251,7 +1319,8 @@ fn notes_key(app: &mut App, v: &mut DraftsView, ev: KeyEvent) {
             app.drafts = Some(v.clone());
             close(app);
         }
-        Key::Named(NamedKey::Tab) => v.tab = Tab::Drafts,
+        Key::Named(NamedKey::Tab) if formkeys::tab_step(&ev).is_some() => switch_tab(app, v),
+        Key::Char('k') | Key::Named(NamedKey::Up) => v.strip.focused = true,
         Key::Char('e') | Key::Named(NamedKey::Enter) if n.loaded => {
             n.editing = Some(TextEditor::new(&n.text, true));
             n.changed_elsewhere = false;
@@ -1594,9 +1663,11 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let tabs = match v.tab {
-        Tab::Drafts => "[Drafts]  Notes",
-        Tab::Notes => " Drafts  [Notes]",
+    let tabs = match (v.tab, v.strip.focused) {
+        (Tab::Drafts, false) => "[Drafts]  Notes",
+        (Tab::Notes, false) => " Drafts  [Notes]",
+        (Tab::Drafts, true) => "‹ Drafts ›  Notes",
+        (Tab::Notes, true) => " Drafts  ‹ Notes ›",
     };
     let mut a = Area::open(app, g, &format!("{} · {tabs}", v.label));
     if let Some(n) = &v.notice {
@@ -1715,9 +1786,14 @@ pub fn draw(app: &App, g: &mut Grid) {
             "Delete this draft? [y] delete  [any key] keep",
             t.bold(t.yellow),
         );
+    } else if v.strip.focused {
+        a.footer(formkeys::STRIP_HINT, t.dim());
     } else {
         a.footer(
-            "j/k move · n new · e edit · J/K reorder · space select · m combine · x delete · s send · R reconcile · tab notes · esc close",
+            &format!(
+                "j/k move · n new · e edit · J/K reorder · space select · m combine · x delete · s send · R reconcile · {} · esc close",
+                formkeys::LIST_TABS_HINT
+            ),
             t.dim(),
         );
     }
@@ -1733,7 +1809,14 @@ fn draw_send(app: &App, v: &DraftsView, f: &SendFlow, a: &mut Area) {
         ),
         t.bold(t.fg),
     );
-    a.line("To:", t.dim());
+    a.line(
+        if f.focus == SendField::Targets {
+            "To: (↑/↓ pick)"
+        } else {
+            "To:"
+        },
+        t.dim(),
+    );
     for (i, tg) in f.targets.iter().enumerate() {
         let st_ = if i == f.sel {
             t.sel(t.accent)
@@ -1772,28 +1855,35 @@ fn draw_send(app: &App, v: &DraftsView, f: &SendFlow, a: &mut Area) {
         (None, Some(e)) => a.line(&format!("check failed: {e}"), t.s(t.red)),
         (None, None) => a.line("checking the send path…", t.dim()),
     }
+    let on_notes = f.focus == SendField::Notes;
     a.line(
         &format!(
-            "[{}] include notes (i)",
-            if f.include_notes { "x" } else { " " }
+            "{}[{}] include notes (i){}",
+            if on_notes { "› " } else { "" },
+            if f.include_notes { "x" } else { " " },
+            if on_notes {
+                "  ←/→ or space change"
+            } else {
+                ""
+            }
         ),
-        t.text(),
+        if on_notes { t.sel(t.accent) } else { t.text() },
     );
     let (msg, style, keys): (String, _, &str) = match &f.phase {
         SendPhase::Checking => (
             "checking…".into(),
             t.dim(),
-            "j/k target · i notes · esc back",
+            "↑/↓ target · tab next field · i notes · esc back",
         ),
         SendPhase::Ready if f.safe() => (
             String::new(),
             t.dim(),
-            "[enter] send · j/k target · i notes · esc back",
+            "[enter] send · ↑/↓ target · tab next field · ←/→ or space change · i notes · esc back",
         ),
         SendPhase::Ready => (
             "Not safe to send from here.".into(),
             t.bold(t.yellow),
-            "[o] Open pane to send · j/k target · esc back",
+            "[o] Open pane to send · ↑/↓ target · tab next field · esc back",
         ),
         SendPhase::Sending => ("sending…".into(), t.s(t.yellow), "esc back"),
         SendPhase::Sent(m) => (m.clone(), t.s(t.green), "esc back"),
@@ -1869,7 +1959,17 @@ fn draw_notes(app: &App, v: &DraftsView, a: &mut Area) {
             for l in n.text.lines() {
                 a.line(l, t.text());
             }
-            a.footer("e edit · r reload · tab drafts · esc close", t.dim());
+            a.footer(
+                &if v.strip.focused {
+                    formkeys::STRIP_HINT.to_string()
+                } else {
+                    format!(
+                        "e edit · r reload · {} · esc close",
+                        formkeys::LIST_TABS_HINT
+                    )
+                },
+                t.dim(),
+            );
         }
     }
 }

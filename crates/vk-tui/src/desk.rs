@@ -18,6 +18,7 @@
 use crate::app::{App, Mode, Pending, Popup, RpcErr};
 use crate::drafts::{Area, TextEditor, arr, ctrl, now_ms, st};
 use crate::draw::truncate;
+use crate::formkeys::{self, Nav, Strip, StripKey};
 use crate::screen::Grid;
 use serde_json::{Value, json};
 use vk_proto::input::{Key, KeyEvent, KeyKind, NamedKey};
@@ -90,6 +91,10 @@ pub struct Desk {
     pub id: u64,
     pub machine: usize,
     pub tab: Tab,
+    /// The tab strip has the keys (↑ from the chips row).
+    pub strip: Strip,
+    /// The focused filter chip (0 repo, 1 harness, 2 date) while the chips row has the keys.
+    pub chip: Option<usize>,
     pub query: String,
     pub editing: bool,
     pub repo: Option<String>,
@@ -145,6 +150,26 @@ impl Desk {
             o.remove("since");
         }
         p
+    }
+    /// The chips row with the focused chip shown as `‹ … ›`.
+    pub fn chips_focused(&self, at: usize) -> String {
+        let c = self.chips();
+        // Each chip is `[text] (key)`; swap the brackets of the focused one.
+        let mut out = String::new();
+        let mut n = 0;
+        for ch in c.chars() {
+            match ch {
+                '[' => {
+                    out.push(if n == at { '‹' } else { '[' });
+                }
+                ']' => {
+                    out.push(if n == at { '›' } else { ']' });
+                    n += 1;
+                }
+                x => out.push(x),
+            }
+        }
+        out
     }
     pub fn chips(&self) -> String {
         let repo = match (&self.repo, self.repo_on) {
@@ -236,6 +261,8 @@ pub fn open(app: &mut App, mi: usize) {
         id,
         machine: mi,
         tab: Tab::Results,
+        strip: Strip::default(),
+        chip: None,
         query: String::new(),
         editing: true,
         repo_on: repo.is_some(),
@@ -437,6 +464,25 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             free_pane,
         } => match ev.key {
             Key::Named(NamedKey::Escape) => {}
+            // ←/→, ↑/↓, tab and space move the choice (there are two).
+            _ if free_pane.is_some()
+                && !matches!(
+                    formkeys::nav(&ev, false),
+                    Nav::Other | Nav::Activate | Nav::Back
+                ) =>
+            {
+                let to = match target {
+                    ResumeTarget::NewTab => {
+                        ResumeTarget::Pane(free_pane.clone().unwrap_or_default())
+                    }
+                    ResumeTarget::Pane(_) => ResumeTarget::NewTab,
+                };
+                d.sub = Sub::Resume {
+                    hit,
+                    target: to,
+                    free_pane,
+                }
+            }
             Key::Char('t') => {
                 d.sub = Sub::Resume {
                     hit,
@@ -501,6 +547,62 @@ fn closed_context(ev: &KeyEvent, c: &Context) -> bool {
     ev.key == Key::Named(NamedKey::Escape) && !c.editing_turns && !c.saving
 }
 
+/// Show the other tab (there are two).
+fn switch_tab(app: &mut App, d: &mut Desk) {
+    d.tab = match d.tab {
+        Tab::Results => Tab::Sessions,
+        Tab::Sessions => Tab::Results,
+    };
+    d.sel = 0;
+    d.chip = None;
+    if d.tab == Tab::Sessions {
+        load_sessions(app, d);
+    }
+}
+
+/// Change filter chip `chip` (0 repo, 1 harness, 2 date) by `by` values and search again.
+fn chip_change(app: &mut App, d: &mut Desk, chip: usize, by: i32) {
+    match chip {
+        0 if d.repo.is_some() => d.repo_on = !d.repo_on,
+        0 => {
+            d.notice = Some("The focused workspace has no repository root".into());
+            return;
+        }
+        1 => d.harness = formkeys::wrap(d.harness, by, HARNESSES.len()),
+        _ => d.since = formkeys::wrap(d.since, by, SINCE.len()),
+    }
+    reload(app, d);
+}
+
+/// A key while the chips row has the focus. ←/→ pick a chip, enter or space change its value
+/// (shift+space goes back), ↑ goes on to the tab strip, ↓ and esc return to the list. Other
+/// keys (`R`/`h`/`D`, tab, `q`) keep their usual meaning. True when the key was used.
+fn chip_key(app: &mut App, d: &mut Desk, ev: &KeyEvent) -> bool {
+    let at = d.chip.unwrap_or(0);
+    if formkeys::tab_step(ev).is_some() {
+        return false;
+    }
+    match (formkeys::nav(ev, true), &ev.key) {
+        (Nav::Inc, _) => d.chip = Some(formkeys::wrap(at, 1, 3)),
+        (Nav::Dec, _) => d.chip = Some(formkeys::wrap(at, -1, 3)),
+        (Nav::Activate, _) => chip_change(app, d, at, 1),
+        (_, Key::Named(NamedKey::Space) | Key::Char(' ')) => {
+            chip_change(app, d, at, if ev.mods.shift() { -1 } else { 1 })
+        }
+        (Nav::Prev, _) => {
+            d.chip = None;
+            d.strip.focused = true;
+        }
+        (Nav::Next | Nav::Back, _) => d.chip = None,
+        (_, Key::Char('j' | 'k')) => {
+            d.chip = None;
+            return false;
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Returns false when the view closed.
 fn list_key(app: &mut App, d: &mut Desk, ev: KeyEvent) -> bool {
     if d.editing {
@@ -515,16 +617,29 @@ fn list_key(app: &mut App, d: &mut Desk, ev: KeyEvent) -> bool {
             Key::Named(NamedKey::Backspace) => {
                 d.query.pop();
             }
-            Key::Named(NamedKey::Tab) => {
+            Key::Named(NamedKey::Tab) if formkeys::tab_step(&ev).is_some() => {
                 d.editing = false;
-                d.tab = Tab::Sessions;
-                d.sel = 0;
-                load_sessions(app, d);
+                switch_tab(app, d);
+            }
+            Key::Named(NamedKey::Up) => {
+                d.editing = false;
+                d.strip.focused = true;
             }
             Key::Char('u') if ev.mods.ctrl() => d.query.clear(),
             Key::Char(c) if !ev.mods.ctrl() && !ev.mods.alt() => d.query.push(c),
             _ => {}
         }
+        return true;
+    }
+    if d.strip.focused {
+        let mut strip = d.strip;
+        if let StripKey::Switch(_) = strip.key(&ev) {
+            switch_tab(app, d);
+        }
+        d.strip = strip;
+        return true;
+    }
+    if d.chip.is_some() && chip_key(app, d, &ev) {
         return true;
     }
     let n = d.rows().len();
@@ -534,34 +649,13 @@ fn list_key(app: &mut App, d: &mut Desk, ev: KeyEvent) -> bool {
             return false;
         }
         Key::Char('/') | Key::Char('i') => d.editing = true,
-        Key::Named(NamedKey::Tab) => {
-            d.tab = match d.tab {
-                Tab::Results => Tab::Sessions,
-                Tab::Sessions => Tab::Results,
-            };
-            d.sel = 0;
-            if d.tab == Tab::Sessions {
-                load_sessions(app, d);
-            }
-        }
+        Key::Named(NamedKey::Tab) if formkeys::tab_step(&ev).is_some() => switch_tab(app, d),
         Key::Char('j') | Key::Named(NamedKey::Down) => d.sel = (d.sel + 1).min(n.saturating_sub(1)),
+        Key::Char('k') | Key::Named(NamedKey::Up) if d.sel == 0 => d.chip = Some(0),
         Key::Char('k') | Key::Named(NamedKey::Up) => d.sel = d.sel.saturating_sub(1),
-        Key::Char('R') => {
-            if d.repo.is_some() {
-                d.repo_on = !d.repo_on;
-                reload(app, d);
-            } else {
-                d.notice = Some("The focused workspace has no repository root".into());
-            }
-        }
-        Key::Char('h') => {
-            d.harness = (d.harness + 1) % HARNESSES.len();
-            reload(app, d);
-        }
-        Key::Char('D') => {
-            d.since = (d.since + 1) % SINCE.len();
-            reload(app, d);
-        }
+        Key::Char('R') => chip_change(app, d, 0, 1),
+        Key::Char('h') => chip_change(app, d, 1, 1),
+        Key::Char('D') => chip_change(app, d, 2, 1),
         Key::Named(NamedKey::Enter) => {
             if let Some(h) = d.cur().cloned() {
                 app.command_on(
@@ -901,9 +995,11 @@ pub fn draw(app: &App, g: &mut Grid) {
         return;
     };
     let t = app.theme;
-    let tabs = match d.tab {
-        Tab::Results => "[Results]  Sessions",
-        Tab::Sessions => " Results  [Sessions]",
+    let tabs = match (d.tab, d.strip.focused) {
+        (Tab::Results, false) => "[Results]  Sessions",
+        (Tab::Sessions, false) => " Results  [Sessions]",
+        (Tab::Results, true) => "‹ Results ›  Sessions",
+        (Tab::Sessions, true) => " Results  ‹ Sessions ›",
     };
     let mut a = Area::open(app, g, &format!("session desk · {tabs}"));
     if let Some(n) = &d.notice {
@@ -963,7 +1059,10 @@ pub fn draw(app: &App, g: &mut Grid) {
                 ),
                 None => a.line("  (the focused pane has an agent — not offered)", t.dim()),
             }
-            a.footer("enter resume · t/p target · esc back", t.dim());
+            a.footer(
+                "enter resume · ←/→ or ↑/↓ choose where · t/p target · esc back",
+                t.dim(),
+            );
             return;
         }
         Sub::Context(c) => {
@@ -1020,7 +1119,10 @@ pub fn draw(app: &App, g: &mut Grid) {
         format!("search: {}   (/ to edit)", d.query)
     };
     a.line(&q, if d.editing { t.sel(t.fg) } else { t.text() });
-    a.line(&d.chips(), t.s(t.accent));
+    match d.chip {
+        Some(at) => a.line(&d.chips_focused(at), t.bold(t.accent)),
+        None => a.line(&d.chips(), t.s(t.accent)),
+    }
     if let Some(e) = &d.error {
         a.line(e, t.s(t.red));
     }
@@ -1075,12 +1177,22 @@ pub fn draw(app: &App, g: &mut Grid) {
         );
     } else if d.editing {
         a.footer(
-            "type · enter search · tab sessions · esc stop typing",
+            "type · enter search · tab switches tabs · ↑ tabs · esc stop typing",
+            t.dim(),
+        );
+    } else if d.strip.focused {
+        a.footer(formkeys::STRIP_HINT, t.dim());
+    } else if d.chip.is_some() {
+        a.footer(
+            "←/→ pick a filter · enter or space change (shift+space back) · ↑ tabs · ↓ list",
             t.dim(),
         );
     } else {
         a.footer(
-            "j/k · enter open · o/r/c actions · F forget · R/h/D filters · / search · tab · esc",
+            &format!(
+                "j/k · ↑ at the top: filters · enter open · o/r/c actions · F forget · R/h/D filters · / search · {} · esc",
+                formkeys::LIST_TABS_HINT
+            ),
             t.dim(),
         );
     }
