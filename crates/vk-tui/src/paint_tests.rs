@@ -179,81 +179,232 @@ fn frame_local_sidebar_rows_match_fresh_rows_after_width_change() {
 
 #[test]
 fn native_pane_scroll_diff_uses_host_scroll_and_matches_the_fallback_frame() {
-    let mut optimized = ready(true);
-    let mut fallback = ready(true);
-    let mut initial = Vec::new();
-    for app in [&mut optimized, &mut fallback] {
-        app.sidebar = false;
-        // This is the normal collapsed sidebar, including its two-column rail.
-        app.ux.sidebar.hide_rail = false;
-        app.machines[0].model.tabs[0].layout = LayoutNode::Leaf { pane: "p1".into() };
-        app.machines[0].model.panes.retain(|p| p.id == "p1");
-        app.machines[0].panes.remove("p2");
-        let rect = app.tiled_rects()[0].1;
-        assert_eq!(rect.x, crate::sidebar::RAIL_W);
-        app.on_frame(
-            0,
-            ServerFrame::PaneFull {
-                pane: "p1".into(),
-                epoch: 2,
-                rev: 1,
-                cols: rect.w,
-                rows: rect.h,
-                lines: (0..rect.h)
-                    .map(|y| row(&format!("log row {y:03} with terminal output")))
-                    .collect(),
-                cursor: Cursor {
-                    visible: true,
-                    ..Cursor::default()
+    for (tabs, letterbox) in [
+        (vk_config::TabsPosition::Top, false),
+        (vk_config::TabsPosition::Hidden, false),
+        (vk_config::TabsPosition::Hidden, true),
+    ] {
+        let mut optimized = ready(true);
+        let mut fallback = ready(true);
+        let mut initial = Vec::new();
+        for app in [&mut optimized, &mut fallback] {
+            app.sidebar = false;
+            app.config.ui.tabs.position = tabs;
+            // This is the normal collapsed sidebar, including its two-column rail.
+            app.ux.sidebar.hide_rail = false;
+            app.machines[0].model.tabs[0].layout = LayoutNode::Leaf { pane: "p1".into() };
+            app.machines[0].model.panes.retain(|p| p.id == "p1");
+            app.machines[0].panes.remove("p2");
+            let rect = app.tiled_rects()[0].1;
+            assert_eq!(rect.x, crate::sidebar::RAIL_W);
+            if tabs == vk_config::TabsPosition::Hidden {
+                assert_eq!(rect.y, 0);
+            }
+            let pane_rows = rect.h - if letterbox { 2 } else { 0 };
+            app.on_frame(
+                0,
+                ServerFrame::PaneFull {
+                    pane: "p1".into(),
+                    epoch: 2,
+                    rev: 1,
+                    cols: rect.w - if letterbox { 2 } else { 0 },
+                    rows: pane_rows,
+                    lines: (0..pane_rows)
+                        .map(|y| row(&format!("log row {y:03} with terminal output")))
+                        .collect(),
+                    cursor: Cursor {
+                        visible: true,
+                        ..Cursor::default()
+                    },
+                    modes: PaneModes::default(),
+                    title: String::new(),
                 },
-                modes: PaneModes::default(),
-                title: String::new(),
+            );
+            app.prev = Grid::new(0, 0);
+            initial.push(app.draw_frame(true));
+        }
+        assert_eq!(optimized.prev, fallback.prev);
+        optimized.host_scroll = true;
+        let pane_rows = optimized.m().panes["p1"].rows;
+        let frame = ServerFrame::PaneDiff {
+            pane: "p1".into(),
+            epoch: 2,
+            base_rev: 1,
+            rev: 2,
+            ops: vec![
+                DiffOp::ScrollUp { n: 1 },
+                DiffOp::Rows(vec![(pane_rows - 1, row("new log row"))]),
+            ],
+            cursor: Cursor {
+                row: pane_rows - 1,
+                visible: true,
+                ..Cursor::default()
             },
+            modes: PaneModes::default(),
+            title: String::new(),
+        };
+        optimized.on_frame(0, frame.clone());
+        fallback.on_frame(0, frame);
+        let scrolled = optimized.draw_frame(true);
+        let repainted = fallback.draw_frame(true);
+        assert_eq!(
+            scrolled.windows(4).any(|w| w == b"\x1b[1S"),
+            !letterbox,
+            "letterboxed panes must preserve their fixed size hint using the fallback"
         );
-        app.prev = Grid::new(0, 0);
-        initial.push(app.draw_frame(true));
+        assert!(!repainted.windows(4).any(|w| w == b"\x1b[1S"));
+        if !letterbox {
+            assert!(scrolled.len() < repainted.len());
+        }
+        assert_eq!(optimized.prev, fallback.prev);
+        let mut scrolled_host = vk_term::Engine::new(optimized.size.0, optimized.size.1, 0);
+        let mut repainted_host = vk_term::Engine::new(fallback.size.0, fallback.size.1, 0);
+        scrolled_host.feed(&initial[0], &mut Vec::new());
+        repainted_host.feed(&initial[1], &mut Vec::new());
+        scrolled_host.feed(&scrolled, &mut Vec::new());
+        repainted_host.feed(&repainted, &mut Vec::new());
+        assert_eq!(scrolled_host.visible_rows(), repainted_host.visible_rows());
+        assert_eq!(optimized.m().panes["p1"].pending_scroll, 0);
+        assert!(
+            optimized.draw_frame(true).is_empty(),
+            "the scroll is consumed once"
+        );
     }
-    assert_eq!(optimized.prev, fallback.prev);
-    optimized.host_scroll = true;
-    let rect = optimized.tiled_rects()[0].1;
-    let frame = ServerFrame::PaneDiff {
-        pane: "p1".into(),
-        epoch: 2,
-        base_rev: 1,
-        rev: 2,
-        ops: vec![
-            DiffOp::ScrollUp { n: 1 },
-            DiffOp::Rows(vec![(rect.h - 1, row("new log row"))]),
-        ],
-        cursor: Cursor {
-            row: rect.h - 1,
-            visible: true,
-            ..Cursor::default()
-        },
-        modes: PaneModes::default(),
-        title: String::new(),
-    };
-    optimized.on_frame(0, frame.clone());
-    fallback.on_frame(0, frame);
-    let scrolled = optimized.draw_frame(true);
-    let repainted = fallback.draw_frame(true);
-    assert!(
-        scrolled.windows(4).any(|w| w == b"\x1b[1S"),
-        "the App emitted a host scroll"
-    );
-    assert!(!repainted.windows(4).any(|w| w == b"\x1b[1S"));
-    assert!(scrolled.len() < repainted.len());
-    assert_eq!(optimized.prev, fallback.prev);
-    let mut scrolled_host = vk_term::Engine::new(optimized.size.0, optimized.size.1, 0);
-    let mut repainted_host = vk_term::Engine::new(fallback.size.0, fallback.size.1, 0);
-    scrolled_host.feed(&initial[0], &mut Vec::new());
-    repainted_host.feed(&initial[1], &mut Vec::new());
-    scrolled_host.feed(&scrolled, &mut Vec::new());
-    repainted_host.feed(&repainted, &mut Vec::new());
-    assert_eq!(scrolled_host.visible_rows(), repainted_host.visible_rows());
-    assert_eq!(optimized.m().panes["p1"].pending_scroll, 0);
-    assert!(
-        optimized.draw_frame(true).is_empty(),
-        "the scroll is consumed once"
-    );
+}
+
+#[test]
+fn native_browser_media_only_frames_write_once_on_kitty_and_iterm() {
+    for kitty in [false, true] {
+        let (mut app, mut rxs) = crate::drafts::tests::fleet();
+        app.config.ui.animate = false;
+        app.config.ui.title_sync = false;
+        app.machines[0].model.runs.clear();
+        app.caps.kitty_graphics = kitty;
+        app.caps.iterm2_images = !kitty;
+        app.caps.cell_w = 4;
+        app.caps.cell_h = 4;
+        app.caps.truecolor = true;
+        app.imgview.tmux = false;
+        app.machines[0].model.panes[1].browser = Some(serde_json::from_value(json!({
+            "url": "https://example.com/", "machine": "", "task": null, "preview": null,
+            "source_pane": "p1", "history": ["https://example.com/"], "history_index": 0, "title": ""
+        })).unwrap());
+        app.draw_frame(true);
+        let frame = |seq, reset, shade| MediaFrame {
+            pane: "p2".into(),
+            seq,
+            reset,
+            width: 4,
+            height: 4,
+            cell_w: 4,
+            cell_h: 4,
+            tile_cols: 1,
+            tile_rows: 1,
+            grid_cols: 1,
+            grid_rows: 1,
+            tiles: vec![MediaTile {
+                index: 0,
+                col: 0,
+                row: 0,
+                cols: 1,
+                rows: 1,
+                w: 4,
+                h: 4,
+                data: TileData::Rgba(vec![shade; 4 * 4 * 4]),
+            }],
+        };
+        crate::browser::on_media(&mut app, 0, frame(1, true, 100));
+        let first = app.draw_frame(true);
+        let marker: &[u8] = if kitty { b"\x1b_G" } else { b"\x1b]1337;" };
+        assert!(
+            first.windows(marker.len()).any(|w| w == marker),
+            "first image kitty={kitty}"
+        );
+        let before = app.prev.clone();
+        app.browser.panes.get_mut("p2").unwrap().last_inline = None;
+        crate::browser::on_media(&mut app, 0, frame(2, false, 200));
+        let media_only = app.draw_frame(true);
+        assert_eq!(
+            before, app.prev,
+            "media changed without changing any composed cells"
+        );
+        assert!(
+            media_only.windows(marker.len()).any(|w| w == marker),
+            "media-only output kitty={kitty}"
+        );
+        assert!(
+            media_only.ends_with(b"\x1b[?25l"),
+            "restore hidden cursor after media"
+        );
+        assert!(
+            app.draw_frame(true).is_empty(),
+            "no duplicate media write kitty={kitty}"
+        );
+        let mut acks = 0;
+        while let Ok(frame) = rxs[0].try_recv() {
+            if matches!(frame, ClientFrame::MediaAck { ref pane, seq: 2 } if pane == "p2") {
+                acks += 1;
+            }
+        }
+        assert_eq!(acks, 1, "the media ACK observer still runs exactly once");
+    }
+}
+
+#[test]
+fn native_gallery_images_repaint_on_resize_and_disappear_on_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sample.png");
+    let png = vk_browser::frame::encode_png(4, 4, &[255; 4 * 4 * 4], true).unwrap();
+    std::fs::write(&path, png).unwrap();
+    for kitty in [false, true] {
+        let mut app = ready(false);
+        app.caps.kitty_graphics = kitty;
+        app.caps.iterm2_images = !kitty;
+        app.caps.cell_w = 10;
+        app.caps.cell_h = 20;
+        app.imgview.tmux = false;
+        app.imgview.gfx_dir = Some(dir.path().join("gfx"));
+        crate::gallery::open(
+            &mut app,
+            0,
+            crate::gallery::Scope::All,
+            crate::gallery::View::Full,
+            false,
+        );
+        let shot = crate::gallery::Shot::parse(&json!({
+            "id": "S1", "handle": "s1", "path_on_machine": path.to_string_lossy(), "exists": true,
+            "environment": {"kind": "agent"}, "created_at_ms": 1, "width": 4, "height": 4
+        }))
+        .unwrap();
+        let gallery = app.gallery.view.as_mut().unwrap();
+        gallery.shots = vec![shot];
+        gallery.loading = false;
+        crate::gallery::ensure_local_image(&mut app);
+        let out = app.draw_frame(true);
+        let marker: &[u8] = if kitty { b"\x1b_G" } else { b"\x1b]1337;" };
+        assert!(
+            out.windows(marker.len()).any(|w| w == marker),
+            "gallery image kitty={kitty}"
+        );
+        assert!(
+            app.draw_frame(true).is_empty(),
+            "unchanged gallery is a native no-op"
+        );
+        app.size.0 -= 1;
+        let resized = app.draw_frame(true);
+        assert!(!resized.is_empty());
+        if !kitty {
+            assert!(
+                resized.windows(marker.len()).any(|w| w == marker),
+                "resize re-emits inline image"
+            );
+        }
+        app.mode = Mode::Normal;
+        app.gallery.view = None;
+        assert!(
+            !app.draw_frame(true).is_empty(),
+            "closing removes the displayed image"
+        );
+        assert!(app.draw_frame(true).is_empty());
+    }
 }
