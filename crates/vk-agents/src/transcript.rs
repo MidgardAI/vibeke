@@ -767,8 +767,35 @@ impl Parser {
     // ---- pi / omp --------------------------------------------------------------------------
 
     fn pi(&mut self, v: &Value, out: &mut Vec<Event>) {
+        let ts = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_ms);
         match v.get("type").and_then(Value::as_str) {
             Some("message") => {}
+            // omp: the process ended (`session_exit`); its async jobs ran inside it.
+            Some("custom") => {
+                if v.get("customType").and_then(Value::as_str) == Some("session_exit") {
+                    self.omp_jobs_exited(ts, out);
+                }
+                return;
+            }
+            // omp: finished async jobs delivered to the agent.
+            Some("custom_message") => {
+                if v.get("customType").and_then(Value::as_str) == Some("async-result") {
+                    for j in v
+                        .pointer("/details/jobs")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(id) = j.get("jobId").and_then(Value::as_str) {
+                            self.bg_ended(id, "completed", ts, out);
+                        }
+                    }
+                }
+                return;
+            }
             // `/name`: the latest entry wins, an empty name clears it.
             Some("session_info") => {
                 self.user_title = v.get("name").and_then(Value::as_str).and_then(clean_title);
@@ -781,10 +808,6 @@ impl Parser {
             }
             _ => return,
         }
-        let ts = v
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_ms);
         let m = &v["message"];
         let entry_id = v.get("id").and_then(Value::as_str).map(str::to_string);
         match m.get("role").and_then(Value::as_str) {
@@ -805,6 +828,7 @@ impl Parser {
                     is_error: m.get("isError").and_then(Value::as_bool) == Some(true),
                     ts_ms: ts,
                 });
+                self.omp_jobs(m, ts, out);
                 self.activity = Some(Activity::Working);
             }
             Some("assistant") => {
@@ -837,6 +861,7 @@ impl Parser {
                                 .and_then(|a| a.get("command"))
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
+                            self.remember_input(tid, cmd.as_deref());
                             self.tool_use(tid, name, cmd, ts, out);
                         }
                     }
@@ -848,6 +873,93 @@ impl Parser {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// omp async jobs in a tool result: a start (`details.async.state == "running"`; a `task`
+    /// call starts one job per pending spawn in `details.progress`), and ends in `hub`
+    /// `wait`/`jobs` snapshots (`details.jobs[]` with a final status).
+    fn omp_jobs(&mut self, m: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
+        let d = &m["details"];
+        let call = m.get("toolCallId").and_then(Value::as_str);
+        if let Some(a) = d.get("async")
+            && a.get("state").and_then(Value::as_str) == Some("running")
+        {
+            let ty = a.get("type").and_then(Value::as_str).unwrap_or("task");
+            let kind = match ty {
+                "bash" => "shell",
+                "task" => "subagent",
+                other => other,
+            };
+            let mut ids: Vec<&str> = a.get("jobId").and_then(Value::as_str).into_iter().collect();
+            if ty == "task" {
+                for p in d
+                    .get("progress")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if matches!(
+                        p.get("status").and_then(Value::as_str),
+                        Some("pending" | "running")
+                    ) && let Some(id) = p.get("id").and_then(Value::as_str)
+                        && !ids.contains(&id)
+                    {
+                        ids.push(id);
+                    }
+                }
+            }
+            for id in ids {
+                // A task job is labelled with its agent id (as omp does); a shell with its command.
+                let label = (ty == "task").then(|| id.to_string());
+                self.omp_job_started(id, kind, call, label, ts, out);
+            }
+        }
+        if m.get("toolName").and_then(Value::as_str) == Some("hub") {
+            for j in d
+                .get("jobs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let (Some(id), Some(st @ ("completed" | "failed" | "cancelled"))) = (
+                    j.get("id").and_then(Value::as_str),
+                    j.get("status").and_then(Value::as_str),
+                ) {
+                    self.bg_ended(id, st, ts, out);
+                }
+            }
+        }
+    }
+
+    /// omp job ids are unique within one process only: a start of an id that already ended is
+    /// a new job (the session was resumed).
+    fn omp_job_started(
+        &mut self,
+        id: &str,
+        kind: &str,
+        call: Option<&str>,
+        label: Option<String>,
+        ts: Option<i64>,
+        out: &mut Vec<Event>,
+    ) {
+        if self.seen_bg_end.remove(id) {
+            self.seen_bg_start.remove(id);
+        }
+        self.bg_started(id, kind, call, label, ts, out);
+    }
+
+    /// The omp process ended: every job still open ended with it.
+    fn omp_jobs_exited(&mut self, ts: Option<i64>, out: &mut Vec<Event>) {
+        let mut open: Vec<String> = self
+            .seen_bg_start
+            .iter()
+            .filter(|id| !self.seen_bg_end.contains(*id))
+            .cloned()
+            .collect();
+        open.sort();
+        for id in open {
+            self.bg_ended(&id, "stopped", ts, out);
         }
     }
 }
@@ -1243,6 +1355,83 @@ mod tests {
         // omp uses the same entries.
         let mut o = Parser::new(Format::OmpJsonl);
         assert_eq!(turns(&o.feed(&lines(&v))).len(), 1);
+    }
+
+    /// omp async jobs, in the shapes omp writes (anonymised from real session files).
+    #[test]
+    fn omp_async_jobs_start_and_end() {
+        let mut p = Parser::new(Format::OmpJsonl);
+        let ev = p.feed(&lines(&[
+            // `bash` with async on: the result says the job runs on.
+            json!({"type":"message","id":"a1","timestamp":"2026-08-11T12:10:00Z","message":{"role":"assistant","stopReason":"toolUse","content":[
+                {"type":"toolCall","id":"call_b1|fc_1","name":"bash","arguments":{"command":"pnpm --filter app ts-check","async":true}}]}}),
+            json!({"type":"message","id":"r1","timestamp":"2026-08-11T12:10:01Z","message":{"role":"toolResult","toolCallId":"call_b1|fc_1","toolName":"bash",
+                "details":{"async":{"state":"running","jobId":"bg_1","type":"bash"},"timeoutSeconds":600},
+                "content":[{"type":"text","text":"Background job bg_1 started"}]}}),
+            // `task` spawning two background agents: one job per pending spawn.
+            json!({"type":"message","id":"r2","timestamp":"2026-08-11T12:10:02Z","message":{"role":"toolResult","toolCallId":"call_t1|fc_2","toolName":"task",
+                "details":{"projectAgentsDir":null,"results":[],"totalDurationMs":4,
+                    "progress":[{"index":0,"id":"PatternsScout","agent":"scout","status":"pending","task":"..."},
+                                {"index":1,"id":"TestsScout","agent":"scout","status":"pending","task":"..."}],
+                    "async":{"state":"running","jobId":"PatternsScout","type":"task"}},
+                "content":[{"type":"text","text":"Spawned 2 background agents using scout."}]}}),
+            // The result of a finished job is delivered to the agent.
+            json!({"type":"custom_message","customType":"async-result","display":true,"timestamp":"2026-08-11T12:11:00Z",
+                "details":{"jobs":[{"jobId":"bg_1","type":"bash","label":"pnpm --filter app ts-check","durationMs":59000}]},
+                "content":"<system-notice>Background job bg_1 has completed."}),
+            // Or a `hub` wait snapshot consumes it first.
+            json!({"type":"message","id":"r3","timestamp":"2026-08-11T12:12:00Z","message":{"role":"toolResult","toolCallId":"call_h1|fc_3","toolName":"hub",
+                "details":{"op":"wait","jobs":[{"id":"PatternsScout","type":"task","status":"completed","label":"PatternsScout"},
+                                              {"id":"TestsScout","type":"task","status":"running","label":"TestsScout"}]}}}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 5, "{b:?}");
+        assert!(
+            matches!(b[0], Event::BgStarted { id, kind, label, tool_use_id, ts_ms }
+                if id == "bg_1" && kind == "shell" && label == "pnpm --filter app ts-check"
+                    && tool_use_id.as_deref() == Some("call_b1|fc_1") && ts_ms.is_some())
+        );
+        assert!(
+            matches!(b[1], Event::BgStarted { id, kind, label, tool_use_id, .. }
+                if id == "PatternsScout" && kind == "subagent" && label == "PatternsScout"
+                    && tool_use_id.as_deref() == Some("call_t1|fc_2"))
+        );
+        assert!(
+            matches!(b[2], Event::BgStarted { id, kind, .. } if id == "TestsScout" && kind == "subagent")
+        );
+        assert!(
+            matches!(b[3], Event::BgEnded { id, status, .. } if id == "bg_1" && status == "completed")
+        );
+        assert!(
+            matches!(b[4], Event::BgEnded { id, status, .. } if id == "PatternsScout" && status == "completed")
+        );
+    }
+
+    #[test]
+    fn omp_jobs_end_with_the_process_and_ids_are_reused_after_a_resume() {
+        let mut p = Parser::new(Format::OmpJsonl);
+        let start = |id: &str, call: &str, t: &str| {
+            json!({"type":"message","timestamp":t,"message":{"role":"toolResult","toolCallId":call,"toolName":"bash",
+                "details":{"async":{"state":"running","jobId":id,"type":"bash"}}}})
+        };
+        let ev = p.feed(&lines(&[
+            start("bg_1", "c1", "2026-08-11T12:00:00Z"),
+            start("bg_2", "c2", "2026-08-11T12:00:01Z"),
+            json!({"type":"custom_message","customType":"async-result","timestamp":"2026-08-11T12:00:05Z","details":{"jobs":[{"jobId":"bg_1","type":"bash"}]}}),
+            // The process exits; bg_2 died with it.
+            json!({"type":"custom","customType":"session_exit","timestamp":"2026-08-11T12:01:00Z","data":{"reason":"dispose","kind":"normal"}}),
+            // A resumed process numbers its jobs from bg_1 again.
+            start("bg_1", "c3", "2026-08-11T13:00:00Z"),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 5, "{b:?}");
+        assert!(matches!(b[2], Event::BgEnded { id, .. } if id == "bg_1"));
+        assert!(
+            matches!(b[3], Event::BgEnded { id, status, .. } if id == "bg_2" && status == "stopped")
+        );
+        assert!(
+            matches!(b[4], Event::BgStarted { id, tool_use_id, .. } if id == "bg_1" && tool_use_id.as_deref() == Some("c3"))
+        );
     }
 
     #[test]
