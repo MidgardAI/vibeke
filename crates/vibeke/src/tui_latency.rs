@@ -7,12 +7,16 @@ use anyhow::{Context, Result, bail, ensure};
 use rustix::fd::{AsFd, AsRawFd, BorrowedFd};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use vk_term::Engine;
 
-const HELP: &str = "vibeke debug tui-latency [--n COUNT] [--json]\n\
+const HELP: &str = "vibeke debug tui-latency [--n COUNT] [--binary PATH] [--json]\n\
 Measure native TUI key-to-screen latency with an isolated server and pane.\n\
+--binary selects the server and TUI executable (default: this executable).\n\
+The observer and echo helper always use this executable for comparison.\n\
 COUNT is 1..10000 (default 100). Ten warm-up samples are excluded.\n\
 Keys have a 20 ms gap, excluded from the measured latency.\n\
 The host terminal is emulated. Physical display latency is not measured.";
@@ -41,14 +45,15 @@ pub fn run(args: &[String], json_out: bool) -> i32 {
         println!("{HELP}");
         return 0;
     }
-    let n = match parse_count(args) {
-        Ok(n) => n,
+    let options = match parse_options(args) {
+        Ok(options) => options,
         Err(error) => {
             eprintln!("{error:#}\n{HELP}");
             return vk_cli::EXIT_USAGE;
         }
     };
-    match measure(n) {
+    let n = options.n;
+    match measure(&options) {
         Ok(report) => {
             if json_out {
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -56,6 +61,7 @@ pub fn run(args: &[String], json_out: bool) -> i32 {
                 println!(
                     "Native TUI key-to-screen latency, {n} samples ({COLS}x{ROWS}, emulated host)"
                 );
+                println!("measured binary: {}", options.binary.display());
                 let ms = &report["latency_ms"];
                 println!(
                     "p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms",
@@ -80,8 +86,15 @@ pub fn run(args: &[String], json_out: bool) -> i32 {
     }
 }
 
-fn parse_count(args: &[String]) -> Result<usize> {
+#[derive(Debug)]
+struct Options {
+    n: usize,
+    binary: PathBuf,
+}
+
+fn parse_options(args: &[String]) -> Result<Options> {
     let mut n = 100;
+    let mut binary = std::env::current_exe()?;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -93,13 +106,38 @@ fn parse_count(args: &[String]) -> Result<usize> {
                     .context("--n needs an integer")?;
                 ensure!((1..=10000).contains(&n), "--n must be 1..10000");
             }
+            "--binary" => binary = args.next().context("--binary needs a path")?.into(),
             _ => bail!("unknown argument {arg}"),
         }
     }
-    Ok(n)
+    Ok(Options {
+        n,
+        binary: executable_path(&binary)?,
+    })
 }
 
-fn measure(n: usize) -> Result<Value> {
+fn executable_path(path: &Path) -> Result<PathBuf> {
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolve binary {}", path.display()))?;
+    let metadata = path.metadata()?;
+    ensure!(
+        metadata.is_file(),
+        "binary is not a file: {}",
+        path.display()
+    );
+    ensure!(
+        metadata.permissions().mode() & 0o111 != 0,
+        "binary is not executable: {}",
+        path.display()
+    );
+    Ok(path)
+}
+
+fn measure(options: &Options) -> Result<Value> {
+    let n = options.n;
+    // Keep the observer and pane helper identical while comparing different TUI builds.
+    let observer = std::env::current_exe()?.canonicalize()?;
     // A short, private directory also keeps UNIX sockets below macOS's 104-byte limit.
     let dir = tempfile::Builder::new()
         .prefix("vktui-")
@@ -107,7 +145,7 @@ fn measure(n: usize) -> Result<Value> {
     let mut run = Run {
         env: Env {
             dir: dir.path().to_path_buf(),
-            exe: std::env::current_exe()?,
+            exe: options.binary.clone(),
         },
         server: None,
         tui: None,
@@ -138,7 +176,7 @@ fn measure(n: usize) -> Result<Value> {
             json!({
                 "cwd": run.env.dir,
                 "name": "tui-latency",
-                "command": [run.env.exe, "debug", "tui-latency", "--echo"],
+                "command": [observer, "debug", "tui-latency", "--echo"],
             }),
         )
         .context("could not create isolated probe pane")?;
@@ -177,7 +215,9 @@ fn measure(n: usize) -> Result<Value> {
     let percentile = |p: usize| sorted[(n * p).div_ceil(100).saturating_sub(1)];
     Ok(json!({
         "measurement": "native_tui_key_to_host_vt_marker",
-        "version": vk_proto::VERSION,
+        "measured_binary": options.binary,
+        "observer_binary": observer,
+        "observer_version": vk_proto::VERSION,
         "n": n,
         "warmup_samples": WARMUP,
         "sample_gap_ms": SAMPLE_GAP.as_millis(),
@@ -340,4 +380,53 @@ fn echo() -> Result<()> {
         stdout.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn options_bound_sample_count_and_require_values() {
+        let default = parse_options(&[]).unwrap();
+        assert_eq!(default.n, 100);
+        assert_eq!(
+            default.binary,
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
+        assert_eq!(parse_options(&args(&["--n", "1"])).unwrap().n, 1);
+        assert_eq!(parse_options(&args(&["--n", "10000"])).unwrap().n, 10000);
+        for invalid in [
+            vec!["--n"],
+            vec!["--n", "0"],
+            vec!["--n", "10001"],
+            vec!["--n", "-1"],
+            vec!["--n", "1.5"],
+            vec!["--binary"],
+            vec!["--unknown"],
+        ] {
+            assert!(parse_options(&args(&invalid)).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn binary_path_is_canonical_and_requires_an_executable_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("probe binary");
+        let command = vec!["--binary".to_string(), path.to_string_lossy().into_owned()];
+        assert!(parse_options(&command).is_err(), "missing file");
+        assert!(executable_path(directory.path()).is_err(), "directory");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(parse_options(&command).is_err(), "non-executable file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            parse_options(&command).unwrap().binary,
+            path.canonicalize().unwrap()
+        );
+    }
 }
