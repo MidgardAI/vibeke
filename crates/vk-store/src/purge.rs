@@ -75,8 +75,12 @@ impl Store {
         let mut ranges: Vec<(String, u64, u64)> = Vec::new();
         let mut chosen: Vec<SegInfo> = Vec::new();
         let mut emptied: Vec<String> = Vec::new();
+        let mut invalidated: Vec<String> = Vec::new();
         for id in &ids {
             let segs = archive.select(id, sel);
+            if !segs.is_empty() || sel == Select::All {
+                invalidated.push(id.clone());
+            }
             if !segs.is_empty() {
                 report.panes += 1;
             }
@@ -148,9 +152,13 @@ impl Store {
         }
         // File descriptors held by read workers survive staging/unlink. Invalidate them
         // before mutation, including retention and memory-only whole-pane forget. The
-        // global fence deliberately stays advanced if staging or the transaction rolls back.
-        if !chosen.is_empty() || sel == Select::All {
+        // fences deliberately stay advanced if staging or the transaction rolls back.
+        if whole_all {
             archive.invalidate_reads();
+        } else {
+            for id in &invalidated {
+                archive.invalidate_pane_reads(id);
+            }
         }
         // Recoverable deletion: (1) record the purge in the journal and move the segments into
         // `.trash/<purge-id>/` (a failure moves them back and rolls the index back); (2) commit
@@ -668,7 +676,7 @@ mod tests {
         let (s, mut a) = buffered_rotation(d.path());
         let batches = a.prepare_flush();
         let read = a.prepare_read("p", 0, 3).unwrap();
-        let fence = a.read_fence();
+        let fence = a.read_fence().for_pane("p");
         let generation = fence.generation();
         let report = s
             .purge_archive(&mut a, Some(&["p".into()]), Select::All, false)
@@ -689,14 +697,46 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_buffer_only_pane_invalidates_only_its_reads() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open_in_memory().unwrap();
+        let mut a = Archive::new(d.path());
+        for pane in ["a", "b"] {
+            a.append(
+                pane,
+                &[ArchivedRow {
+                    n: 0,
+                    t: pane.into(),
+                    w: false,
+                }],
+            )
+            .unwrap();
+        }
+        let kept = a.prepare_read("a", 0, 1).unwrap();
+        let forgotten = a.prepare_read("b", 0, 1).unwrap();
+        let fence = a.read_fence().for_pane("b");
+        let generation = fence.generation();
+        s.purge_archive(&mut a, Some(&["b".into()]), Select::All, false)
+            .unwrap();
+        assert_ne!(fence.generation(), generation);
+        assert!(forgotten.finish().is_err());
+        assert_eq!(kept.finish().unwrap()[0].t, "a");
+        assert!(a.read("b", 0, 1).unwrap().is_empty());
+    }
+
+    #[test]
     fn retention_deletes_matching_fts_rows() {
         let d = tempfile::tempdir().unwrap();
         let (s, mut a) = fixture(d.path());
         let segs = a.segment_infos("p1");
         assert!(segs.len() > 2);
         let read = a.prepare_read("p1", 0, 1).unwrap();
-        let fence = a.read_fence();
+        let fence = a.read_fence().for_pane("p1");
         let generation = fence.generation();
+        let other = a.prepare_read("p2", 0, 1).unwrap();
+        let other_fence = a.read_fence().for_pane("p2");
+        let other_generation = other_fence.generation();
+        let other_expected = a.read("p2", 0, 1).unwrap();
         let dry = s
             .purge_archive(&mut a, Some(&["p1".into()]), Select::OverBytes(1), true)
             .unwrap();
@@ -728,6 +768,8 @@ mod tests {
             .unwrap();
         assert_eq!(min_line, first_kept);
         assert_eq!(fts_count(&s, "p2"), 1000, "other panes untouched");
+        assert_eq!(other_fence.generation(), other_generation);
+        assert_eq!(other.finish().unwrap(), other_expected);
         assert!(
             s.archive_pane("p1").unwrap().is_some(),
             "pane keeps its segment"

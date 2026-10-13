@@ -1,5 +1,6 @@
 //! Bounded read work for a render connection. Mutations and input stay in wire order.
 use super::*;
+use vk_store::archive::{PaneReadFence, ReadGeneration};
 
 const MAX_READS: usize = 8;
 const MAX_QUEUED_READS: usize = 128;
@@ -8,7 +9,7 @@ const MAX_COMMAND_READS: usize = 6;
 
 pub(super) struct ReadOutput {
     pub frame: ServerFrame,
-    history_generation: Option<u64>,
+    history_fence: Option<(PaneReadFence, ReadGeneration)>,
 }
 
 pub(super) enum ReadJob {
@@ -23,7 +24,7 @@ impl ReadJob {
                     req,
                     json: api::handle_line(&server, &ctx, &json).await,
                 },
-                history_generation: None,
+                history_fence: None,
             },
             Self::History(history) => {
                 tokio::task::spawn_blocking(move || history.finish(&server)).await?
@@ -84,7 +85,10 @@ impl Session {
             lines,
             ..
         } = &mut frame
-            && (result.history_generation != Some(self.server.archive_read_fence.generation())
+            && (result
+                .history_fence
+                .as_ref()
+                .is_none_or(|(fence, generation)| fence.generation() != *generation)
                 || self.server.pane_rt(pane).is_none())
         {
             *start = 0;
@@ -138,6 +142,7 @@ impl Session {
         start: u32,
         count: u32,
     ) -> HistoryRead {
+        let fence = self.server.archive_read_fence.for_pane(pane);
         let mut history = HistoryRead {
             req,
             pane: pane.into(),
@@ -145,7 +150,8 @@ impl Session {
             total: 0,
             archive_end: start,
             memory: vec![],
-            generation: self.server.archive_read_fence.generation(),
+            generation: fence.generation(),
+            fence,
         };
         let Some(rt) = self.server.pane_rt(pane) else {
             return history;
@@ -183,14 +189,13 @@ pub(super) struct HistoryRead {
     total: u32,
     archive_end: u32,
     memory: Vec<Row>,
-    generation: u64,
+    generation: ReadGeneration,
+    fence: PaneReadFence,
 }
 impl HistoryRead {
     pub(super) fn finish(self, server: &Server) -> ReadOutput {
         let mut lines = Vec::new();
-        if self.start < self.archive_end
-            && self.generation == server.archive_read_fence.generation()
-        {
+        if self.start < self.archive_end && self.generation == self.fence.generation() {
             let prepared = server.archive.lock().unwrap().prepare_read(
                 &self.pane,
                 self.start as u64,
@@ -228,7 +233,7 @@ impl HistoryRead {
                 total: self.total,
                 lines,
             },
-            history_generation: Some(self.generation),
+            history_fence: Some((self.fence, self.generation)),
         }
     }
 }

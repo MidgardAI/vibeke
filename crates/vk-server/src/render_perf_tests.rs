@@ -424,6 +424,89 @@ async fn history_keeps_capacity_when_command_workers_are_busy() {
 }
 
 #[tokio::test]
+async fn forgetting_another_pane_preserves_slow_history_reply() {
+    for forget_before_finish in [false, true] {
+        let (_d, server) = server();
+        let mut s = session(server);
+        let rt = runtime(&mut s);
+        {
+            let mut sc = rt.screen.lock().unwrap();
+            sc.engine = vk_term::Engine::new(40, 2, 1);
+            sc.engine
+                .feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive", &mut vec![]);
+            assert_eq!(sc.engine.scrolled_total(), 3);
+            assert_eq!(sc.engine.history_len(), 1);
+        }
+        {
+            let mut archive = s.server.archive.lock().unwrap();
+            let rows: Vec<_> = ["one", "two"]
+                .into_iter()
+                .enumerate()
+                .map(|(n, text)| vk_store::archive::ArchivedRow {
+                    n: n as u64,
+                    t: text.into(),
+                    w: false,
+                })
+                .collect();
+            archive.append("P", &rows).unwrap();
+            archive.flush().unwrap();
+            // B exists only in buffered archive data: forgetting it still needs a fence.
+            archive
+                .append(
+                    "B",
+                    &[vk_store::archive::ArchivedRow {
+                        n: 0,
+                        t: "forgotten".into(),
+                        w: false,
+                    }],
+                )
+                .unwrap();
+        }
+        let captured = s.capture_history(7, "P", 0, 20);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let read_server = s.server.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            // Hold the queued read after memory capture, as a slow archive worker would.
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            captured.finish(&read_server)
+        });
+        ready_rx.await.unwrap();
+        if forget_before_finish {
+            s.server.archive.lock().unwrap().remove_pane("B");
+        }
+        release_tx.send(()).unwrap();
+        let result = worker.await.unwrap();
+        if !forget_before_finish {
+            // Also cover the delivery fence after archive decoding already completed.
+            s.server.archive.lock().unwrap().remove_pane("B");
+        }
+        let mut out = Vec::new();
+        s.write_read(result, &mut out).await.unwrap();
+        let mut bytes = out.as_slice();
+        let ServerFrame::History {
+            req,
+            start,
+            total,
+            lines,
+            ..
+        } = asyncio::read_frame::<_, ServerFrame>(&mut bytes)
+            .await
+            .unwrap()
+        else {
+            panic!("expected history");
+        };
+        assert_eq!((req, start, total), (7, 0, 3));
+        assert_eq!(
+            lines.iter().map(Row::text).collect::<Vec<_>>(),
+            ["one", "two", "three"],
+            "forget before finish: {forget_before_finish}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn forgotten_or_closed_history_is_not_emitted_after_capture() {
     for forget_before_finish in [false, true] {
         let (_d, server) = server();

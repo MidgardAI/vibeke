@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::crypt::{self, StateCipher};
 
@@ -55,14 +55,64 @@ pub struct Archive {
     paused: bool,
 }
 
-/// A lock-free invalidation fence for queued archive reads, including a caller's captured
-/// memory rows. Clone it while constructing the server; reads never need the archive mutex.
+/// Registry of pane read fences, independent of the archive mutex. Looking up a pane
+/// takes only this short registry lock; checking a retained fence is lock-free.
 #[derive(Clone, Default)]
-pub struct ReadFence(Arc<AtomicU64>);
+pub struct ReadFence {
+    global: Arc<AtomicU64>,
+    panes: Arc<RwLock<HashMap<String, Arc<AtomicU64>>>>,
+}
+
+/// Keep this handle from enqueue through publication. Pane counters stay stable for this
+/// archive's lifetime, so repeated forgets also invalidate readers paused during an earlier
+/// invalidation or a later reuse of the same pane id.
+#[derive(Clone)]
+pub struct PaneReadFence {
+    global: Arc<AtomicU64>,
+    pane: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadGeneration {
+    global: u64,
+    pane: u64,
+}
+
+impl PaneReadFence {
+    pub fn generation(&self) -> ReadGeneration {
+        ReadGeneration {
+            global: self.global.load(Ordering::Acquire),
+            pane: self.pane.load(Ordering::Acquire),
+        }
+    }
+}
 
 impl ReadFence {
+    /// Global invalidations, for operations affecting all panes.
     pub fn generation(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
+        self.global.load(Ordering::Acquire)
+    }
+
+    pub fn for_pane(&self, pane: &str) -> PaneReadFence {
+        let existing = self.panes.read().unwrap().get(pane).cloned();
+        let generation = existing.unwrap_or_else(|| {
+            self.panes
+                .write()
+                .unwrap()
+                .entry(pane.to_string())
+                .or_default()
+                .clone()
+        });
+        PaneReadFence {
+            global: self.global.clone(),
+            pane: generation,
+        }
+    }
+
+    fn invalidate_pane(&self, pane: &str) {
+        if let Some(generation) = self.panes.read().unwrap().get(pane) {
+            generation.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -73,8 +123,8 @@ pub struct PreparedRead {
     segments: Vec<ReadSegment>,
     from: u64,
     to: u64,
-    generation: u64,
-    fence: ReadFence,
+    generation: ReadGeneration,
+    fence: PaneReadFence,
 }
 
 struct ReadSegment {
@@ -83,7 +133,7 @@ struct ReadSegment {
 }
 
 impl PreparedRead {
-    pub fn generation(&self) -> u64 {
+    pub fn generation(&self) -> ReadGeneration {
         self.generation
     }
 
@@ -178,6 +228,7 @@ impl Archive {
     /// buffered before and closes every open segment; rows appended while paused are dropped.
     pub fn set_paused(&mut self, paused: bool) -> Result<()> {
         if paused && !self.paused {
+            self.invalidate_reads();
             self.flush()?;
             self.open.clear();
         }
@@ -201,6 +252,7 @@ impl Archive {
         if same {
             return Ok(());
         }
+        self.invalidate_reads();
         self.flush()?;
         self.open.clear();
         if let Some(c) = &cipher {
@@ -327,7 +379,7 @@ impl Archive {
     }
 
     pub fn remove_pane(&mut self, pane: &str) {
-        self.invalidate_reads();
+        self.invalidate_pane_reads(pane);
         self.open.remove(pane);
         self.pending.remove(pane);
         let _ = std::fs::remove_dir_all(self.pane_dir(pane));
@@ -391,12 +443,13 @@ impl Archive {
     }
 
     fn read_buffered_segment(&self, pane: &str, path: &Path) -> Result<Vec<ArchivedRow>> {
+        let fence = self.read_fence.for_pane(pane);
         PreparedRead {
             segments: vec![self.capture_segment(pane, path)?],
             from: 0,
             to: u64::MAX,
-            generation: self.read_generation(),
-            fence: self.read_fence(),
+            generation: fence.generation(),
+            fence,
         }
         .finish()
     }
@@ -414,7 +467,7 @@ impl Archive {
         v
     }
 
-    /// Fence to retain for lock-free enqueue-time and publication-time checks.
+    /// Registry for obtaining a pane fence before enqueueing a history read.
     pub fn read_fence(&self) -> ReadFence {
         self.read_fence.clone()
     }
@@ -423,11 +476,17 @@ impl Archive {
         self.read_fence.generation()
     }
 
-    /// Invalidate outstanding reads before deleting, replacing or forgetting any history.
-    /// Called under the archive mutex, including by retention/purge code which renames files
-    /// itself. Conservative invalidation is safe if deletion later rolls back.
+    /// Invalidate all outstanding reads before a global privacy or encryption change.
+    /// Pane-scoped deletion must use [`Self::invalidate_pane_reads`] to preserve unrelated
+    /// in-flight copy-mode history. Conservative invalidation is safe if a change rolls back.
     pub fn invalidate_reads(&mut self) {
-        self.read_fence.0.fetch_add(1, Ordering::Release);
+        self.read_fence.global.fetch_add(1, Ordering::Release);
+    }
+
+    /// Invalidate outstanding reads for one pane before changing or forgetting its history.
+    /// Called under the archive mutex, including by purge code which renames files itself.
+    pub fn invalidate_pane_reads(&mut self, pane: &str) {
+        self.read_fence.invalidate_pane(pane);
     }
 
     /// Capture rows with absolute line numbers in `[from, to)`. The caller holds the archive
@@ -435,6 +494,7 @@ impl Archive {
     /// calling [`PreparedRead::finish`]. Concurrent appends and flushes do not invalidate a
     /// read. Deletion and forgetting do; retain [`Self::read_fence`] for publication checks.
     pub fn prepare_read(&self, pane: &str, from: u64, to: u64) -> Result<PreparedRead> {
+        let fence = self.read_fence.for_pane(pane);
         let paths = self.readable_segments(pane);
         let starts: Vec<u64> = paths.iter().map(|p| seg_start(p)).collect();
         let mut segments = Vec::new();
@@ -449,8 +509,8 @@ impl Archive {
             segments,
             from,
             to,
-            generation: self.read_generation(),
-            fence: self.read_fence(),
+            generation: fence.generation(),
+            fence,
         })
     }
 
@@ -490,7 +550,7 @@ impl Archive {
 
     /// Discard the pane's open (buffered) segment state; its file is removed by the caller.
     pub fn drop_open(&mut self, pane: &str) {
-        self.invalidate_reads();
+        self.invalidate_pane_reads(pane);
         self.open.remove(pane);
         self.pending.remove(pane);
     }
@@ -633,10 +693,17 @@ impl Archive {
 
     /// Delete segment files (a missing file counts as deleted).
     pub fn remove_segments(&mut self, segs: &[SegInfo]) -> Result<()> {
-        if !segs.is_empty() {
-            self.invalidate_reads();
-        }
         for s in segs {
+            if let Some(pane) = s
+                .path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|p| p.to_str())
+            {
+                self.invalidate_pane_reads(pane);
+            } else {
+                self.invalidate_reads();
+            }
             match std::fs::remove_file(&s.path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1018,7 +1085,7 @@ mod tests {
             let mut expected = rows(0, 2, "first");
             expected.extend(rows(2, 2, "buffered"));
             assert_eq!(read.finish().unwrap(), expected);
-            assert_eq!(archive.read_generation(), generation);
+            assert_eq!(archive.read_fence().for_pane("p").generation(), generation);
             assert_eq!(archive.read("p", 0, 10).unwrap().len(), 6);
         }
     }
@@ -1046,7 +1113,7 @@ mod tests {
         archive.append("p", &rows(0, 2, "first")).unwrap();
         archive.flush().unwrap();
         let read = archive.prepare_read("p", 0, 10).unwrap();
-        let fence = archive.read_fence();
+        let fence = archive.read_fence().for_pane("p");
         let generation = fence.generation();
         let archive = Mutex::new(archive);
         let guard = archive.lock().unwrap();
@@ -1071,7 +1138,7 @@ mod tests {
             archive.flush().unwrap();
             archive.append("p", &rows(2, 1, "buffered")).unwrap();
             let read = archive.prepare_read("p", 0, 10).unwrap();
-            let fence = archive.read_fence();
+            let fence = archive.read_fence().for_pane("p");
             let queued_generation = fence.generation();
             match operation {
                 "drop_open" => archive.drop_open("p"),
@@ -1082,6 +1149,70 @@ mod tests {
             }
             assert_ne!(fence.generation(), queued_generation, "{operation}");
             assert!(read.finish().is_err(), "{operation}");
+        }
+    }
+
+    #[test]
+    fn forgetting_other_panes_preserves_prepared_and_queued_reads() {
+        for operation in ["drop_open", "remove_pane", "remove_segments"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut archive = Archive::new(directory.path());
+            let expected = rows(0, 2, "kept");
+            archive.append("a", &expected).unwrap();
+            archive.append("b", &rows(0, 2, "forgotten")).unwrap();
+            archive.flush().unwrap();
+            archive.append("b", &rows(2, 1, "buffered")).unwrap();
+            let read = archive.prepare_read("a", 0, 10).unwrap();
+            let fence = archive.read_fence().for_pane("a");
+            let queued_generation = fence.generation();
+            match operation {
+                "drop_open" => archive.drop_open("b"),
+                "remove_pane" => archive.remove_pane("b"),
+                _ => archive
+                    .remove_segments(&archive.segment_infos("b"))
+                    .unwrap(),
+            }
+            assert_eq!(fence.generation(), queued_generation, "{operation}");
+            assert_eq!(read.finish().unwrap(), expected, "{operation}");
+        }
+    }
+
+    #[test]
+    fn pane_fence_survives_repeated_forget_and_pane_id_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = Archive::new(directory.path());
+        let fence = archive.read_fence().for_pane("p");
+        archive.remove_pane("p");
+        // A queued reader can retain its handle across the first forget, then capture
+        // the current generation before the pane id is reused and forgotten again.
+        let after_first_forget = fence.generation();
+        archive.append("p", &rows(0, 1, "new pane")).unwrap();
+        let current = archive.read_fence().for_pane("p");
+        assert_eq!(current.generation(), after_first_forget);
+        archive.drop_open("p");
+        assert_ne!(fence.generation(), after_first_forget);
+        assert_eq!(current.generation(), fence.generation());
+    }
+
+    #[test]
+    fn global_privacy_changes_invalidate_every_pane() {
+        for operation in ["invalidate", "pause", "cipher"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut archive = Archive::new(directory.path());
+            archive.append("a", &rows(0, 1, "first")).unwrap();
+            archive.append("b", &rows(0, 1, "second")).unwrap();
+            let a = archive.prepare_read("a", 0, 1).unwrap();
+            let b = archive.prepare_read("b", 0, 1).unwrap();
+            match operation {
+                "pause" => archive.set_paused(true).unwrap(),
+                "cipher" => {
+                    let (cipher, _) = StateCipher::generate();
+                    archive.set_cipher(Some(Arc::new(cipher))).unwrap();
+                }
+                _ => archive.invalidate_reads(),
+            }
+            assert!(a.finish().is_err(), "{operation}");
+            assert!(b.finish().is_err(), "{operation}");
         }
     }
 
