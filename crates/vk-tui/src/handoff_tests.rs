@@ -1506,3 +1506,18 @@ fn space_on_hand_off_never_sends() {
     );
     assert!(app.ux.handoff.send.as_ref().unwrap().chosen.is_some());
 }
+
+/// Space on the focused Accept button moves to the next button; it never accepts.
+#[test]
+fn space_on_accept_never_accepts() {
+    let (mut app, mut rxs) = opened(&["/home/u/code/vibeke"]);
+    assert_eq!(focus(&app), Row::Accept);
+    app.on_key(named(NamedKey::Space));
+    assert_eq!(focus(&app), Row::Decline);
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .all(|c| !c.1.contains("handoff.accept")),
+        "space must not accept"
+    );
+}

@@ -943,9 +943,7 @@ fn paste_key(app: &mut App, ev: &KeyEvent) {
         Key::Named(NamedKey::Space) | Key::Char(' ') if f.focus == PasteRow::ShareUser => {
             f.share_user = !f.share_user
         }
-        Key::Named(NamedKey::Space) | Key::Char(' ') if f.focus == PasteRow::Accept => {
-            submit = true
-        }
+        // Space never accepts: only enter does (on the Accept row, space does nothing).
         _ => {}
     }
     if submit {

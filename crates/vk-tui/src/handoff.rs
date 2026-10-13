@@ -1562,6 +1562,12 @@ fn step_of(ev: &KeyEvent) -> i32 {
 
 /// `enter` (or `space`, which chooses without opening a picker) on the focused row.
 fn activate(a: &mut Accept, space: bool) -> Act {
+    // Space changes options; on the buttons it moves to the next button like →. Only enter
+    // presses a button, so space can never accept, decline or close.
+    if space && matches!(a.focus, Row::Accept | Row::Decline | Row::Later) {
+        a.change(1);
+        return Act::None;
+    }
     match a.focus {
         Row::Repo(i) => a.set_repo(RepoSel::Suggested(i)),
         Row::Browse if space && a.browse_path.is_some() => a.set_repo(RepoSel::Browse),
