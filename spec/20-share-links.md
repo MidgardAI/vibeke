@@ -74,11 +74,14 @@ through the account server (`GET /v1/github/users/{login}` → `{id, login}`) on
 is created. The share stores `[{id, login}]`; `login` is for display. Attestations and blob
 downloads are checked by id.
 
-The default list comes from config:
+The default list is the account's **sharing list**, kept on the account server and managed on
+the account page (`<account server>/account`, §6.4) or through `/v1/sharing`. A request for
+`access: github` without `github` uses it; an empty list is refused (fail closed). The CLI and the
+TUI send a machine's `[sharing] github` config list instead when it has one:
 
 ```toml
 [sharing]
-github = ["alice", "bob"]   # GitHub logins allowed by default for access = "github"
+github = ["alice", "bob"]   # this machine's list; empty: the account's sharing list
 ```
 
 ### 2.3 GitHub identity attestation
@@ -491,6 +494,25 @@ limit (256 MiB + 4 KiB); the 16 KiB limit stays for the rest.
 
 `access: github` allows accounts whose `github_id` is in the list; `["*"]` stored as `null` with
 `access: any` allows any account. The owner may always fetch.
+
+### 6.4 Sharing list and account page
+
+The account page, `GET /account`, is a server-rendered page in the Vibeke look. The user signs in
+with GitHub (a browser session cookie, `Path=/account`, separate from the API tokens). It shows
+**People who can open your links** with an add form (a GitHub username, resolved to its id) and a
+**Remove** button for each person, and the account's hosts. Forms carry a CSRF token and are
+checked for a same-origin `Origin`.
+
+| Route | Auth | Does |
+|---|---|---|
+| `GET /v1/sharing` | Bearer | `{people: [{id, login}]}` |
+| `PUT /v1/sharing` | Bearer | `{people: [login]}` replaces the list (logins resolved to ids) |
+| `POST /v1/sharing/people` | Bearer | `{login}` → `{person: {id, login}}` |
+| `DELETE /v1/sharing/people/{id}` | Bearer | removes one person |
+
+At most 200 people per account. The gateway reads the list when it makes a GitHub link without a
+`github` list (`vk_account::Account::sharing_people`). An account server without the route
+answers 404, which counts as an empty list.
 
 ## 7. Clients
 

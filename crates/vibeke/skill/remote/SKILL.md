@@ -39,7 +39,7 @@ Each command prints only the link when you do not pass `--json`.
 ## Rules
 
 - Post links, never terminal output, diffs or logs. A link opens the live view for people who may see it.
-- Links are limited to GitHub accounts. By default they use the accounts in the `[sharing] github` config list. Tell the requester which GitHub accounts can open each link you post.
+- Links are limited to GitHub accounts. By default they are for the people on the user's sharing list (managed on the account page, cloud.vibeke.dev/account). If a command says the list is empty, ask the requester to add people there. Tell the requester which GitHub accounts can open each link you post.
 - Ask the requester before you use `--any-github` (any GitHub account) or `--link` (anyone who holds the link). Use them only after a clear yes.
 - If a command fails because no GitHub accounts are set, ask the requester for the GitHub logins and pass `--github a,b`.
 - Use `--ttl` for short lived links, for example `--ttl 24h`. Use `vibeke share list` to show open links and `vibeke share revoke <id>` when the requester wants one closed.

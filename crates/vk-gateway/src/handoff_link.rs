@@ -2,7 +2,7 @@
 //! offline.
 //!
 //! - `handoff.link.create {pane, access: link|github, github?: [login], ttl_s?, interrupt?}` →
-//!   `{job}`. The job exports the pane's work at a turn boundary
+//!   `{job}` (`access: github` without `github` uses the account's sharing list). The job exports the pane's work at a turn boundary
 //!   ([`crate::handoff::export_bundle`]), encrypts it with a fresh key
 //!   ([`vk_handoff::stream`]), uploads the ciphertext to the account server with this host's
 //!   account and builds the link ([`ContinueLink`]) and a Markdown snippet for a pull request.
@@ -528,11 +528,16 @@ async fn create(gw: &Arc<Gateway>, dev: &Device, p: &Value) -> ApiResult {
             .filter(|l| !l.is_empty())
             .collect();
         if logins.is_empty() {
-            return Err(ApiError::invalid(
-                "github: list the GitHub logins that may open the link, or [\"*\"]",
-            ));
-        }
-        if logins.iter().any(|l| l == "*") {
+            // No list: the people on the account's sharing list (the account page).
+            let people = acct.sharing_people().await.map_err(account_err)?;
+            if people.is_empty() {
+                return Err(ApiError::invalid(format!(
+                    "nobody is on your sharing list yet: add people at {}/account, or name them with --github",
+                    acct.server().trim_end_matches('/')
+                )));
+            }
+            BlobAccess::Github(people.into_iter().map(|u| u.id).take(100).collect())
+        } else if logins.iter().any(|l| l == "*") {
             // Every account on the account server is a GitHub account.
             BlobAccess::Any
         } else {

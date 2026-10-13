@@ -44,6 +44,8 @@ pub struct FakeState {
     pub keys_calls: u32,
     /// GitHub users `/v1/github/users/{login}` knows (matched without case).
     pub github_users: Vec<(u64, String)>,
+    /// `GET /v1/sharing`: the account's people (ids and logins).
+    pub sharing: Vec<(u64, String)>,
     pub github_calls: u32,
 }
 
@@ -69,6 +71,7 @@ impl Default for FakeState {
             attest_seeds: vec![ATTEST_SEED],
             keys_calls: 0,
             github_users: vec![(583231, "octocat".into()), (2, "alice".into())],
+            sharing: Vec::new(),
             github_calls: 0,
         }
     }
@@ -110,6 +113,7 @@ impl FakeServer {
             .route("/v1/logout", post(logout))
             .route("/v1/keys", get(keys))
             .route("/v1/github/users/{login}", get(github_user))
+            .route("/v1/sharing", get(sharing))
             .with_state(state.clone())
             .merge(crate::blobs::fake::router(state.clone(), blobs.clone()));
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -287,4 +291,17 @@ async fn github_user(
         Some((id, l)) => axum::Json(json!({"id": id, "login": l})).into_response(),
         None => err(StatusCode::NOT_FOUND, "unknown_user"),
     }
+}
+
+async fn sharing(State(st): State<Shared>, headers: HeaderMap) -> Response {
+    let st = st.lock().unwrap();
+    if bearer(&headers).is_none() || bearer(&headers) != st.access {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let people: Vec<Value> = st
+        .sharing
+        .iter()
+        .map(|(id, l)| json!({"id": id, "login": l}))
+        .collect();
+    axum::Json(json!({"people": people})).into_response()
 }

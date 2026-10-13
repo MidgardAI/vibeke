@@ -227,9 +227,48 @@ impl Client {
             (s, v) => Err(Self::unexpected(s, &v)),
         }
     }
+
+    /// `GET /v1/sharing`: the people who may open this account's GitHub links, as the account
+    /// page (`<server>/account`) keeps them (spec 20 §2.2).
+    pub async fn sharing_people(&self, access_token: &str) -> Result<Vec<GithubUser>> {
+        match self
+            .send(
+                reqwest::Method::GET,
+                "/v1/sharing",
+                Some(access_token),
+                None,
+            )
+            .await?
+        {
+            (200, v) => serde_json::from_value(v.get("people").cloned().unwrap_or_default())
+                .map_err(|e| Error::Http(format!("bad sharing list: {e}"))),
+            (401, _) => Err(Error::Unauthorized),
+            // An account server without the list yet: nobody.
+            (404, _) => Ok(Vec::new()),
+            (s, v) => Err(Self::unexpected(s, &v)),
+        }
+    }
 }
 
 impl Account {
+    /// [`Client::sharing_people`] with this account's token (refreshed once when refused).
+    pub async fn sharing_people(&self) -> Result<Vec<GithubUser>> {
+        let access = self.access_token(false).await?;
+        match self.client.sharing_people(&access).await {
+            Err(Error::Unauthorized) => {
+                let access = self.access_token(true).await?;
+                self.client
+                    .sharing_people(&access)
+                    .await
+                    .map_err(|e| match e {
+                        Error::Unauthorized => Error::LoginRequired,
+                        e => e,
+                    })
+            }
+            r => r,
+        }
+    }
+
     /// [`Client::github_user`] with this account's token (refreshed once when refused).
     pub async fn github_user(&self, login: &str) -> Result<GithubUser> {
         let access = self.access_token(false).await?;

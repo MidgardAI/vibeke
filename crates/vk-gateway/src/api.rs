@@ -2144,35 +2144,34 @@ struct GithubAllow {
 
 impl Call<'_> {
     /// `github: [login] | ["*"]` resolved to ids through the account server (spec 20 §2.2).
-    /// Fails closed: no list, an empty list, no account server, a host that is not signed in
-    /// or an unknown login is an error, never a `link` share.
+    /// Without `github`, the account's own list from the account page (`<server>/account`).
+    /// Fails closed: an empty list, no account server, a host that is not signed in or an
+    /// unknown login is an error, never a `link` share.
     async fn resolve_github(&self, p: &Value) -> Result<GithubAllow, ApiError> {
-        let list = match p.get("github") {
-            None | Some(Value::Null) => {
-                return Err(ApiError::invalid(
-                    "access github needs a list of GitHub accounts: set [sharing] github or pass --github",
-                ));
-            }
-            Some(Value::Array(a)) => a,
+        let given: Option<Vec<&str>> = match p.get("github") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(a)) => Some(
+                a.iter()
+                    .map(|v| v.as_str().map(str::trim))
+                    .collect::<Option<Vec<&str>>>()
+                    .ok_or_else(|| ApiError::invalid("github is a list of GitHub logins"))?,
+            ),
             Some(_) => return Err(ApiError::invalid("github is a list of GitHub logins")),
         };
-        let logins = list
-            .iter()
-            .map(|v| v.as_str().map(str::trim))
-            .collect::<Option<Vec<&str>>>()
-            .ok_or_else(|| ApiError::invalid("github is a list of GitHub logins"))?;
-        if logins.is_empty() {
-            return Err(ApiError::invalid(
-                "the github list is empty: name at least one account, or [\"*\"] for any",
-            ));
+        if let Some(logins) = &given {
+            if logins.is_empty() {
+                return Err(ApiError::invalid(
+                    "the github list is empty: name at least one account, or [\"*\"] for any",
+                ));
+            }
+            if logins.len() > 100 {
+                return Err(ApiError::invalid("at most 100 GitHub accounts per share"));
+            }
+            if logins.len() > 1 && logins.contains(&"*") {
+                return Err(ApiError::invalid("\"*\" (any GitHub account) stands alone"));
+            }
         }
-        if logins.len() > 100 {
-            return Err(ApiError::invalid("at most 100 GitHub accounts per share"));
-        }
-        let any = logins == ["*"];
-        if !any && logins.contains(&"*") {
-            return Err(ApiError::invalid("\"*\" (any GitHub account) stands alone"));
-        }
+        let any = given.as_deref() == Some(&["*"][..]);
         let server = crate::account::account_server(&self.gw.cfg);
         let acct = crate::account::account(&server, &self.gw.state.dir)
             .map_err(|e| ApiError::unavailable(format!("account server: {e:#}")))?;
@@ -2185,17 +2184,35 @@ impl Call<'_> {
             return Err(account_error(vk_account::Error::LoginRequired, None));
         };
         let mut ids: Vec<crate::state::GithubId> = Vec::new();
-        if !any {
-            for login in logins {
-                let u = acct
-                    .github_user(login)
+        let mut add = |id: u64, login: String| {
+            if !ids.iter().any(|g| g.id == id) {
+                ids.push(crate::state::GithubId { id, login });
+            }
+        };
+        match given {
+            Some(_) if any => {}
+            Some(logins) => {
+                for login in logins {
+                    let u = acct
+                        .github_user(login)
+                        .await
+                        .map_err(|e| account_error(e, Some(login)))?;
+                    add(u.id, u.login);
+                }
+            }
+            None => {
+                let people = acct
+                    .sharing_people()
                     .await
-                    .map_err(|e| account_error(e, Some(login)))?;
-                if !ids.iter().any(|g| g.id == u.id) {
-                    ids.push(crate::state::GithubId {
-                        id: u.id,
-                        login: u.login,
-                    });
+                    .map_err(|e| account_error(e, None))?;
+                if people.is_empty() {
+                    return Err(ApiError::invalid(format!(
+                        "nobody is on your sharing list yet: add people at {}/account, or name them with --github",
+                        server.trim_end_matches('/')
+                    )));
+                }
+                for u in people.into_iter().take(100) {
+                    add(u.id, u.login);
                 }
             }
         }

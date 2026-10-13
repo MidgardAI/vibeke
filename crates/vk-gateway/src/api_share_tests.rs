@@ -139,9 +139,8 @@ async fn github_shares_fail_closed() {
         p["github"] = g;
         p
     };
-    // No list, an empty list, `*` mixed with names, not a list.
+    // An empty list, `*` mixed with names, not a list.
     for p in [
-        base.clone(),
         with(json!([])),
         with(json!(["*", "alice"])),
         with(json!("alice")),
@@ -149,17 +148,22 @@ async fn github_shares_fail_closed() {
     ] {
         assert_eq!(kind(create(&gw, p.clone()).await), "invalid_params", "{p}");
     }
-    // Not signed in.
+    // Not signed in (with a list, or with the account's list from the account page).
     assert_eq!(
         kind(create(&gw, with(json!(["alice"]))).await),
         "account_required"
     );
+    assert_eq!(kind(create(&gw, base.clone()).await), "account_required");
     assert_eq!(
         kind(create(&gw, with(json!(["*"]))).await),
         "account_required"
     );
     sign_in(&gw, &fake.url);
     fake.with(|s| s.access = Some("a1".into()));
+    // No list given and nobody on the account's list: refused, with where to add people.
+    let e = create(&gw, base.clone()).await.unwrap_err();
+    assert_eq!(e.kind, "invalid_params");
+    assert!(e.message.contains("/account"), "{}", e.message);
     // An unknown login, and one that can't be a login.
     let e = create(&gw, with(json!(["alice", "ghost"])))
         .await
@@ -354,4 +358,29 @@ fn held_notes_are_released_by_the_owner_only() {
         assert!(!kind_allows("share", m), "{m}");
         assert!(!kind_allows("peer", m), "{m}");
     }
+}
+
+/// Without `github`, a GitHub share takes the people on the account's sharing list (the
+/// account page), as ids.
+#[tokio::test(flavor = "multi_thread")]
+async fn github_shares_default_to_the_account_list() {
+    let fake = FakeServer::start().await;
+    let t = tempfile::tempdir().unwrap();
+    let gw = gateway(&t, &fake.url);
+    sign_in(&gw, &fake.url);
+    fake.with(|s| {
+        s.access = Some("a1".into());
+        s.sharing = vec![(2, "alice".into()), (583231, "octocat".into())];
+    });
+    let r = create(
+        &gw,
+        json!({"kind": "share", "pane": "p1", "access": "github"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["access"], "github");
+    assert_eq!(
+        r["github"],
+        json!([{"id": 2, "login": "alice"}, {"id": 583231, "login": "octocat"}])
+    );
 }

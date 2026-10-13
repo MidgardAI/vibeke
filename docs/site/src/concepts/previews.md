@@ -239,7 +239,7 @@ vibeke share review v4                  # v4 is the preview handle
 vibeke share review v4 --notes held     # notes wait for you to release them
 ```
 
-You can also choose **Design review** in the **People** form (`prefix+alt+v`). By default only the GitHub accounts in `[sharing] github` can open the link, and their notes go straight to the agent. Use `--link` to let the first person who opens it in, and then the notes are held for you.
+You can also choose **Design review** in the **People** form (`prefix+alt+v`). By default only the people on your [sharing list](../sharing.md#your-sharing-list) can open the link, and their notes go straight to the agent. Use `--link` to let the first person who opens it in, and then the notes are held for you.
 
 The designer picks an element with a click or an area with a drag, writes a note for each pick and sends them. When the agent changes the app, hot reload shows the change at the same link. If the browser cannot run the preview itself, the screen shows your host's browser instead. That view cannot leave the preview.
 

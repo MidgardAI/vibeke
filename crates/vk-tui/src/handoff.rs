@@ -605,7 +605,7 @@ pub fn deadlines(app: &App, now: crate::time::Instant, d: &mut crate::deadline::
 }
 
 /// `l` in the handoffs list: make a continue link for the machine's focused pane, for the GitHub
-/// logins of `[sharing] github`.
+/// logins of `[sharing] github`, or without one the account's sharing list.
 fn make_link(app: &mut App) {
     let mi = app.ux.connections.mi;
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
@@ -616,7 +616,7 @@ fn make_link(app: &mut App) {
         app.toast("focus the pane to continue elsewhere first");
         return;
     };
-    let mut l = LinkMake {
+    let l = LinkMake {
         mi,
         pane: pane.clone(),
         job: None,
@@ -625,20 +625,17 @@ fn make_link(app: &mut App) {
         error: None,
     };
     let github = crate::links::github_default(app);
-    if github.is_empty() {
-        l.error = Some(
-            "no GitHub logins: set [sharing] github in your config to say who may open a continue link"
-                .into(),
-        );
-        app.ux.handoff.link = Some(l);
-        return;
-    }
     app.ux.handoff.link = Some(l);
+    // Without a config list, the gateway uses the account's sharing list (the account page).
+    let mut params = json!({"pane": pane, "access": "github"});
+    if !github.is_empty() {
+        params["github"] = json!(github);
+    }
     crate::sharing::gw_call_pending(
         app,
         mi,
         "handoff.link.create",
-        json!({"pane": pane, "access": "github", "github": github}),
+        params,
         pend(Reply::LinkCreate { pane }),
     );
 }

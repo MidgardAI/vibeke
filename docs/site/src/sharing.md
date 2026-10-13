@@ -84,7 +84,17 @@ A **GitHub link** opens only for the GitHub accounts you name. The person who op
 - Opening the link in an old app shows "This link needs a newer Vibeke app".
 - The desktop app opens GitHub links in your system browser.
 
-To set the default accounts for the command line, add their GitHub logins to your config:
+### Your sharing list
+
+By default, GitHub links are for the people on your **sharing list**. Manage the list on your account page at [cloud.vibeke.dev/account](https://cloud.vibeke.dev/account):
+
+1. Sign in with GitHub.
+2. Under **People who can open your links**, type a GitHub username and select **Add**.
+3. Select **Remove** next to a person to take them off the list.
+
+The list belongs to your account, so every host that is signed in to it uses the same list. A change applies to links you make after it. A link you already made keeps the people it was made for.
+
+To use a different list on one machine, add the GitHub logins to that machine's config. The config list then replaces your account's list on that machine:
 
 ```toml
 [sharing]
@@ -127,14 +137,14 @@ Choose who may open the link:
 
 | Option | Who can open it |
 | --- | --- |
-| none | The GitHub accounts in `[sharing] github` |
+| none | The people on your sharing list (or in `[sharing] github` when the config has a list) |
 | `--github alice,bob` | Those GitHub accounts |
 | `--any-github` | Any GitHub account |
 | `--link` | The first person who opens it, like a link made in the app |
 
 Other options: `--uses N` (how many people may open it), `--ttl 30m|24h|7d` (how long it works), `--label` (a name shown in **People**), `--scope view|approve` (for `watch`) and `--notes direct|held` (for `review`). `--pane @current` and `--workspace @current` mean the pane you run the command in.
 
-The commands print only the link. Add `--json` to see the full result. If the config has no GitHub accounts and you pass no option, the command stops and asks you to set `[sharing] github` or pass `--github`. Use `--any-github` and `--link` with care: they let more people in.
+The commands print only the link. Add `--json` to see the full result. If your sharing list is empty and you pass no option, the command stops and asks you to add people on your account page or pass `--github`. Use `--any-github` and `--link` with care: they let more people in.
 
 ## See who has access
 

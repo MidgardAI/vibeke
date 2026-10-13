@@ -72,12 +72,7 @@ The skill tells Hermes to follow these rules:
 - Ask the requester before it uses `--any-github` or `--link`, which let more people in.
 - Tell the requester which GitHub accounts can open each link.
 
-Set the default accounts in your config:
-
-```toml
-[sharing]
-github = ["alice", "bob"]
-```
+The links are for the people on your sharing list. Add your teammates on your [account page](../sharing.md#your-sharing-list) before Hermes posts links.
 
 ## Check
 

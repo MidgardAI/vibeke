@@ -245,7 +245,8 @@ pub enum Kind {
 pub enum Who {
     /// Anyone who has the link.
     Link,
-    /// The GitHub accounts of the `[sharing] github` list.
+    /// The GitHub accounts of the `[sharing] github` list, or (without one) the account's
+    /// sharing list from the account page.
     Github,
     /// Any GitHub account.
     Any,
@@ -415,14 +416,10 @@ impl Form {
         }
     }
 
-    /// The **Who** choices this form offers (GitHub needs the config list).
+    /// The **Who** choices this form offers. GitHub means the config list, or without one the
+    /// account's sharing list.
     fn who_options(&self) -> Vec<Who> {
-        let mut v = vec![Who::Link];
-        if !self.github.is_empty() {
-            v.push(Who::Github);
-        }
-        v.push(Who::Any);
-        v
+        vec![Who::Link, Who::Github, Who::Any]
     }
 
     fn set_who(&mut self, who: Who) {
@@ -465,14 +462,12 @@ impl Form {
             Who::Link if review => p["access"] = json!("link"),
             Who::Link => {}
             Who::Github => {
-                if self.github.is_empty() {
-                    return Err(
-                        "no GitHub logins: set [sharing] github in your config, or pick another Who"
-                            .into(),
-                    );
-                }
                 p["access"] = json!("github");
-                p["github"] = json!(self.github);
+                // Without a config list, the gateway uses the account's sharing list (the
+                // account page).
+                if !self.github.is_empty() {
+                    p["github"] = json!(self.github);
+                }
             }
             Who::Any => {
                 p["access"] = json!("github");
@@ -495,9 +490,9 @@ impl Form {
                     Kind::Watch => Kind::Review,
                     Kind::Review => Kind::Watch,
                 };
-                // A review is for GitHub accounts when the config names some.
+                // A review is for GitHub accounts (the config list or the account's list).
                 self.notes_set = false;
-                let who = if self.kind == Kind::Review && !self.github.is_empty() {
+                let who = if self.kind == Kind::Review {
                     Who::Github
                 } else {
                     Who::Link
@@ -1489,9 +1484,9 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
         },
         t.dim(),
     );
-    // Who: GitHub is off while the config has no logins.
+    // Who: GitHub is the config list, or the account's sharing list.
     let github = if f.github.is_empty() {
-        "GitHub (off)"
+        "GitHub (your list)"
     } else {
         "GitHub"
     };
@@ -1510,6 +1505,10 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
             "anyone who gets the link can open it: send it privately".to_string(),
             t.dim(),
         ),
+        Who::Github if f.github.is_empty() => (
+            "only the people on your sharing list, signed in with GitHub".to_string(),
+            t.dim(),
+        ),
         Who::Github => (
             format!(
                 "only {}, signed in with GitHub",
@@ -1523,11 +1522,11 @@ fn draw_form(app: &App, a: &mut crate::drafts::Area<'_>, v: &View, f: &Form) -> 
         ),
     };
     wrap_lines(a, &format!("           {who_text}"), who_st);
-    if f.github.is_empty() {
+    if f.github.is_empty() && matches!(f.who, Who::Github) {
         wrap_lines(
             a,
-            "           GitHub: set [sharing] github in your config to name who may open links",
-            t.s(t.yellow),
+            "           Manage the list on your account page (cloud.vibeke.dev/account).",
+            t.dim(),
         );
     }
     let what = match f.what {

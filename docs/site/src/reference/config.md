@@ -397,7 +397,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # manifest_check = true
 
 # [sharing]
-# github = []   # GitHub logins that may open share, review and continue links by default
+# github = []   # GitHub logins for share, review and continue links on this machine; empty: your account's sharing list
 
 # Named layouts for `vibeke layout apply <name>` / `workspace create --layout <name>` (07 §2.14):
 # [layouts.dev]

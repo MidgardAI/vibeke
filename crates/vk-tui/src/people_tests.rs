@@ -608,26 +608,21 @@ fn a_plain_link_review_holds_notes_unless_told_otherwise() {
 }
 
 #[test]
-fn github_is_off_without_a_configured_list_but_any_account_works() {
+fn without_a_configured_list_github_means_the_account_list() {
     let (mut app, mut rxs) = opened();
     app.size = (140, 40);
     with_previews(&mut app);
     kind_form(&mut app);
     app.on_key(named(NamedKey::Right));
-    // No list: a review starts as a plain link.
-    assert_eq!(form(&app).who, Who::Link);
+    // No config list: a review is still for GitHub accounts, those on the account's list.
+    assert_eq!(form(&app).who, Who::Github);
     let s = screen(&app);
-    assert!(s.contains("GitHub (off)"), "{s}");
-    assert!(s.contains("set [sharing] github in your config"), "{s}");
-    // Right from Link skips GitHub.
-    app.on_key(named(NamedKey::Down));
-    app.on_key(named(NamedKey::Right));
-    assert_eq!(form(&app).who, Who::Any);
-    assert!(screen(&app).contains("[Any GitHub account]"));
+    assert!(s.contains("GitHub (your list)"), "{s}");
+    assert!(s.contains("account page"), "{s}");
     app.on_key(named(NamedKey::Enter));
     let (_, p) = gw_of(&commands(&mut rxs[0]), "share.create");
     assert_eq!(p["params"]["access"], "github");
-    assert_eq!(p["params"]["github"], json!(["*"]));
+    assert!(p["params"].get("github").is_none(), "{p}");
     assert_eq!(p["params"]["notes"], "direct");
 }
 
@@ -709,6 +704,10 @@ fn a_held_review_link_says_notes_wait() {
     with_previews(&mut app);
     kind_form(&mut app);
     app.on_key(named(NamedKey::Right));
+    // Who: from GitHub back to a plain link, whose notes are held.
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(form(&app).who, Who::Link);
     app.on_key(named(NamedKey::Enter));
     let (req, _) = gw_of(&commands(&mut rxs[0]), "share.create");
     reply(

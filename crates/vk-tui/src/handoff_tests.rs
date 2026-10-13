@@ -1343,18 +1343,14 @@ fn l_makes_a_continue_link_for_the_focused_pane_and_copies_it() {
 }
 
 #[test]
-fn l_without_a_github_list_says_what_to_set() {
+fn l_without_a_github_list_uses_the_account_list() {
     let (mut app, mut rxs) = fleet();
     commands(&mut rxs[0]);
     open_list(&mut app);
     commands(&mut rxs[0]);
     app.on_key(ch('l'));
-    assert!(commands(&mut rxs[0]).is_empty());
-    assert!(
-        screen(&app).contains("set [sharing] github"),
-        "{}",
-        screen(&app)
-    );
+    let (_, p) = gw_call_of(&commands(&mut rxs[0]), "handoff.link.create");
+    assert_eq!(p["params"], json!({"pane": "p1", "access": "github"}));
 }
 
 #[test]

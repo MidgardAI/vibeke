@@ -2,8 +2,10 @@
 //! `vibeke handoff link|open`. Every verb runs over the server's `gateway.call` bridge, so a
 //! program outside every pane (for example a messaging bot on the host) can use them.
 //!
-//! Without `--github`, `--any-github` or `--link` the verbs send `access: github` with the
-//! `[sharing] github` list from the config. Without `--json` they print the link alone.
+//! Without `--github`, `--any-github` or `--link` the verbs send `access: github`: with the
+//! `[sharing] github` list from the config when it has one, else without a list, and the gateway
+//! uses the account's list from the account page (`<account server>/account`). Without `--json`
+//! they print the link alone.
 
 use crate::client::{CallError, Client};
 use crate::{EXIT_API, EXIT_OK, EXIT_USAGE, Global, exit_code_for, print_error};
@@ -348,7 +350,8 @@ pub fn parse_handoff(args: &[String]) -> Result<Cmd, String> {
     }
 }
 
-/// `access` and `github` params for the flags. `default_github` is the `[sharing] github` list.
+/// `access` and `github` params for the flags. `default_github` is the `[sharing] github` list;
+/// when it is empty no list is sent and the gateway uses the account's list.
 pub fn access_params(
     f: &AccessFlags,
     default_github: &[String],
@@ -363,9 +366,7 @@ pub fn access_params(
         return Ok(("github", Some(g.clone())));
     }
     if default_github.is_empty() {
-        return Err(
-            "no GitHub accounts to allow: set [sharing] github in config or pass --github".into(),
-        );
+        return Ok(("github", None));
     }
     Ok(("github", Some(default_github.to_vec())))
 }
@@ -463,8 +464,11 @@ pub fn hint(e: &CallError) -> Option<String> {
     if kind == "unknown_user" {
         return Some("GitHub does not know one of those logins: check the spelling".into());
     }
-    if kind == "invalid_params" && msg.contains("github") {
-        return Some("set [sharing] github in config or pass --github".into());
+    if kind == "invalid_params" && (msg.contains("github") || msg.contains("sharing list")) {
+        return Some(
+            "add people to your sharing list on your account page (vibeke.dev account), or pass --github"
+                .into(),
+        );
     }
     None
 }
@@ -815,12 +819,10 @@ mod tests {
     }
 
     #[test]
-    fn default_list_empty_is_an_error_naming_the_fix() {
-        let e = call(&["watch"], &[]).unwrap_err();
-        assert!(
-            e.contains("[sharing] github") && e.contains("--github"),
-            "{e}"
-        );
+    fn without_a_config_list_the_account_list_is_used() {
+        let (_, p) = call(&["watch"], &[]).unwrap();
+        assert_eq!(p["access"], "github");
+        assert!(p.get("github").is_none(), "{p}");
         assert!(call(&["watch", "--link"], &[]).is_ok());
     }
 
@@ -982,9 +984,9 @@ mod tests {
                 .contains("vibeke login")
         );
         assert!(
-            hint(&rpc("invalid_params", "github list is empty"))
+            hint(&rpc("invalid_params", "nobody is on your sharing list yet"))
                 .unwrap()
-                .contains("[sharing] github")
+                .contains("sharing list")
         );
         assert!(hint(&rpc("invalid_params", "uses too big")).is_none());
         assert!(hint(&rpc("not_found", "x")).is_none());
