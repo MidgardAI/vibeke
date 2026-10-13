@@ -123,6 +123,106 @@ fn housekeeping_drains_a_backlog_larger_than_one_compression_batch() {
 }
 
 #[test]
+fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover() {
+    let e = Env::new();
+    e.server.archive_rows(
+        "p",
+        vec![ArchivedRow {
+            n: 0,
+            t: "needle".into(),
+            w: false,
+        }],
+    );
+    let root = e.server.archive.lock().unwrap().root().to_path_buf();
+    let saved = root.with_extension("saved");
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    e.server.housekeeping();
+    assert!(e.server.degraded.lock().unwrap().is_some());
+    let runs = e
+        .server
+        .housekeeping_runs
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let bytes = e.server.archive.lock().unwrap().buffered_bytes();
+    let queued = e.server.fts_buf.lock().unwrap().len();
+    assert!(e.server.housekeeping_delay() > std::time::Duration::from_secs(1));
+    e.server.housekeeping();
+    assert_eq!(
+        e.server
+            .housekeeping_runs
+            .load(std::sync::atomic::Ordering::Relaxed),
+        runs
+    );
+    // A successful SQLite write must not declare the archive healthy.
+    e.server
+        .with_core(|c| e.server.commit(c, crate::core::Tx::new()))
+        .unwrap();
+    assert!(e.server.degraded.lock().unwrap().is_some());
+    e.server.archive_rows(
+        "p",
+        vec![ArchivedRow {
+            n: 1,
+            t: "skipped while degraded".into(),
+            w: false,
+        }],
+    );
+    assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), bytes);
+    assert_eq!(e.server.fts_buf.lock().unwrap().len(), queued);
+    e.server
+        .archive_failure
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retry_at = std::time::Instant::now();
+    e.server.housekeeping();
+    assert!(e.server.degraded.lock().unwrap().is_some());
+    assert!(e.server.housekeeping_delay() > std::time::Duration::from_secs(5));
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&saved, &root).unwrap();
+    e.server
+        .archive_failure
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retry_at = std::time::Instant::now();
+    e.server.housekeeping();
+    assert!(e.server.archive_failure.lock().unwrap().is_none());
+    assert!(e.server.degraded.lock().unwrap().is_none());
+    assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), 0);
+    assert!(e.server.fts_buf.lock().unwrap().is_empty());
+    assert_eq!(e.fts_rows("p"), 1);
+}
+
+#[tokio::test]
+async fn a_failed_shutdown_flush_releases_the_gate_for_a_later_attempt() {
+    let e = Env::new();
+    e.server.archive_rows(
+        "p",
+        vec![ArchivedRow {
+            n: 0,
+            t: "needle".into(),
+            w: false,
+        }],
+    );
+    let root = e.server.archive.lock().unwrap().root().to_path_buf();
+    let saved = root.with_extension("saved");
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    assert!(crate::run::flush_for_shutdown(&e.server).await.is_none());
+    assert!(
+        e.server.snapshot_permit().is_some(),
+        "failed shutdown must not leave the gate sealed"
+    );
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&saved, &root).unwrap();
+    assert!(crate::run::flush_for_shutdown(&e.server).await.is_some());
+    assert!(e.server.snapshot_permit().is_none());
+    assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), 0);
+}
+
+#[test]
 fn retention_removes_segments_and_fts_rows_together() {
     let e = Env::new();
     e.fill("p1", 30);

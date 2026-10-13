@@ -220,6 +220,8 @@ pub struct Server {
     pub shutdown: Notify,
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
+    /// Held across the snapshot commit, so sealing shutdown fences even late workers.
+    snapshot_gate: Mutex<SnapshotGate>,
     /// Coalesced pane deadlines (spec 10 §1.3 wakeup budget).
     pub timers: Arc<timers::Scheduler>,
     /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
@@ -228,6 +230,7 @@ pub struct Server {
     /// Serialize all housekeeping callers, including shutdown, while compression releases
     /// the archive mutex. Never acquire this while holding `archive` or `core`.
     housekeeping_lock: Mutex<()>,
+    archive_failure: Mutex<Option<ArchiveFailure>>,
     /// Audit log, token revocation and elevation, integration tamper state (09).
     pub security: security::State,
     /// Encryption at rest and redaction settings (09 §9.1–9.2).
@@ -242,6 +245,21 @@ pub struct Server {
     pub mentions: mentions::State,
     /// People's input held back while Vibeke types a prompt into a pane (spec 19 §4.2).
     pub input_hold: input_hold::Holds,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotPermit(u64);
+
+#[derive(Default)]
+struct SnapshotGate {
+    generation: u64,
+    shutting_down: bool,
+    sealed: bool,
+}
+
+struct ArchiveFailure {
+    retry_at: Instant,
+    attempts: u32,
 }
 
 pub fn shell_argv(opts: &ServerOpts) -> Vec<String> {
@@ -355,10 +373,12 @@ impl Server {
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
+            snapshot_gate: Mutex::new(SnapshotGate::default()),
             timers: Arc::default(),
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
             housekeeping_lock: Mutex::new(()),
+            archive_failure: Mutex::new(None),
             security: Default::default(),
             privacy: Default::default(),
             hardening: Default::default(),
@@ -387,9 +407,11 @@ impl Server {
                     self.enter_degraded(core, msg);
                     return Ok(events);
                 }
-                *self.degraded.lock().unwrap() = None;
-                core.model.degraded = None;
-                self.hardening.recovered();
+                if self.archive_failure.lock().unwrap().is_none() {
+                    *self.degraded.lock().unwrap() = None;
+                    core.model.degraded = None;
+                    self.hardening.recovered();
+                }
                 for e in &events {
                     let _ = self.events.send(Arc::new(e.clone()));
                 }
@@ -1609,15 +1631,18 @@ impl Server {
 
     // ---- callbacks from pane tasks --------------------------------------------------------
 
-    pub fn holder_epoch(&self, pane: &str, epoch: u64) {
+    pub fn holder_epoch(&self, pane: &str, epoch: u64) -> Result<()> {
         let mut c = self.core.lock().unwrap();
-        if let Ok(hs) = c.store.holders()
-            && let Some(h) = hs.into_iter().find(|h| h.pane == pane)
-        {
-            let mut tx = Tx::new();
-            tx.m.holder(pane, &h.socket, &h.key, epoch, h.holder_pid, h.child_pid);
-            let _ = c.commit(tx);
-        }
+        let h = c
+            .store
+            .holders()?
+            .into_iter()
+            .find(|h| h.pane == pane)
+            .context("holder disappeared before its epoch was persisted")?;
+        let mut tx = Tx::new();
+        tx.m.holder(pane, &h.socket, &h.key, epoch, h.holder_pid, h.child_pid);
+        self.commit(&mut c, tx)?;
+        Ok(())
     }
 
     pub fn mark_recovered(&self, pane: &str, method: Option<&str>) {
@@ -1798,7 +1823,10 @@ impl Server {
         blob: Vec<u8>,
         incarnation: &str,
     ) -> bool {
-        self.store_snapshot_at_epoch(pane, offset, blob, incarnation, None)
+        let Some(permit) = self.snapshot_permit() else {
+            return false;
+        };
+        self.store_snapshot_at_epoch(pane, offset, blob, incarnation, (None, permit))
     }
 
     /// The pane worker supplies its captured holder epoch. A replaced or closed holder
@@ -1809,10 +1837,14 @@ impl Server {
         offset: u64,
         blob: Vec<u8>,
         incarnation: &str,
-        epoch: Option<u64>,
+        fence: (Option<u64>, SnapshotPermit),
     ) -> bool {
         // Degraded: VT snapshots pause (the recovery guarantee is "ring only", 02 §4a).
-        if self.degraded.lock().unwrap().is_some() {
+        if self.degraded.lock().unwrap().is_some() || self.archive_failure.lock().unwrap().is_some()
+        {
+            return false;
+        }
+        if !self.snapshot_permitted(fence.1) {
             return false;
         }
         let mut tx = Tx::new();
@@ -1831,8 +1863,12 @@ impl Server {
         if let Some(hook) = self.before_snapshot_commit.lock().unwrap().as_ref() {
             hook();
         }
+        let gate = self.snapshot_gate.lock().unwrap();
+        if gate.sealed || fence.1.0 != gate.generation {
+            return false;
+        }
         let mut c = self.core.lock().unwrap();
-        if let Some(epoch) = epoch
+        if let Some(epoch) = fence.0
             && !c
                 .store
                 .holders()
@@ -1843,33 +1879,118 @@ impl Server {
         c.commit(tx).is_ok()
     }
 
+    pub(crate) fn snapshot_permit(&self) -> Option<SnapshotPermit> {
+        let gate = self.snapshot_gate.lock().unwrap();
+        (!gate.shutting_down).then_some(SnapshotPermit(gate.generation))
+    }
+
+    pub(crate) fn snapshot_permitted(&self, permit: SnapshotPermit) -> bool {
+        let gate = self.snapshot_gate.lock().unwrap();
+        !gate.sealed && gate.generation == permit.0
+    }
+
+    pub(crate) fn begin_snapshot_shutdown(&self) -> Option<SnapshotPermit> {
+        let mut gate = self.snapshot_gate.lock().unwrap();
+        if gate.shutting_down {
+            return None;
+        }
+        gate.generation += 1;
+        gate.shutting_down = true;
+        Some(SnapshotPermit(gate.generation))
+    }
+
+    pub(crate) fn seal_snapshot_shutdown(&self, permit: SnapshotPermit) {
+        let mut gate = self.snapshot_gate.lock().unwrap();
+        if gate.generation == permit.0 {
+            gate.sealed = true;
+        }
+    }
+
+    /// An exec failure resumes normal persistence. Bump the generation before waking panes
+    /// so workers left over from a timed-out shutdown remain fenced out.
+    pub(crate) fn resume_snapshot_persistence(&self, permit: SnapshotPermit) {
+        {
+            let mut gate = self.snapshot_gate.lock().unwrap();
+            if gate.generation != permit.0 {
+                return;
+            }
+            gate.generation += 1;
+            gate.shutting_down = false;
+            gate.sealed = false;
+        }
+        for rt in self.panes.lock().unwrap().values() {
+            rt.send(PaneCmd::Snapshot);
+        }
+    }
+
     pub fn archive_rows(&self, pane: &str, rows: Vec<ArchivedRow>) {
         // A browser console split is `no_archive` (06 B3.2): nothing on disk, nothing indexed.
         if crate::browser_pane::page_io::no_archive(self, pane) {
             return;
         }
         // Degraded: archive writes pause with the snapshots (02 §4a); the rows stay in the ring.
-        if self.degraded.lock().unwrap().is_some() {
+        if self.degraded.lock().unwrap().is_some() || self.archive_failure.lock().unwrap().is_some()
+        {
             self.hardening.archive_skipped(rows.len());
             return;
         }
         let ts = now_ms();
-        {
+        let appended: Result<bool> = (|| {
             // Under the archive lock (see `fts_buf`): a purge sees the rows either in both the
             // archive and the buffer, or in neither.
             let mut a = self.archive.lock().unwrap();
             // Encryption requested but locked: nothing is persisted, not even the index.
             if a.paused() {
-                return;
+                return Ok(false);
             }
-            self.fts_buf.lock().unwrap().extend(
+            let mut pending = self.fts_buf.lock().unwrap();
+            a.append(pane, &rows)?;
+            pending.extend(
                 rows.iter()
                     .filter(|r| !r.t.is_empty())
                     .map(|r| (pane.to_string(), r.n, ts, r.t.clone())),
             );
-            let _ = a.append(pane, &rows);
+            Ok(true)
+        })();
+        match appended {
+            Ok(false) => return,
+            Err(e) => {
+                self.hardening.archive_skipped(rows.len());
+                self.archive_failed(format!("archive unavailable: {e:#}"));
+            }
+            Ok(true) => {}
         }
         self.housekeeping_wake.notify_one();
+    }
+
+    fn archive_failed(&self, message: String) {
+        {
+            let mut failure = self.archive_failure.lock().unwrap();
+            let attempts = failure.as_ref().map_or(1, |f| f.attempts.saturating_add(1));
+            let delay =
+                std::time::Duration::from_secs((5u64 << attempts.min(5).saturating_sub(1)).min(60));
+            *failure = Some(ArchiveFailure {
+                retry_at: Instant::now() + delay,
+                attempts,
+            });
+        }
+        let mut c = self.core.lock().unwrap();
+        self.enter_degraded(&mut c, message);
+    }
+
+    pub(crate) fn housekeeping_delay(&self) -> std::time::Duration {
+        use std::time::Duration;
+        if let Some(failure) = self.archive_failure.lock().unwrap().as_ref() {
+            return failure
+                .retry_at
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_secs(1));
+        }
+        if self.degraded.lock().unwrap().is_some() {
+            Duration::from_millis(crate::hardening::PROBE_EVERY_MS as u64)
+        } else {
+            Duration::from_secs(1)
+        }
     }
 
     pub fn archive_last_line(&self, pane: &str) -> Option<u64> {
@@ -1884,12 +2005,22 @@ impl Server {
 
     /// A final pass must drain more than the normal compression budget: a committed VT
     /// snapshot may already cover rows that have left its bounded in-memory scrollback.
-    pub(crate) fn shutdown_housekeeping(&self) {
-        self.housekeeping_pass(true);
+    pub(crate) fn shutdown_housekeeping(&self) -> bool {
+        self.housekeeping_pass(true)
     }
 
-    fn housekeeping_pass(&self, flush_all: bool) {
+    fn housekeeping_pass(&self, flush_all: bool) -> bool {
         let _housekeeping = self.housekeeping_lock.lock().unwrap();
+        if !flush_all
+            && self
+                .archive_failure
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|f| f.retry_at > Instant::now())
+        {
+            return false;
+        }
         self.housekeeping_runs.fetch_add(1, Ordering::Relaxed);
         // Buffers remain visible to readers while compression runs. A purge or encryption
         // change may consume them in between; apply_flush detects and discards stale work.
@@ -1900,13 +2031,21 @@ impl Server {
             if bytes == 0 {
                 break;
             }
-            let batches: Vec<_> = batches
-                .into_iter()
-                .filter_map(|b| b.compress().ok())
-                .collect();
+            let batches: Result<Vec<_>> = batches.into_iter().map(|b| b.compress()).collect();
+            let batches = match batches {
+                Ok(batches) => batches,
+                Err(e) => {
+                    self.archive_failed(format!("archive compression failed: {e:#}"));
+                    return false;
+                }
+            };
             let mut a = self.archive.lock().unwrap();
             for batch in batches {
-                let _ = a.apply_flush(batch);
+                if let Err(e) = a.apply_flush(batch) {
+                    drop(a);
+                    self.archive_failed(format!("archive write failed: {e:#}"));
+                    return false;
+                }
             }
             // Drain the backlog in bounded batches without sleeping between them. Bound
             // the pass to the initial byte count so a continuous producer cannot starve
@@ -1917,8 +2056,10 @@ impl Server {
         // retention purge under it, so a purge can't run between the two and have this batch
         // re-insert text it just deleted (leftovers review finding 7).
         let mut a = self.archive.lock().unwrap();
-        if flush_all {
-            let _ = a.flush();
+        if flush_all && let Err(e) = a.flush() {
+            drop(a);
+            self.archive_failed(format!("archive flush failed: {e:#}"));
+            return false;
         }
         let buffered = a.buffered_starts();
         let rows = {
@@ -1960,6 +2101,14 @@ impl Server {
                 .collect();
             let _ = c.store.fts_register_panes(&ids);
         }
+        if self.archive_failure.lock().unwrap().is_some() {
+            if let Err(e) = a.probe() {
+                drop(a);
+                self.archive_failed(format!("archive probe failed: {e:#}"));
+                return false;
+            }
+            *self.archive_failure.lock().unwrap() = None;
+        }
         drop(a);
         if self.degraded.lock().unwrap().is_some() && self.hardening.probe_due() {
             let ok = self.with_core(|c| c.store.probe().is_ok());
@@ -1970,6 +2119,7 @@ impl Server {
                 self.bump_model();
             }
         }
+        true
     }
 
     /// Scrollback retention (`terminal.archive_max_per_pane`, `terminal.archive_days`): delete

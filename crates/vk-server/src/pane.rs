@@ -105,7 +105,7 @@ pub enum PaneCmd {
     Close,
     Snapshot,
     /// A shutdown barrier: reply after a snapshot captured at or after this command commits.
-    SnapshotAndWait(oneshot::Sender<bool>),
+    SnapshotAndWait(crate::SnapshotPermit, oneshot::Sender<bool>),
     /// The pane's snapshot deadline (armed in the server-wide [`crate::timers::Scheduler`])
     /// came due: snapshot if the output is idle enough, otherwise re-arm.
     SnapshotDue,
@@ -473,7 +473,7 @@ async fn run_inner(
         other => bail!("acquire rejected: {other:?}"),
     }
     attempt.acquired = Some(epoch);
-    server.holder_epoch(&rt.id, epoch);
+    server.holder_epoch(&rt.id, epoch)?;
     let incarnation = holder_incarnation(child_pid, started_at_ms);
     let same_holder = attempt.incarnation.as_deref() == Some(incarnation.as_str());
     attempt.incarnation = Some(incarnation.clone());
@@ -668,7 +668,7 @@ async fn run_inner(
             let _ = waiter.send(ok);
         }
     }
-    for waiter in p.snapshot_waiters.drain(..) {
+    for (_, waiter) in p.snapshot_waiters.drain(..) {
         let _ = waiter.send(false);
     }
     // Unacknowledged inputs survive into the next connection attempt.
@@ -710,7 +710,7 @@ struct PaneLoop {
     snapshot: Option<SnapshotJob>,
     /// A forced request arrived while a snapshot was being written.
     snapshot_again: bool,
-    snapshot_waiters: Vec<oneshot::Sender<bool>>,
+    snapshot_waiters: Vec<(crate::SnapshotPermit, oneshot::Sender<bool>)>,
     replaying: bool,
     method: String,
     child_pid: u32,
@@ -724,6 +724,7 @@ struct PaneLoop {
 }
 
 struct SnapshotPoint {
+    permit: crate::SnapshotPermit,
     holder_epoch: u64,
     incarnation: String,
     screen_epoch: u32,
@@ -807,6 +808,15 @@ impl PaneLoop {
                 let (c, r) = (sc.engine.cols(), sc.engine.rows());
                 sc.engine = new_engine(c, r);
                 sc.engine.set_replaying(true);
+                sc.epoch += 1;
+                sc.rev += 1;
+                sc.recovering = true;
+                let rev = sc.rev;
+                drop(sc);
+                self.replaying = true;
+                self.snapshot_dirty = true;
+                self.rt.rev_tx.send_replace(rev);
+                self.server.screen_dirty.notify_waiters();
                 self.method = "lost".into();
             }
             FromHolder::ReplayDone { queued_queries, .. } => {
@@ -1179,7 +1189,7 @@ impl PaneLoop {
                 self.snapshot_dirty = false;
                 Ok(None)
             }
-            PaneCmd::SnapshotAndWait(done) => {
+            PaneCmd::SnapshotAndWait(_, done) => {
                 // Pipe recovery uses its holder journal, not a VT snapshot.
                 let _ = done.send(true);
                 Ok(None)
@@ -1294,8 +1304,12 @@ impl PaneLoop {
                 });
             }
             PaneCmd::Snapshot => self.maybe_snapshot(true).await?,
-            PaneCmd::SnapshotAndWait(done) => {
-                self.snapshot_waiters.push(done);
+            PaneCmd::SnapshotAndWait(permit, done) => {
+                if !self.server.snapshot_permitted(permit) {
+                    let _ = done.send(false);
+                    return Ok(());
+                }
+                self.snapshot_waiters.push((permit, done));
                 self.maybe_snapshot(true).await?;
             }
             PaneCmd::SnapshotDue => {
@@ -1325,7 +1339,8 @@ impl PaneLoop {
     /// Arm this pane's snapshot deadline once per pending batch, not per output chunk (the
     /// deadline handler re-arms if output continued).
     fn arm_snapshot(&mut self) {
-        if self.snapshot_armed || self.snapshot.is_some() {
+        if self.snapshot_armed || self.snapshot.is_some() || self.server.snapshot_permit().is_none()
+        {
             return;
         }
         let due = tokio::time::Instant::from_std(self.snapshot_due());
@@ -1336,6 +1351,18 @@ impl PaneLoop {
     /// Snapshot when output has been idle 2 s, at most every 30 s while busy, or when forced
     /// (holder journal half full, shutdown).
     async fn maybe_snapshot(&mut self, force: bool) -> Result<()> {
+        let permit = self
+            .snapshot_waiters
+            .first()
+            .map(|w| w.0)
+            .or_else(|| self.server.snapshot_permit());
+        let Some(permit) = permit.filter(|p| self.server.snapshot_permitted(*p)) else {
+            self.snapshot_again = false;
+            for (_, waiter) in self.snapshot_waiters.drain(..) {
+                let _ = waiter.send(false);
+            }
+            return Ok(());
+        };
         if self.snapshot.is_some() {
             self.snapshot_again |= force;
             return Ok(());
@@ -1354,6 +1381,7 @@ impl PaneLoop {
             }
             (
                 SnapshotPoint {
+                    permit,
                     holder_epoch: self.epoch,
                     incarnation: self.incarnation.clone(),
                     screen_epoch: sc.epoch,
@@ -1368,12 +1396,15 @@ impl PaneLoop {
         let inc = point.incarnation.clone();
         let (offset, epoch) = (point.offset, point.holder_epoch);
         let worker = tokio::task::spawn_blocking(move || {
-            server.store_snapshot_at_epoch(&id, offset, blob, &inc, Some(epoch))
+            server.store_snapshot_at_epoch(&id, offset, blob, &inc, (Some(epoch), permit))
         });
         self.snapshot = Some(SnapshotJob {
             point,
             worker,
-            waiters: std::mem::take(&mut self.snapshot_waiters),
+            waiters: std::mem::take(&mut self.snapshot_waiters)
+                .into_iter()
+                .map(|(_, tx)| tx)
+                .collect(),
         });
         self.snapshot_again = false;
         // Later output marks the screen dirty again. Completion must never clear that flag.
@@ -1387,8 +1418,11 @@ impl PaneLoop {
 
     async fn finish_snapshot(&mut self, ok: bool) -> Result<()> {
         let job = self.snapshot.take().expect("snapshot completed");
-        let current_holder =
-            job.point.holder_epoch == self.epoch && job.point.incarnation == self.incarnation;
+        let current_holder = job.point.holder_epoch == self.epoch
+            && job.point.incarnation == self.incarnation
+            && self.server.snapshot_permitted(job.point.permit)
+            && !self.replaying
+            && self.rt.screen.lock().unwrap().epoch == job.point.screen_epoch;
         let checkpoint = if ok && current_holder {
             self.send(&ToHolder::Checkpoint {
                 epoch: job.point.holder_epoch,

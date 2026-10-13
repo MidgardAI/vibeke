@@ -882,7 +882,9 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             tokio::spawn(async move {
                 // Allow the response to be written before stopping client connections.
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                crate::run::flush_for_shutdown(&srv).await;
+                let Some(_) = crate::run::flush_for_shutdown(&srv).await else {
+                    return;
+                };
                 crate::gateway_supervisor::shutdown(&srv).await;
                 crate::machines::stopped(&srv, "api");
                 srv.shutdown.notify_waiters();

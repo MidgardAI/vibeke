@@ -148,7 +148,11 @@ async fn shutdown_barrier_waits_for_a_snapshot_after_the_request() {
     entered.await.unwrap();
     e.pane.feed(3, b"new", true).await.unwrap();
     let (done, mut waiting) = oneshot::channel();
-    e.pane.on_cmd(PaneCmd::SnapshotAndWait(done)).await.unwrap();
+    let permit = e.pane.server.snapshot_permit().unwrap();
+    e.pane
+        .on_cmd(PaneCmd::SnapshotAndWait(permit, done))
+        .await
+        .unwrap();
     assert_eq!(
         e.pane.snapshot.as_ref().unwrap().point.offset,
         3,
@@ -224,7 +228,11 @@ async fn forced_snapshot_during_replay_waits_until_replay_is_complete() {
     let mut e = Env::new();
     e.pane.replaying = true;
     let (done, mut waiting) = oneshot::channel();
-    e.pane.on_cmd(PaneCmd::SnapshotAndWait(done)).await.unwrap();
+    let permit = e.pane.server.snapshot_permit().unwrap();
+    e.pane
+        .on_cmd(PaneCmd::SnapshotAndWait(permit, done))
+        .await
+        .unwrap();
     assert!(e.pane.snapshot.is_none());
     assert!(matches!(
         waiting.try_recv(),
@@ -235,4 +243,133 @@ async fn forced_snapshot_during_replay_waits_until_replay_is_complete() {
     assert!(e.finish().await);
     e.checkpoint(0).await;
     assert!(waiting.await.unwrap());
+}
+
+#[tokio::test]
+async fn shutdown_seal_blocks_late_snapshot_and_a_failed_restart_can_resume() {
+    let mut e = Env::new();
+    let shutdown = e.pane.server.begin_snapshot_shutdown().unwrap();
+    let (entered, resume) = e.pause_commit();
+    let (done, waiting) = oneshot::channel();
+    e.pane
+        .on_cmd(PaneCmd::SnapshotAndWait(shutdown, done))
+        .await
+        .unwrap();
+    entered.await.unwrap();
+    // This is the timeout path: seal without waiting for a stalled blocking worker.
+    e.pane.server.seal_snapshot_shutdown(shutdown);
+    assert!(e.pane.server.shutdown_housekeeping());
+    assert!(e.pane.server.begin_snapshot_shutdown().is_none());
+    // Failed exec reopens persistence before the late worker returns. Its generation must
+    // still be rejected, and a later shutdown must be able to acquire a fresh permit.
+    e.pane.server.resume_snapshot_persistence(shutdown);
+    resume.send(()).unwrap();
+    assert!(!e.finish().await);
+    assert!(!waiting.await.unwrap());
+    assert!(
+        e.pane
+            .server
+            .with_core(|c| c.store.snapshot_for("p"))
+            .unwrap()
+            .is_none()
+    );
+    let mut byte = [0];
+    assert_eq!(
+        e.holder.try_read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    e.pane.maybe_snapshot(true).await.unwrap();
+    assert!(e.finish().await);
+    e.checkpoint(0).await;
+    assert!(e.pane.server.begin_snapshot_shutdown().is_some());
+}
+
+#[tokio::test]
+async fn output_after_final_flush_cannot_create_another_snapshot_or_checkpoint() {
+    let mut e = Env::new();
+    e.pane.feed(0, b"old", true).await.unwrap();
+    let shutdown = e.pane.server.begin_snapshot_shutdown().unwrap();
+    let (done, waiting) = oneshot::channel();
+    e.pane
+        .on_cmd(PaneCmd::SnapshotAndWait(shutdown, done))
+        .await
+        .unwrap();
+    assert!(e.finish().await);
+    assert!(waiting.await.unwrap());
+    e.checkpoint(3).await;
+    e.pane.server.seal_snapshot_shutdown(shutdown);
+    assert!(e.pane.server.shutdown_housekeeping());
+    let mut offset = 3;
+    let chunk = b"after shutdown\r\n".repeat(500);
+    for _ in 0..22 {
+        e.pane.feed(offset, &chunk, true).await.unwrap();
+        offset += chunk.len() as u64;
+    }
+    e.pane.on_cmd(PaneCmd::SnapshotDue).await.unwrap();
+    e.pane.maybe_snapshot(true).await.unwrap();
+    assert!(e.pane.snapshot.is_none());
+    assert!(!e.pane.snapshot_armed);
+    assert_eq!(
+        e.pane
+            .server
+            .with_core(|c| c.store.snapshot_for("p"))
+            .unwrap()
+            .unwrap()
+            .offset,
+        3
+    );
+    let mut byte = [0];
+    assert_eq!(
+        e.holder.try_read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test]
+async fn failed_epoch_persistence_is_reported_and_a_new_lease_can_snapshot() {
+    let mut e = Env::new();
+    e.pane
+        .server
+        .with_core(|c| c.store.set_query_only(true).unwrap());
+    assert!(e.pane.server.holder_epoch("p", 8).is_err());
+    assert_eq!(
+        e.pane.server.with_core(|c| c.store.holders()).unwrap()[0].epoch,
+        7
+    );
+    e.pane
+        .server
+        .with_core(|c| c.store.set_query_only(false).unwrap());
+    // run_inner propagates the error and acquires a newer lease on its next attempt.
+    e.pane.server.holder_epoch("p", 9).unwrap();
+    e.pane.epoch = 9;
+    e.pane.maybe_snapshot(true).await.unwrap();
+    assert!(e.finish().await);
+    let frame: ToHolder = asyncio::read_frame(&mut e.holder).await.unwrap();
+    assert!(matches!(frame, ToHolder::Checkpoint { epoch: 9, .. }));
+}
+
+#[tokio::test]
+async fn a_gap_during_snapshot_persistence_cannot_checkpoint_the_reset_screen() {
+    let mut e = Env::new();
+    e.pane.feed(0, b"old", true).await.unwrap();
+    let (entered, resume) = e.pause_commit();
+    e.pane.maybe_snapshot(true).await.unwrap();
+    entered.await.unwrap();
+    e.pane
+        .on_frame(FromHolder::Gap {
+            requested: 0,
+            available_from: 3,
+        })
+        .await
+        .unwrap();
+    resume.send(()).unwrap();
+    assert!(e.finish().await);
+    assert!(e.pane.replaying);
+    assert!(e.pane.rt.screen.lock().unwrap().recovering);
+    let mut byte = [0];
+    assert_eq!(
+        e.holder.try_read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(e.pane.snapshot_dirty);
 }

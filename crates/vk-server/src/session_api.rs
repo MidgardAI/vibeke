@@ -295,7 +295,11 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
     tokio::spawn(async move {
         // Let the response go out first, then wait for the requested snapshots to commit.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        crate::run::flush_for_shutdown(&srv).await;
+        let Some(snapshot_shutdown) = crate::run::flush_for_shutdown(&srv).await else {
+            *srv.restart_error.lock().unwrap() =
+                Some("restart cancelled because shutdown preparation did not complete".into());
+            return;
+        };
         // The new image starts its own gateway; a child of this image would outlive its
         // supervisor.
         let gateway_wanted = crate::gateway_supervisor::shutdown(&srv).await;
@@ -308,6 +312,7 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
             .exec();
         tracing::error!(error = %e, "server.restart: exec failed; still running the old server");
         *srv.restart_error.lock().unwrap() = Some(format!("exec {}: {e}", exe.display()));
+        srv.resume_snapshot_persistence(snapshot_shutdown);
         crate::gateway_supervisor::resume(&srv, gateway_wanted);
     });
     Ok(json!({"new_pid": std::process::id(), "binary": bin}))
