@@ -3221,13 +3221,12 @@ impl App {
         out
     }
 
-    /// DECSTBM affects whole host rows. Keep the common sidebar/split/media paths on
-    /// cell diffs; the screen helper also verifies every row retained by the scroll.
+    /// DECSTBM affects whole host rows. Keep full sidebars, splits and media on cell
+    /// diffs. The collapsed rail is restored by the diff within the synchronized update.
     fn scroll_candidate(&self) -> Option<(crate::screen::Rect, u16)> {
         if !self.host_scroll
             || !self.caps.sync_update
             || self.sidebar
-            || crate::sidebar::rail_w(self) != 0
             || !matches!(self.mode, Mode::Normal)
             || self.gateway.modal()
             || crate::card::showing(self).is_some()
@@ -3243,7 +3242,8 @@ impl App {
         let [(pane, r)] = panes.as_slice() else {
             return None;
         };
-        if r.x != 0 || r.w != self.size.0 || r.h < 3 {
+        let rail = crate::sidebar::rail_w(self);
+        if r.x > rail || r.w != self.size.0.saturating_sub(rail) || r.h < 3 {
             return None;
         }
         let n = self.m().panes.get(pane)?.pending_scroll;

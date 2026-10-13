@@ -136,7 +136,7 @@ fn native_cursor_title_media_and_invalidations_always_write() {
 }
 
 #[test]
-fn host_scroll_candidate_rejects_sidebar_splits_overlays_and_unknown_caps() {
+fn host_scroll_candidate_allows_collapsed_rail_but_rejects_sidebar_splits_and_overlays() {
     let mut app = ready(true);
     assert!(app.scroll_candidate().is_none());
     app.host_scroll = true;
@@ -150,10 +150,11 @@ fn host_scroll_candidate_rejects_sidebar_splits_overlays_and_unknown_caps() {
     assert!(app.scroll_candidate().is_none());
     app.sidebar = false;
     app.ux.sidebar.hide_rail = false;
-    assert!(
-        app.scroll_candidate().is_none(),
-        "rail also occupies host columns"
-    );
+    let (rect, _) = app
+        .scroll_candidate()
+        .expect("collapsed rail is repaired by the diff");
+    assert_eq!(rect.x, crate::sidebar::RAIL_W);
+    assert_eq!(rect.w + crate::sidebar::RAIL_W, app.size.0);
     app.ux.sidebar.hide_rail = true;
     app.mode = Mode::Navigate { sel: 0 };
     assert!(app.scroll_candidate().is_none());

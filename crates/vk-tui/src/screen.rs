@@ -701,9 +701,10 @@ pub fn diff(prev: &Grid, next: &Grid, caps: &HostCaps, out: &mut Vec<u8>) {
     }
 }
 
-/// Scroll a verified full-width region before diffing its exposed rows. No operation is
-/// emitted unless the previous composed rows exactly match the retained new rows. This
-/// also rejects badges, selection changes, resize and invalidated image rectangles.
+/// Scroll the host rows containing a verified pane region before diffing exposed rows.
+/// Retained pane cells must match exactly. Columns outside the pane (the collapsed rail)
+/// are restored by the normal diff, within the same synchronized update. The caller must
+/// exclude split layouts, overlays and images, which are outside the cell-grid contract.
 pub(crate) fn scroll_diff(
     prev: &mut Grid,
     next: &Grid,
@@ -713,8 +714,8 @@ pub(crate) fn scroll_diff(
     out: &mut Vec<u8>,
 ) -> bool {
     if !caps.sync_update
-        || rect.x != 0
-        || rect.w != next.cols
+        || rect.w == 0
+        || rect.x.saturating_add(rect.w) > next.cols
         || n == 0
         || n >= rect.h
         || prev.cols != next.cols
@@ -724,7 +725,9 @@ pub(crate) fn scroll_diff(
         return false;
     }
     let end = rect.y + rect.h;
-    if !(rect.y..end - n).all(|y| prev.row(y + n) == next.row(y)) {
+    let columns = rect.x as usize..(rect.x + rect.w) as usize;
+    if !(rect.y..end - n).all(|y| prev.row(y + n)[columns.clone()] == next.row(y)[columns.clone()])
+    {
         return false;
     }
     // A blank/repeating screen does not benefit from a host scroll.
@@ -1526,7 +1529,72 @@ mod cache_scroll_tests {
     }
 
     #[test]
-    fn host_scroll_falls_back_for_resize_partial_width_or_changed_retained_rows() {
+    fn host_scroll_restores_the_collapsed_rail_inside_the_synchronized_frame() {
+        let caps = HostCaps {
+            sync_update: true,
+            truecolor: true,
+            ..HostCaps::default()
+        };
+        for right in [false, true] {
+            let (x, rail_x) = if right { (0, 22) } else { (2, 0) };
+            let rect = Rect {
+                x,
+                y: 1,
+                w: 22,
+                h: 6,
+            };
+            let columns = x as usize..x as usize + 22;
+            let mut prev = Grid::new(24, 8);
+            for y in 0..8 {
+                prev.put_str(rail_x, y, &format!("{y}│"), Style::default(), 2);
+                prev.put_str(x, y, &format!("log row {y} 宽 data"), Style::default(), 22);
+            }
+            let mut next = prev.clone();
+            for y in 1..6 {
+                let start = y * 24 + x as usize;
+                next.cells[start..start + 22]
+                    .clone_from_slice(&prev.row(y as u16 + 1)[columns.clone()]);
+            }
+            let last = 6 * 24 + x as usize;
+            next.cells[last..last + 22].fill(Cell::blank(Style::default()));
+            next.put_str(x, 6, "new bottom", Style::default(), 22);
+            let mut optimized = Vec::new();
+            assert!(scroll_diff(
+                &mut prev.clone(),
+                &next,
+                &caps,
+                rect,
+                1,
+                &mut optimized
+            ));
+            assert!(optimized.starts_with(b"\x1b[?2026h"));
+            assert!(optimized.ends_with(b"\x1b[?2026l"));
+            let mut initial = Vec::new();
+            diff(&Grid::new(0, 0), &prev, &caps, &mut initial);
+            let mut normal = Vec::new();
+            diff(&prev, &next, &caps, &mut normal);
+            let mut optimized_host = vk_term::Engine::new(24, 8, 0);
+            let mut normal_host = vk_term::Engine::new(24, 8, 0);
+            optimized_host.feed(&initial, &mut Vec::new());
+            normal_host.feed(&initial, &mut Vec::new());
+            optimized_host.feed(&optimized, &mut Vec::new());
+            normal_host.feed(&normal, &mut Vec::new());
+            assert_eq!(
+                optimized_host.visible_rows(),
+                normal_host.visible_rows(),
+                "right={right}"
+            );
+            for y in 0..8 {
+                assert!(
+                    optimized_host.row(y).text().contains(&format!("{y}│")),
+                    "rail row {y} moved"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn host_scroll_falls_back_for_resize_invalid_geometry_or_changed_retained_rows() {
         let caps = HostCaps {
             sync_update: true,
             ..HostCaps::default()
@@ -1546,7 +1614,7 @@ mod cache_scroll_tests {
             &mut prev,
             &next,
             &caps,
-            Rect { w: 11, ..rect },
+            Rect { w: 13, ..rect },
             1,
             &mut out
         ));

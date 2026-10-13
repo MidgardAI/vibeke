@@ -2701,6 +2701,7 @@ mod tests {
                 cursor: Default::default(),
                 modes: PaneModes::default(),
                 title: String::new(),
+                ..crate::app::PaneBuf::blank()
             },
         );
         assert_eq!(
