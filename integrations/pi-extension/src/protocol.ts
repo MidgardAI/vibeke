@@ -117,6 +117,7 @@ export class VibekeClient {
     try {
       const line = this.frame("adapter.signal", {
         harness: this.harness,
+        pid: process.pid,
         event,
         payload: { ...payload, seq },
       });
@@ -214,6 +215,7 @@ export class VibekeClient {
         s.write(
           this.frame("adapter.signal", {
             harness: this.harness,
+            pid: process.pid,
             event: "Snapshot",
             payload: { ...snap, seq },
           }),
@@ -577,7 +579,7 @@ export class VibekeClient {
               jsonrpc: "2.0",
               id: gateId,
               method: "adapter.gate",
-              params: { harness: this.harness, event, payload },
+              params: { harness: this.harness, pid: process.pid, event, payload },
             }) + "\n",
           );
         } catch {

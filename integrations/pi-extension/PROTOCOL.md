@@ -7,7 +7,7 @@ Implemented by `src/protocol.ts` / `src/index.ts`; normative design in [DESIGN.m
 Unix socket at `$VIBEKE_SOCKET`, newline-delimited JSON-RPC 2.0. The extension is inert unless `VIBEKE=1`, `VIBEKE_SOCKET` and `VIBEKE_PANE_TOKEN` are all set (`HERDR_ENV` alone: no-op).
 
 1. `client.hello {client: "vibeke-pi-extension", kind: "agent", token: $VIBEKE_PANE_TOKEN, version}` (id-bearing request; reply ignored).
-2. `adapter.signal {harness: "pi"|"omp", event, payload}` -> `{}` (id-bearing; replies ignored; never awaited).
+2. `adapter.signal {harness: "pi"|"omp", pid, event, payload}` -> `{}` (id-bearing; replies ignored; never awaited). `pid` is the harness process. The server uses it to find the pane's harness process and to tell agents that the pane's agent started apart from it.
 
 `harness` is `"omp"` when running under Bun or after a `tool_approval_requested` event is seen (or `VIBEKE_PI_HOST=pi|omp` overrides), else `"pi"`. The token is only sent in `client.hello`, not per call.
 
@@ -45,7 +45,7 @@ With `VIBEKE_HEADLESS_OWNER=1` only `Snapshot`, `SessionStart` and `ToolEnded` a
 
 On each wrapped `confirm`/`select`/`input` call the extension opens a **separate** connection (hello + request) and sends
 
-`adapter.gate {harness, event: "Dialog", payload: {method: "confirm"|"select"|"input", title, message?, options?: string[], dialog_id}}`
+`adapter.gate {harness, pid, event: "Dialog", payload: {method: "confirm"|"select"|"input", title, message?, options?: string[], dialog_id}}`
 
 The server parks the request until a decision exists. Reply: `{decision: {value: boolean|string} | null, interaction?, idempotency_key?}` (`idempotency_key` = `"<interaction>:<decision_rev>"`).
 

@@ -193,6 +193,10 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
 
 /// A transcript record says `task` started at `task.since_ms`.
 pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
+    // An end recorded before its start (another source, or out of order) wins.
+    if ended_recently(run, &task.id, now_ms()) {
+        return;
+    }
     store(server, run, |r| {
         // A reported set may have listed it first, without the tool call that started it.
         if let Some(i) = r.bg_tasks.iter().position(|t| t.id == task.id) {
@@ -251,8 +255,49 @@ pub fn clear(server: &Arc<Server>, run: &str) {
     store(server, run, |_| Some((vec![], now)));
 }
 
+/// When the run's harness process started (ms), once a hook has named it. Its background work
+/// dies with it, so a transcript start older than this belongs to an earlier process (the
+/// session was resumed, or the server restarted and replayed the file).
+pub fn harness_started_ms(server: &Server, run: &AgentRun) -> Option<i64> {
+    let (h, p) = server.agents.harness_proc(&run.pane)?;
+    if h != run.harness {
+        return None;
+    }
+    vk_hold::procinfo::start_unix_ms(p.start)
+}
+
+/// Whether a transcript start at `since_ms` is older than the harness process.
+pub fn predates_process(server: &Server, run: &AgentRun, since_ms: i64) -> bool {
+    harness_started_ms(server, run).is_some_and(|t0| since_ms < t0 - SKEW_MS)
+}
+
+/// Drop transcript tasks that started before the harness process: a replay can add them before
+/// the first hook names the process.
+fn drop_older_than_process(server: &Arc<Server>, run: &AgentRun) {
+    if !run
+        .bg_tasks
+        .iter()
+        .any(|t| t.source == StateSource::Structured)
+    {
+        return;
+    }
+    let Some(t0) = harness_started_ms(server, run) else {
+        return;
+    };
+    store(server, &run.id, |r| {
+        let next: Vec<BgTask> = r
+            .bg_tasks
+            .iter()
+            .filter(|t| t.source != StateSource::Structured || t.since_ms >= t0 - SKEW_MS)
+            .cloned()
+            .collect();
+        (next.len() != r.bg_tasks.len()).then_some((next, r.bg_level_ms.max(t0 - SKEW_MS)))
+    });
+}
+
 /// Hook payloads: Claude `Stop` carries the session's whole background set.
 pub fn observe_hook(server: &Arc<Server>, run: &AgentRun, event: &str, p: &Value) {
+    drop_older_than_process(server, run);
     match event {
         // Claude `Stop`, and `BgTasks` from headless adapters (Claude stream-json
         // `background_tasks_changed`, Codex `thread/backgroundTerminals/list`).

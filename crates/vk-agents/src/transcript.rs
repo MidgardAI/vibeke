@@ -383,7 +383,11 @@ impl Parser {
         ts: Option<i64>,
         out: &mut Vec<Event>,
     ) {
-        if id.is_empty() || !self.seen_bg_start.insert(id.to_string()) {
+        // Codex can write a command's end before the output that names its session.
+        if id.is_empty()
+            || self.seen_bg_end.contains(id)
+            || !self.seen_bg_start.insert(id.to_string())
+        {
             return;
         }
         let label = label
@@ -409,6 +413,15 @@ impl Parser {
         });
     }
 
+    /// A Claude `<task-notification>` with a status ends that task.
+    fn claude_task_ended(&mut self, text: &str, ts: Option<i64>, out: &mut Vec<Event>) {
+        if let Some(n) = parse_task_notification(text)
+            && let Some(status) = n.status
+        {
+            self.bg_ended(&n.task_id, &status, ts, out);
+        }
+    }
+
     /// Background records of a Claude `user` line.
     fn claude_bg(&mut self, v: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
         let content = v.pointer("/message/content");
@@ -417,10 +430,8 @@ impl Parser {
             || user_text(content)
                 .is_some_and(|t| t.trim_start().starts_with("<task-notification>"));
         if notification {
-            if let Some(n) = user_text(content).and_then(|t| parse_task_notification(&t))
-                && let Some(status) = n.status
-            {
-                self.bg_ended(&n.task_id, &status, ts, out);
+            if let Some(t) = user_text(content) {
+                self.claude_task_ended(&t, ts, out);
             }
             return;
         }
@@ -571,6 +582,23 @@ impl Parser {
                             self.activity = Some(Activity::Working);
                         }
                     }
+                }
+            }
+            // A task notification that arrives while a turn runs is delivered as an attachment
+            // to that turn, not as a user line. Its queue entry is written when the task ends.
+            Some("attachment") if !sidechain => {
+                let a = &v["attachment"];
+                if a.get("type").and_then(Value::as_str) == Some("queued_command")
+                    && let Some(p) = a.get("prompt").and_then(Value::as_str)
+                {
+                    self.claude_task_ended(p, ts, out);
+                }
+            }
+            Some("queue-operation") => {
+                if v.get("operation").and_then(Value::as_str) == Some("enqueue")
+                    && let Some(c) = v.get("content").and_then(Value::as_str)
+                {
+                    self.claude_task_ended(c, ts, out);
                 }
             }
             Some("custom-title") => {
@@ -1371,5 +1399,50 @@ mod tests {
         assert!(
             matches!(b[4], Event::BgEnded { id, status, .. } if id == "4242" && status == "completed")
         );
+    }
+
+    #[test]
+    fn claude_task_notifications_delivered_mid_turn_end_tasks() {
+        let text = |id: &str| {
+            format!(
+                "<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>"
+            )
+        };
+        let mut p = Parser::new(Format::ClaudeJsonl);
+        let ev = p.feed(&lines(&[
+            json!({"type":"user","timestamp":"2026-01-01T00:00:01Z",
+                "toolUseResult":{"stdout":"","backgroundTaskId":"bg1"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"running"}]}}),
+            json!({"type":"user","timestamp":"2026-01-01T00:00:02Z",
+                "toolUseResult":{"status":"async_launched","agentId":"ag1","description":"Map it"},
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu2","content":"launched"}]}}),
+            // The task ends while a turn runs: a queue entry, then an attachment to that turn.
+            json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:03Z","content":text("bg1")}),
+            json!({"type":"attachment","isSidechain":false,"timestamp":"2026-01-01T00:00:04Z",
+                "attachment":{"type":"queued_command","commandMode":"task-notification","prompt":text("bg1")}}),
+            // Only an attachment (an older harness version writes no queue entry).
+            json!({"type":"attachment","isSidechain":false,"timestamp":"2026-01-01T00:00:05Z",
+                "attachment":{"type":"queued_command","commandMode":"task-notification","prompt":text("ag1")}}),
+            // A queued user prompt is not a task end.
+            json!({"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:00:06Z","content":"also fix the tests"}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 4, "{b:?}");
+        assert!(
+            matches!(b[2], Event::BgEnded { id, status, .. } if id == "bg1" && status == "completed")
+        );
+        assert!(matches!(b[3], Event::BgEnded { id, .. } if id == "ag1"));
+    }
+
+    #[test]
+    fn codex_end_written_before_the_session_output_is_not_a_start() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            json!({"timestamp":"2026-01-01T00:00:01Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","process_id":"81684","status":"completed"}}}),
+            json!({"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"{\"chunk_id\":\"a\",\"session_id\":81684,\"output\":\"\"}"},{"type":"input_text","text":"{\"chunk_id\":\"b\",\"exit_code\":0,\"output\":\"\"}"}]}}),
+        ]));
+        let b = bg(&ev);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert!(matches!(b[0], Event::BgEnded { id, .. } if id == "81684"));
     }
 }

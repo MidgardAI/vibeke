@@ -431,6 +431,9 @@ fn apply(
                     None if run.bg_level_ms == 0 => now_ms(),
                     None => continue,
                 };
+                if super::bg::predates_process(server, &run, since_ms) {
+                    continue;
+                }
                 super::bg::started(
                     server,
                     run_id,

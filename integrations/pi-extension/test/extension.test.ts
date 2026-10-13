@@ -55,6 +55,7 @@ describe("activation", () => {
     expect(b.method).toBe("adapter.signal");
     expect(b.params.event).toBe("Snapshot");
     expect(b.params.harness).toBe("pi");
+    expect(b.params.pid).toBe(process.pid);
     expect(b.params.payload).toMatchObject({ is_streaming: false, turn_index: 0, pending_tool_calls: [], open_approvals: [] });
   });
 });

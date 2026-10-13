@@ -29,6 +29,11 @@ pub fn cwd(pid: u32) -> Option<String> {
     imp::cwd(pid)
 }
 
+/// A [`ProcInfo::start`] as Unix time in milliseconds, when the platform can tell.
+pub fn start_unix_ms(start: u64) -> Option<i64> {
+    imp::start_unix_ms(start)
+}
+
 /// The environment of `pid` as `(name, value)` pairs. Best effort: empty when it can't be read
 /// (another user's process; macOS, which withholds other processes' environments; or an
 /// unsupported platform).
@@ -63,6 +68,24 @@ pub fn tree(pid: u32, max_depth: usize) -> Vec<ProcInfo> {
 mod imp {
     use super::ProcInfo;
     use std::fs;
+
+    /// `start` counts clock ticks since boot; `btime` in `/proc/stat` is the boot time.
+    pub fn start_unix_ms(start: u64) -> Option<i64> {
+        static BOOT: std::sync::OnceLock<Option<(i64, i64)>> = std::sync::OnceLock::new();
+        let (btime, hz) = (*BOOT.get_or_init(|| {
+            let stat = fs::read_to_string("/proc/stat").ok()?;
+            let btime: i64 = stat
+                .lines()
+                .find_map(|l| l.strip_prefix("btime "))?
+                .trim()
+                .parse()
+                .ok()?;
+            // SAFETY: sysconf has no preconditions.
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+            (hz > 0).then_some((btime, hz as i64))
+        }))?;
+        Some(btime * 1000 + (start as i64) * 1000 / hz)
+    }
 
     pub fn argv(pid: u32) -> Vec<String> {
         fs::read(format!("/proc/{pid}/cmdline"))
@@ -148,6 +171,11 @@ mod imp {
 mod imp {
     use super::ProcInfo;
     use std::ffi::CStr;
+
+    /// `start` is the start time in microseconds since the epoch.
+    pub fn start_unix_ms(start: u64) -> Option<i64> {
+        Some((start / 1000) as i64)
+    }
 
     pub fn argv(pid: u32) -> Vec<String> {
         procargs(pid).map(|(a, _)| a).unwrap_or_default()
@@ -303,6 +331,9 @@ mod imp {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod imp {
     use super::ProcInfo;
+    pub fn start_unix_ms(_: u64) -> Option<i64> {
+        None
+    }
     pub fn argv(_: u32) -> Vec<String> {
         vec![]
     }
@@ -355,6 +386,19 @@ mod tests {
                     .any(|(k, v)| k == "VK_PROCINFO_PROBE" && v == "a=b"),
                 "{env:?}"
             );
+        }
+    }
+
+    #[test]
+    fn own_start_time_is_recent() {
+        let me = super::info(std::process::id()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        if let Some(t) = super::start_unix_ms(me.start) {
+            // The test binary started before now, and not hours ago.
+            assert!(t <= now + 1000 && now - t < 3_600_000, "{t} vs {now}");
         }
     }
 
