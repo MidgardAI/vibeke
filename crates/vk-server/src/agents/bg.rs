@@ -228,11 +228,13 @@ pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
 pub fn ended(server: &Arc<Server>, run: &str, id: &str, at_ms: Option<i64>) {
     let now = now_ms();
     note_ended(run, id, at_ms.map_or(now, |t| t.min(now)));
+    // A task first seen after the end (allowing for report skew) is a newer task with the id.
+    let ends = |t: &BgTask| t.id == id && at_ms.is_none_or(|at| t.since_ms <= at + SKEW_MS);
     store(server, run, |r| {
-        if !r.bg_tasks.iter().any(|t| t.id == id) {
+        if !r.bg_tasks.iter().any(ends) {
             return None;
         }
-        let next = r.bg_tasks.iter().filter(|t| t.id != id).cloned().collect();
+        let next = r.bg_tasks.iter().filter(|t| !ends(t)).cloned().collect();
         Some((next, r.bg_level_ms))
     });
 }

@@ -246,10 +246,14 @@ fn binding_of(chord: &str) -> Option<Binding> {
         if ev.mods.0 & (Mods::SUPER.0 | Mods::HYPER.0) != 0 {
             pty_safe = false;
         }
-        // Legacy encoding turns some chords into editing keys (`ctrl+enter` and `ctrl+m` are a
-        // plain CR, `ctrl+i` is Tab): pressing them would edit or submit the draft.
-        let legacy = vk_term::encode::encode_key(&ev, &vk_term::encode::InputModes::default());
-        let editing = [
+        // A chord is usable only if legacy encoding keeps it apart from other keys: every
+        // modifier must change the bytes (`ctrl+shift+c` is plain Ctrl+C, `ctrl+1` is "1"),
+        // and the bytes must not be an editing or job-control key (`ctrl+m` is Enter, `ctrl+c`
+        // interrupts), which would edit, submit or stop instead.
+        let legacy_modes = vk_term::encode::InputModes::default();
+        let enc = |e: &vk_proto::input::KeyEvent| vk_term::encode::encode_key(e, &legacy_modes);
+        let legacy = enc(&ev);
+        let reserved = [
             NamedKey::Enter,
             NamedKey::Tab,
             NamedKey::Backspace,
@@ -257,10 +261,22 @@ fn binding_of(chord: &str) -> Option<Binding> {
         ]
         .iter()
         .any(|k| {
-            let plain = vk_proto::input::KeyEvent::new(Key::Named(*k), Mods::default());
-            vk_term::encode::encode_key(&plain, &vk_term::encode::InputModes::default()) == legacy
+            enc(&vk_proto::input::KeyEvent::new(
+                Key::Named(*k),
+                Mods::default(),
+            )) == legacy
+        }) || matches!(
+            legacy.as_slice(),
+            b"\n" | b"\x08" | b"\x03" | b"\x04" | b"\x1a" | b"\x1c"
+        );
+        let lost = [Mods::CTRL, Mods::SHIFT, Mods::ALT].iter().any(|m| {
+            ev.mods.0 & m.0 != 0 && {
+                let mut fewer = ev.clone();
+                fewer.mods = Mods(ev.mods.0 & !m.0);
+                enc(&fewer) == legacy
+            }
         });
-        if editing || legacy == b"\n" || legacy == b"\x08" {
+        if legacy.is_empty() || reserved || lost {
             pty_safe = false;
         }
     }
@@ -588,7 +604,16 @@ mod tests {
 
     #[test]
     fn chords_that_legacy_encoding_turns_into_editing_keys_are_not_used() {
-        for k in ["ctrl+shift+m", "ctrl+m", "ctrl+i", "ctrl+enter", "ctrl+j"] {
+        for k in [
+            "ctrl+shift+m",
+            "ctrl+m",
+            "ctrl+i",
+            "ctrl+enter",
+            "ctrl+j",
+            "ctrl+shift+c",
+            "ctrl+1",
+            "ctrl+c",
+        ] {
             assert!(!binding_of(k).unwrap().pty_safe, "{k}");
         }
         for k in ["ctrl+x ctrl+s", "ctrl+k ctrl+n", "alt+s"] {
