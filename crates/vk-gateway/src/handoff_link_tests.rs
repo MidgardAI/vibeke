@@ -103,6 +103,9 @@ fn owner() -> Device {
         limit: None,
         peer: None,
         supports_clear: false,
+        github: None,
+        invitation: None,
+        review: None,
     }
 }
 

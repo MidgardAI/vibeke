@@ -229,7 +229,7 @@ async fn reconcile_after_a_crash_between_the_writes() {
         let lock = gw.state.lock().unwrap();
         assert_eq!(
             gw.state.reconcile_redemptions(&lock).unwrap(),
-            [p.pid.clone()]
+            std::slice::from_ref(&p.pid)
         );
         // Nothing left to do the second time.
         assert!(gw.state.reconcile_redemptions(&lock).unwrap().is_empty());
@@ -427,12 +427,10 @@ async fn keys_are_cached_and_refetched_sparingly() {
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     // After an hour the keys are fetched again; another server is never served from the cache.
-    cache.keys("s", false, t0 + KEYS_TTL, fetch).await.unwrap();
+    let later = t0 + REFETCH_MIN + KEYS_TTL;
+    cache.keys("s", false, later, fetch).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    cache
-        .keys("other", false, t0 + KEYS_TTL, fetch)
-        .await
-        .unwrap();
+    cache.keys("other", false, later, fetch).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     // A failed refetch keeps the cached keys; a failed first fetch is an error.
     let failing = || async { Err::<Vec<AttestKey>, _>(vk_account::Error::Http("down".into())) };

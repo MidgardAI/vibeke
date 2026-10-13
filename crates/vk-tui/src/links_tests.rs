@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::drafts::tests::fleet;
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 

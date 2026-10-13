@@ -524,6 +524,7 @@ pub mod fake {
     }
 
     /// The live blob `id` the caller may read.
+    #[allow(clippy::result_large_err)]
     fn readable(st: &St, h: &HeaderMap, id: &str) -> Result<FakeBlob, Response> {
         let Some(who) = caller(st, h) else {
             return Err(err(StatusCode::UNAUTHORIZED, "invalid_token"));

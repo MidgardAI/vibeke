@@ -4,7 +4,6 @@
 use super::*;
 use crate::state::{Config, Limit, StateDir};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use vk_account::CredentialStore;
 use vk_account::fake::FakeServer;
 
 /// A server answering `preview.get` (`pv1`/`v4`) and `pane.get`.

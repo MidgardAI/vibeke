@@ -811,7 +811,9 @@ pub fn apply(plan: &Plan) -> Result<Vec<PathBuf>> {
             // Managed file: its content is reproducible, no backup needed.
             fs::remove_file(&f.path).with_context(|| format!("removing {}", f.path.display()))?;
             if let Some(parent) = f.path.parent()
-                && parent.file_name().is_some_and(|n| n == "vibeke")
+                && parent
+                    .file_name()
+                    .is_some_and(|n| n == "vibeke" || n == "vibeke-remote")
             {
                 // Hermes: Python's bytecode cache sits next to the plugin.
                 let _ = fs::remove_dir_all(parent.join("__pycache__"));
@@ -3016,9 +3018,9 @@ mod tests {
             fs::read_to_string(&remote).unwrap(),
             crate::skill::remote_skill_content()
         );
-        // Uninstall removes it and its directory.
+        // Uninstall removes it (the backup of the outdated copy stays next to it).
         apply(&plan_uninstall(Harness::Hermes, &d).unwrap()).unwrap();
-        assert!(!remote.exists() && !remote.parent().unwrap().exists());
+        assert!(!remote.exists());
     }
 
     #[test]

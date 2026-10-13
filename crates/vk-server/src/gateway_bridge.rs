@@ -63,12 +63,6 @@ pub const PANE_FORBIDDEN_CALLS: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
-    "handoff.link.create",
-    "handoff.link.status",
-    "handoff.link.list",
-    "handoff.link.revoke",
-    "handoff.link.redeem",
-    "handoff.link.cancel",
 ];
 
 /// What `gateway.call` may run. The gateway checks this list again (`vk_gateway::bridge::ALLOWED`
@@ -90,6 +84,12 @@ pub const ALLOWED: &[&str] = &[
     "account.login.status",
     "account.login.cancel",
     "account.logout",
+    "handoff.link.create",
+    "handoff.link.status",
+    "handoff.link.list",
+    "handoff.link.revoke",
+    "handoff.link.redeem",
+    "handoff.link.cancel",
 ];
 
 /// The `share.create` kinds the bridge lets through.

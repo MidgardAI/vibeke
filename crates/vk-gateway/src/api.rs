@@ -2865,7 +2865,7 @@ mod share_tests {
 
 #[cfg(test)]
 #[path = "api_share_tests.rs"]
-mod share_tests;
+mod share_create_tests;
 
 #[cfg(test)]
 mod workspace_tests {
