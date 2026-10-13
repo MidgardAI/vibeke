@@ -1151,11 +1151,12 @@ pub fn on_key(f: &mut Flow, ev: &KeyEvent) -> Act {
                 }
                 Nav::Inc | Nav::Dec | Nav::Toggle => match f.confirm_focus {
                     0 => f.interrupt = !f.interrupt,
-                    // On the buttons ←/→ switch between them; space presses the focused one.
-                    1 if n == Nav::Toggle => return Act::StartMove,
-                    2 if n == Nav::Toggle => return confirm_back(f),
+                    // On the buttons ←/→ and space move between them; only enter presses one,
+                    // so space can never start a move.
                     focus => f.confirm_focus = if focus == 1 { 2 } else { 1 },
                 },
+                // Enter on Back goes back; anywhere else it starts the move.
+                Nav::Activate if f.confirm_focus == 2 => return confirm_back(f),
                 Nav::Activate => return Act::StartMove,
                 Nav::Other if plain && matches!(ev.key, Key::Char('i')) => {
                     f.interrupt = !f.interrupt;

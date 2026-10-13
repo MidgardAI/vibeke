@@ -244,7 +244,8 @@ pub fn sub_key(app: &mut App, s: Sub, ev: KeyEvent) {
                     f.sel = f.sel.saturating_sub(1);
                     set_sub(app, Sub::Human(f));
                 }
-                Key::Named(NamedKey::Left | NamedKey::Right) => {
+                // ←/→ choose the previous or next verdict; space the next.
+                Key::Named(NamedKey::Left | NamedKey::Right | NamedKey::Space) | Key::Char(' ') => {
                     let by = crate::formkeys::step(crate::formkeys::nav(&ev, false)).unwrap_or(1);
                     f.choice = crate::formkeys::wrap(f.choice, by, VERDICTS.len());
                     set_sub(app, Sub::Human(f));

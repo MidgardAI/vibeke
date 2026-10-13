@@ -1491,3 +1491,18 @@ fn enter_on_hand_off_sends_with_the_toggle_as_set() {
     let (_, p) = only(&cmds, "handoff.send");
     assert_eq!(p, json!({"pane": "p1", "peer": "pr2", "interrupt": true}));
 }
+
+/// Space on the Hand off button only moves between the buttons: it never starts a handoff.
+#[test]
+fn space_on_hand_off_never_sends() {
+    let (mut app, mut rxs) = send_summary();
+    app.on_key(named(NamedKey::Tab));
+    assert_eq!(send_focus(&app), SendFocus::Send);
+    app.on_key(named(NamedKey::Space));
+    assert_eq!(send_focus(&app), SendFocus::Back);
+    assert!(
+        commands(&mut rxs[0]).iter().all(|c| c.1 != "handoff.send"),
+        "space must not send"
+    );
+    assert!(app.ux.handoff.send.as_ref().unwrap().chosen.is_some());
+}

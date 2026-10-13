@@ -922,19 +922,22 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.line("", t.text());
         a.line(n, t.bold(t.yellow));
     }
+    // Each state says what its keys do: in Setup, tab switches steps and enter continues.
     let keys = if f.strip.focused {
         formkeys::STRIP_HINT.to_string()
+    } else if f.step == Step::Integrations && f.confirm_install {
+        "y install · any other key cancels".to_string()
+    } else if f.step == Step::Integrations && f.diff.is_some() {
+        "↑/↓ scroll · any other key closes the diff".to_string()
     } else {
         let extra = match f.step {
-            Step::Integrations => " · space select · d diff · i install selected",
+            Step::Integrations => " · d diff · i install selected",
             Step::Notifications => " · t test notification",
             Step::Theme => " · a auto light/dark",
             _ => "",
         };
         format!(
-            "{}{extra} · {} · esc later",
-            formkeys::FORM_HINT,
-            formkeys::LIST_TABS_HINT
+            "↑/↓ move · ←/→ or space change · enter continue{extra} · tab next step · esc later"
         )
     };
     let keys = keys.as_str();

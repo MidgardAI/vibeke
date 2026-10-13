@@ -176,6 +176,8 @@ pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
         && !ev.mods.alt()
         && matches!(ev.key, Key::Named(NamedKey::Up) | Key::Char('k'))
         && app.ux.handoff.list_sel == 0
+        // A pending "decline?" question gets the key first (any key but y keeps the handoff).
+        && app.ux.handoff.list_confirm.is_none()
     {
         keep(app);
         app.ux.connections.strip = true;

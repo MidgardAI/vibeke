@@ -409,11 +409,15 @@ impl TrackForm {
         }
         match (self.field, ev.key) {
             // ←/→ choose the previous or next turn; ↑/↓ and tab leave the field like any other.
-            (TrackField::Source, Key::Named(NamedKey::Right | NamedKey::Left)) => {
-                let by = if ev.key == Key::Named(NamedKey::Right) {
-                    1
-                } else {
+            // Space chooses the next turn too.
+            (
+                TrackField::Source,
+                Key::Named(NamedKey::Right | NamedKey::Left | NamedKey::Space) | Key::Char(' '),
+            ) => {
+                let by = if ev.key == Key::Named(NamedKey::Left) {
                     -1
+                } else {
+                    1
                 };
                 if !self.turns.is_empty() {
                     self.sel_turn = crate::formkeys::wrap(self.sel_turn, by, self.turns.len());
@@ -601,6 +605,12 @@ pub fn track_key(app: &mut App, ev: KeyEvent) {
     let Some(mut f) = app.track.take() else {
         return;
     };
+    // A key release (Kitty reporting) is never an action: only the press counts.
+    if ev.kind == vk_proto::input::KeyKind::Release {
+        app.track = Some(f);
+        app.mode = Mode::Popup(Popup::Track);
+        return;
+    }
     // Link run (lane 2C): choose a verified run instead of an unverified one.
     if f.phase == TrackPhase::Unverified && ev.key != Key::Named(NamedKey::Escape) {
         if crate::tasks_2c::link_key(app, f.clone(), &ev) {
@@ -1356,6 +1366,12 @@ pub fn task_key(app: &mut App, ev: KeyEvent) {
         return;
     };
     app.mode = Mode::Popup(Popup::Task);
+    // A key release (Kitty reporting) is never an action: only the press counts. This covers
+    // every dialog under the task view (reviews, notes, dependencies).
+    if ev.kind == vk_proto::input::KeyKind::Release {
+        app.task_view = Some(v);
+        return;
+    }
     let mi = v.machine;
     let task = v.task.clone();
     match std::mem::replace(&mut v.sub, TaskSub::None) {

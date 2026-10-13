@@ -2959,16 +2959,8 @@ pub fn send_key(app: &mut App, ev: KeyEvent) {
             }
             Nav::Inc | Nav::Dec | Nav::Toggle => match f.focus {
                 SendFocus::Interrupt => f.interrupt = !f.interrupt,
-                // On the buttons ←/→ switch between them; space presses the focused one.
-                SendFocus::Send | SendFocus::Back if n == Nav::Toggle => {
-                    if f.focus == SendFocus::Send {
-                        submit = true;
-                    } else {
-                        f.chosen = None;
-                        f.error = None;
-                        f.focus = SendFocus::Interrupt;
-                    }
-                }
+                // On the buttons ←/→ and space move between them; only enter presses one, so
+                // space can never start a handoff.
                 SendFocus::Send | SendFocus::Back => {
                     f.focus = if f.focus == SendFocus::Send {
                         SendFocus::Back

@@ -88,7 +88,7 @@ In a view with tabs, `tab` and `shift+tab` switch tabs from a list. In a form, t
 
 When you send a draft (`s`), the send view has two fields: the list of targets and **include notes**. Press `tab` or `shift+tab` to move between them. On the list, `up` and `down` pick a target. On **include notes**, `left`, `right` and `space` turn it on or off. The `i` key still works.
 
-The desk shows three filter chips: repository, harness and date. Press `up` from the top result to select the chips. Use `left` and `right` to pick a chip. Press `enter` or `space` to change its value, or `shift+space` to go back one value. The keys `R`, `h` and `D` still change the chips. When you resume a session (`r`), choose the target with `left`, `right`, `up` or `down`, then press `enter`. The keys `t` and `p` still work.
+The desk shows three filter chips: repository, harness and date. Press `up` from the top result to select the chips. Use `left` and `right` (or `space`) to change the selected chip's value, and `tab` or `shift+tab` to move between the chips. Press `down` or `enter` to go back to the results. The keys `R`, `h` and `D` still change the chips. When you resume a session (`r`), choose the target with `left`, `right`, `up` or `down`, then press `enter`. The keys `t` and `p` still work.
 
 ## Phone and desktop access
 

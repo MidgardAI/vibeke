@@ -291,19 +291,16 @@ fn filter_chips_are_a_focusable_row() {
     assert_eq!(app.desk.as_ref().unwrap().chip, Some(0));
     let s = screen(&app);
     assert!(s.contains("‹repo: /src/api›"), "{s}");
-    assert!(s.contains("pick a filter"), "{s}");
-    // enter changes the focused chip: repo off, then back on with shift+space.
-    app.on_key(named(NamedKey::Enter));
+    assert!(s.contains("tab next filter"), "{s}");
+    // → changes the focused chip's value: repo off, then ← back on.
+    app.on_key(named(NamedKey::Right));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
     assert_eq!(p, json!({"text": "login"}));
-    app.on_key(KeyEvent::new(
-        Key::Named(NamedKey::Space),
-        vk_proto::input::Mods::SHIFT,
-    ));
+    app.on_key(named(NamedKey::Left));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
     assert_eq!(p["repo"], "/src/api");
-    // → moves to the harness chip; space goes forward, shift+space back.
-    app.on_key(named(NamedKey::Right));
+    // tab moves to the harness chip; space goes forward, shift+space back.
+    app.on_key(named(NamedKey::Tab));
     assert_eq!(app.desk.as_ref().unwrap().chip, Some(1));
     app.on_key(named(NamedKey::Space));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
@@ -314,18 +311,23 @@ fn filter_chips_are_a_focusable_row() {
     ));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
     assert!(p.get("harness").is_none());
-    app.on_key(named(NamedKey::Left));
-    app.on_key(named(NamedKey::Left));
+    // shift+tab twice wraps to the date chip.
+    for _ in 0..2 {
+        app.on_key(KeyEvent::new(
+            Key::Named(NamedKey::Tab),
+            vk_proto::input::Mods::SHIFT,
+        ));
+    }
     assert_eq!(app.desk.as_ref().unwrap().chip, Some(2), "the chips wrap");
-    app.on_key(named(NamedKey::Enter));
+    app.on_key(named(NamedKey::Right));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
     assert_eq!(p["since"], "7d");
     // The letters keep working while a chip is focused.
     app.on_key(ch('D'));
     let (_, p) = only(&commands(&mut rxs[0]), "desk.search");
     assert_eq!(p["since"], "30d");
-    // ↓ returns to the list.
-    app.on_key(named(NamedKey::Down));
+    // enter returns to the results.
+    app.on_key(named(NamedKey::Enter));
     assert_eq!(app.desk.as_ref().unwrap().chip, None);
 }
 

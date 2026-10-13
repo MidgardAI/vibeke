@@ -574,18 +574,20 @@ fn chip_change(app: &mut App, d: &mut Desk, chip: usize, by: i32) {
     reload(app, d);
 }
 
-/// A key while the chips row has the focus. ←/→ pick a chip, enter or space change its value
-/// (shift+space goes back), ↑ goes on to the tab strip, ↓ and esc return to the list. Other
-/// keys (`R`/`h`/`D`, tab, `q`) keep their usual meaning. True when the key was used.
+/// A key while the chips row (the filters) has the focus, as in any form: ←/→ change the
+/// focused filter's value, space the next value (shift+space the previous), tab / shift+tab
+/// move between the filters, enter or ↓ or esc go back to the results, ↑ goes on to the tab
+/// strip. `R`/`h`/`D` and `q` keep their usual meaning. True when the key was used.
 fn chip_key(app: &mut App, d: &mut Desk, ev: &KeyEvent) -> bool {
     let at = d.chip.unwrap_or(0);
-    if formkeys::tab_step(ev).is_some() {
-        return false;
+    if let Some(by) = formkeys::tab_step(ev) {
+        d.chip = Some(formkeys::wrap(at, by, 3));
+        return true;
     }
     match (formkeys::nav(ev, true), &ev.key) {
-        (Nav::Inc, _) => d.chip = Some(formkeys::wrap(at, 1, 3)),
-        (Nav::Dec, _) => d.chip = Some(formkeys::wrap(at, -1, 3)),
-        (Nav::Activate, _) => chip_change(app, d, at, 1),
+        (Nav::Inc, _) => chip_change(app, d, at, 1),
+        (Nav::Dec, _) => chip_change(app, d, at, -1),
+        (Nav::Activate, _) => d.chip = None,
         (_, Key::Named(NamedKey::Space) | Key::Char(' ')) => {
             chip_change(app, d, at, if ev.mods.shift() { -1 } else { 1 })
         }
@@ -1184,7 +1186,7 @@ pub fn draw(app: &App, g: &mut Grid) {
         a.footer(formkeys::STRIP_HINT, t.dim());
     } else if d.chip.is_some() {
         a.footer(
-            "←/→ pick a filter · enter or space change (shift+space back) · ↑ tabs · ↓ list",
+            "←/→ change · tab next filter · ↑ tabs · ↓ or enter back to results",
             t.dim(),
         );
     } else {

@@ -800,14 +800,23 @@ fn the_dependency_kind_is_a_field_of_the_picker() {
     assert!(!picker_blocks(&app));
     app.on_key(ch('z'));
     assert!(screen(&app).contains("kind [‹ related ›]"));
-    // ↓ still moves in the list from the kind field.
+    // ↓ moves on from the kind to the list, ↑ at the top of the list comes back.
     app.on_key(named(NamedKey::Down));
+    assert_eq!(picker_focus(&app), PickFocus::List);
+    app.on_key(named(NamedKey::Up));
     assert_eq!(picker_focus(&app), PickFocus::Kind);
-    // Back on the filter, letters filter again.
-    app.on_key(named(NamedKey::Tab));
-    app.on_key(named(NamedKey::Tab));
+    // ↑ from the kind reaches the filter, where letters filter again.
+    app.on_key(named(NamedKey::Up));
+    assert_eq!(picker_focus(&app), PickFocus::Filter);
     typ(&mut app, "sso");
     assert!(screen(&app).contains("filter: sso"));
+    // Typing in the list goes to the filter too.
+    app.on_key(named(NamedKey::Down));
+    app.on_key(named(NamedKey::Down));
+    assert_eq!(picker_focus(&app), PickFocus::List);
+    typ(&mut app, "x");
+    assert_eq!(picker_focus(&app), PickFocus::Filter);
+    assert!(screen(&app).contains("filter: ssox"));
 }
 
 #[test]

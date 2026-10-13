@@ -723,27 +723,12 @@ fn deps_key(app: &mut App, mut d: DepsView, ev: KeyEvent) {
     }
     if let Some(mut p) = d.picker.take() {
         let cands = candidates(app, &v, &p.filter);
+        use crate::formkeys::{Nav, nav};
+        let typing = p.focus == PickFocus::Filter;
+        let n = nav(&ev, typing);
+        let plain = !ev.mods.ctrl() && !ev.mods.alt();
         match ev.key {
             Key::Named(NamedKey::Escape) => {}
-            Key::Named(NamedKey::Down) => {
-                p.sel = (p.sel + 1).min(cands.len().saturating_sub(1));
-                d.picker = Some(p);
-            }
-            Key::Named(NamedKey::Up) => {
-                p.sel = p.sel.saturating_sub(1);
-                d.picker = Some(p);
-            }
-            _ if p.focus == PickFocus::Kind
-                && matches!(
-                    crate::formkeys::nav(&ev, false),
-                    crate::formkeys::Nav::Inc
-                        | crate::formkeys::Nav::Dec
-                        | crate::formkeys::Nav::Toggle
-                ) =>
-            {
-                p.blocks = !p.blocks;
-                d.picker = Some(p);
-            }
             // Tab and shift+tab walk filter, kind and list.
             Key::Named(NamedKey::Tab) => {
                 let by = crate::formkeys::tab_step(&ev).unwrap_or(1);
@@ -754,10 +739,45 @@ fn deps_key(app: &mut App, mut d: DepsView, ev: KeyEvent) {
                 p.focus = PickFocus::ALL[crate::formkeys::wrap(at, by, PickFocus::ALL.len())];
                 d.picker = Some(p);
             }
-            // The kind has no text: other keys are ignored there.
-            _ if p.focus == PickFocus::Kind
-                && !matches!(ev.key, Key::Named(NamedKey::Enter | NamedKey::Escape)) =>
-            {
+            // The list: ↑/↓ (j/k) pick a task, ↑ at the top goes back to the kind; typing
+            // goes to the filter.
+            _ if p.focus == PickFocus::List && matches!(n, Nav::Next | Nav::Prev) => {
+                if n == Nav::Prev && p.sel == 0 {
+                    p.focus = PickFocus::Kind;
+                } else if n == Nav::Prev {
+                    p.sel -= 1;
+                } else {
+                    p.sel = (p.sel + 1).min(cands.len().saturating_sub(1));
+                }
+                d.picker = Some(p);
+            }
+            Key::Char(_) if p.focus == PickFocus::List && plain => {
+                p.focus = PickFocus::Filter;
+                if edit(&mut p.filter, &ev) {
+                    p.sel = 0;
+                }
+                d.picker = Some(p);
+            }
+            // The kind: ←/→ or space flip it, ↑/↓ move to the filter or the list.
+            _ if p.focus == PickFocus::Kind && matches!(n, Nav::Inc | Nav::Dec | Nav::Toggle) => {
+                p.blocks = !p.blocks;
+                d.picker = Some(p);
+            }
+            _ if p.focus == PickFocus::Kind && matches!(n, Nav::Next | Nav::Prev) => {
+                p.focus = if n == Nav::Next {
+                    PickFocus::List
+                } else {
+                    PickFocus::Filter
+                };
+                d.picker = Some(p);
+            }
+            // The filter: ↓ moves on to the kind; letters edit it.
+            Key::Named(NamedKey::Down) if p.focus == PickFocus::Filter => {
+                p.focus = PickFocus::Kind;
+                d.picker = Some(p);
+            }
+            // Nothing else applies to the kind or the list (Enter adds, see below).
+            _ if p.focus != PickFocus::Filter && !matches!(ev.key, Key::Named(NamedKey::Enter)) => {
                 d.picker = Some(p);
             }
             Key::Named(NamedKey::Enter) => match cands.get(p.sel) {
@@ -1576,7 +1596,7 @@ pub fn draw_sub(app: &App, g: &mut Grid, v: &TaskView, s: &T4Sub, r: SRect, mut 
                 wrap_push(&mut lines, e, "", w, t.bold(t.red));
             }
             let footer = if d.picker.is_some() {
-                "tab filter/kind/list · ←/→ kind · ↑/↓ choose · enter confirm link · esc back"
+                "↑/↓ or tab move (filter, kind, list) · ←/→ change kind · enter add · esc back"
             } else {
                 "j/k move · a this task waits for… · A …waits for this task · x remove · esc back"
             };

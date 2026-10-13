@@ -6,7 +6,7 @@ use super::*;
 use crate::app::{App, Mode, Popup};
 use crate::drafts::tests::{ch, commands, named, only, reply, reply_err, screen, typ};
 use tokio::sync::mpsc::UnboundedReceiver;
-use vk_proto::input::NamedKey;
+use vk_proto::input::{Key, KeyEvent, NamedKey};
 use vk_proto::render::ClientFrame;
 
 type Rx = UnboundedReceiver<ClientFrame>;
@@ -282,4 +282,36 @@ fn human_review_verdict_is_a_choice_that_arrows_cycle() {
     let (_, p) = only(&commands(&mut rxs[0]), "task.review.human_review");
     assert_eq!(p["verdict"], "failed");
     assert_eq!(p["note"], "Loses the query string");
+}
+
+/// Key releases (Kitty reporting) never act: releasing Enter after it opened the note does not
+/// record the review, and a released arrow does not change the verdict. Space changes it.
+#[test]
+fn human_review_ignores_key_releases_and_space_changes_the_verdict() {
+    let (mut app, mut rxs) = setup();
+    open(&mut app, &mut rxs[0], package());
+    app.on_key(ch('H'));
+    let release = |k: Key| KeyEvent {
+        kind: vk_proto::input::KeyKind::Release,
+        ..KeyEvent::new(k, vk_proto::input::Mods::empty())
+    };
+    let choice = |app: &App| {
+        let TaskSub::Lane2c(Sub::Human(f)) = sub(app) else {
+            panic!("human review form expected");
+        };
+        f.choice
+    };
+    app.on_key(release(Key::Named(NamedKey::Right)));
+    assert_eq!(choice(&app), 0, "a released arrow changes nothing");
+    app.on_key(named(NamedKey::Space));
+    assert_eq!(choice(&app), 1, "space picks the next verdict");
+    app.on_key(named(NamedKey::Enter));
+    app.on_key(release(Key::Named(NamedKey::Enter)));
+    assert!(
+        commands(&mut rxs[0])
+            .iter()
+            .all(|c| c.1 != "task.review.human_review"),
+        "releasing enter records nothing"
+    );
+    assert!(matches!(app.mode, Mode::Popup(Popup::Task)));
 }

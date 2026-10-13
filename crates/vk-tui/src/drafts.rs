@@ -1181,9 +1181,11 @@ fn send_field_key(app: &mut App, v: &DraftsView, f: &mut SendFlow, ev: &KeyEvent
         (SendField::Targets, Nav::Next | Nav::Prev) => {
             let by = by.unwrap_or(1);
             let to = f.sel as i64 + by as i64;
-            if to >= f.targets.len() as i64 {
+            // Past either end of the list: the toggle (the send dialog keeps the keys; esc
+            // leaves it, it never jumps to the tab strip and loses the send).
+            if to >= f.targets.len() as i64 || to < 0 {
                 f.focus = SendField::Notes;
-            } else if to >= 0 {
+            } else {
                 f.sel = to as usize;
                 f.check = None;
                 f.phase = SendPhase::Checking;
