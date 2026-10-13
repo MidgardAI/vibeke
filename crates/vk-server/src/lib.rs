@@ -173,6 +173,7 @@ pub struct Server {
     pub events: broadcast::Sender<Arc<Event>>,
     pub ui: broadcast::Sender<UiEvent>,
     pub screen_dirty: Notify,
+    pub render_stats: render::Stats,
     pub clients: Mutex<HashMap<String, ClientState>>,
     pub geometry_leader: Mutex<Option<String>>,
     /// Leased-port env of tasks being created (their first pane spawns before the task is in
@@ -315,6 +316,7 @@ impl Server {
             events,
             ui,
             screen_dirty: Notify::new(),
+            render_stats: render::Stats::default(),
             clients: Mutex::new(HashMap::new()),
             geometry_leader: Mutex::new(None),
             pending_task_env: Mutex::new(HashMap::new()),

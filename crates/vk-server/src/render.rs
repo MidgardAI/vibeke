@@ -18,17 +18,60 @@ const MAX_UNACKED: u32 = 2;
 struct PaneView {
     epoch: u32,
     rev: u64,
-    rows: Vec<Row>,
+    rows: Arc<[Row]>,
     cursor: Cursor,
     modes: PaneModes,
     title: String,
     unacked: u32,
     last_sent: Instant,
     screen_rev: u64,
+    /// Only this observed revision may wait for the slower spinner deadline.
+    deferred: Option<(u64, Instant)>,
     scrolled: u64,
     dirty_since_ack: bool,
     /// Kitty placements this client has for the pane (03 §9).
     images: Vec<ImagePlace>,
+}
+
+impl PaneView {
+    fn eligible_at(
+        &self,
+        revision: u64,
+        interval: Duration,
+        focused: bool,
+        echo: bool,
+        now: Instant,
+    ) -> Instant {
+        if echo {
+            return now;
+        }
+        let normal = self.last_sent + interval;
+        if !focused
+            && let Some((held_revision, at)) = self.deferred
+            && held_revision == revision
+        {
+            return normal.max(at);
+        }
+        normal
+    }
+}
+
+/// Additive diagnostic counters. They contain no terminal text or client identities.
+#[derive(Default)]
+pub struct Stats {
+    wakes: std::sync::atomic::AtomicU64,
+    timer_wakes: std::sync::atomic::AtomicU64,
+    projections: std::sync::atomic::AtomicU64,
+    frames: std::sync::atomic::AtomicU64,
+}
+impl Stats {
+    pub fn json(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        serde_json::json!({"session_wakes": self.wakes.load(Relaxed),
+            "timer_wakes": self.timer_wakes.load(Relaxed),
+            "row_projections": self.projections.load(Relaxed),
+            "pane_frames": self.frames.load(Relaxed)})
+    }
 }
 
 pub struct Session {
@@ -52,6 +95,7 @@ pub struct Session {
     images_sent: std::collections::HashSet<String>,
     /// The authenticated caller of the connection that attached (09 §3.2).
     auth: Auth,
+    reads: tokio::task::JoinSet<ServerFrame>,
 }
 
 /// Who a render session runs as: the control connection's authenticated context. An elevated
@@ -305,6 +349,7 @@ where
         pending_sub: None,
         images_sent: Default::default(),
         auth,
+        reads: tokio::task::JoinSet::new(),
     };
     let mut push = EventPush::default();
     let hello = ServerFrame::Hello {
@@ -330,12 +375,14 @@ where
                 deadline = deadline.min(tokio::time::Instant::now() + left);
             }
             let mut got_event = None;
+            let mut read_result = None;
             tokio::select! {
                 _ = revoked.changed() => {}
                 f = in_rx.recv() => {
                     let Some(f) = f else { break };
                     if !s.on_client(f, &mut wr).await? { break }
-                    while let Ok(f) = in_rx.try_recv() {
+                    for _ in 0..63 {
+                        let Ok(f) = in_rx.try_recv() else { break };
                         if !s.on_client(f, &mut wr).await? { return Ok(()) }
                     }
                 }
@@ -352,17 +399,33 @@ where
                     if let Ok(ev) = ev && !s.on_ui(ev, &mut wr).await? { break }
                 }
                 ev = next_event(&mut push.rx) => got_event = Some(ev),
-                _ = tokio::time::sleep_until(deadline) => {}
+                result = s.reads.join_next(), if !s.reads.is_empty() => {
+                    read_result = result;
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    server.render_stats.timer_wakes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 _ = server.shutdown.notified() => {
                     asyncio::write_frame(&mut wr, &ServerFrame::Goodbye { reason: "server stopping".into() }).await?;
                     wr.flush().await?;
                     break;
                 }
             }
+            server.render_stats.wakes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if let Err(reason) = s.auth_ok() {
                 asyncio::write_frame(&mut wr, &ServerFrame::Goodbye { reason }).await?;
                 wr.flush().await?;
                 break;
+            }
+            if let Some(result) = read_result {
+                let frame = result?;
+                // A share can lose access while its archive read is running.
+                let allowed = match (&s.auth.share, &frame) {
+                    (Some(share), ServerFrame::History { pane, .. }) =>
+                        server.with_core(|c| share.allows(&c.model, pane)),
+                    _ => true,
+                };
+                if allowed { asyncio::write_frame(&mut wr, &frame).await?; }
             }
             if let Some((types, after)) = s.pending_sub.take() {
                 let backlog = push.subscribe(&s.server, types, after);
@@ -405,6 +468,7 @@ where
     }
     .await;
     reader.abort();
+    s.reads.abort_all();
     s.media.close(&server);
     // Remember focus for the next attach.
     let focus = server.client_focus(&client_id);
@@ -426,18 +490,38 @@ where
 
 impl Session {
     fn next_deadline(&self) -> tokio::time::Instant {
-        // Wake again when a throttled pane becomes eligible; otherwise idle (no timer wakeups).
+        let now = Instant::now();
         let mut soonest: Option<Instant> = None;
         for v in &self.visible {
             if let (Some(view), Some(rt)) = (self.views.get(&v.pane), self.server.pane_rt(&v.pane))
-                && rt.rev() != view.screen_rev
             {
-                let at = view.last_sent + self.interval(&v.pane);
+                let revision = rt.rev();
+                if revision == view.screen_rev || view.unacked >= MAX_UNACKED {
+                    // An ACK arrives through in_rx and wakes the session itself.
+                    continue;
+                }
+                if rt.screen.lock().unwrap().recovering {
+                    continue;
+                }
+                let echo =
+                    rt.last_input.lock().unwrap().is_some_and(|t| {
+                        now.saturating_duration_since(t) < Duration::from_millis(50)
+                    });
+                let at = view.eligible_at(
+                    revision,
+                    self.interval(&v.pane),
+                    self.focused.as_deref() == Some(&v.pane),
+                    echo,
+                    now,
+                );
                 soonest = Some(soonest.map_or(at, |s| s.min(at)));
             }
         }
-        let at = soonest.unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
-        tokio::time::Instant::from_std(at.max(Instant::now() + Duration::from_millis(1)))
+        tokio::time::Instant::from_std(
+            soonest
+                .unwrap_or(now + Duration::from_secs(3600))
+                .max(now + Duration::from_millis(1)),
+        )
     }
 
     fn interval(&self, pane: &str) -> Duration {
@@ -822,11 +906,49 @@ impl Session {
                 start,
                 count,
             } => {
-                let f = self.history(req, &pane, start, count);
-                asyncio::write_frame(wr, &f).await?;
+                if self.reads.len() >= MAX_READS {
+                    asyncio::write_frame(
+                        wr,
+                        &ServerFrame::Goodbye {
+                            reason: "too many pending history reads".into(),
+                        },
+                    )
+                    .await?;
+                    return Ok(false);
+                }
+                let history = self.capture_history(req, &pane, start, count);
+                let server = self.server.clone();
+                self.reads.spawn_blocking(move || history.finish(&server));
             }
             ClientFrame::Command { req, json } => {
                 let ctx = self.ctx();
+                if let Some(json) = self.prepare_read(&json) {
+                    if self.reads.len() >= MAX_READS {
+                        let request: vk_proto::rpc::Request = serde_json::from_str(&json)?;
+                        let response = vk_proto::rpc::Response::err(
+                            request.id.unwrap_or_default(),
+                            api::err(
+                                vk_proto::rpc::ErrorKind::RateLimited,
+                                "too many pending reads",
+                            ),
+                        );
+                        asyncio::write_frame(
+                            wr,
+                            &ServerFrame::CommandResult {
+                                req,
+                                json: serde_json::to_string(&response)?,
+                            },
+                        )
+                        .await?;
+                    } else {
+                        let server = self.server.clone();
+                        self.reads.spawn(async move {
+                            let json = api::handle_line(&server, &ctx, &json).await;
+                            ServerFrame::CommandResult { req, json }
+                        });
+                    }
+                    return Ok(true);
+                }
                 let resp = api::handle_line(&self.server, &ctx, &json).await;
                 asyncio::write_frame(wr, &ServerFrame::CommandResult { req, json: resp }).await?;
                 self.focused = self.server.client_focus(&self.client_id).pane;
@@ -936,83 +1058,6 @@ impl Session {
         Ok(())
     }
 
-    fn history(&self, req: u64, pane: &str, start: u32, count: u32) -> ServerFrame {
-        let Some(rt) = self.server.pane_rt(pane) else {
-            return ServerFrame::History {
-                pane: pane.into(),
-                req,
-                start,
-                total: 0,
-                lines: vec![],
-            };
-        };
-        let sc = rt.screen.lock().unwrap();
-        let mem = sc.engine.history_len() as u32;
-        let total_scrolled = sc.engine.scrolled_total();
-        let first_mem_abs = total_scrolled.saturating_sub(mem as u64);
-        drop(sc);
-        // Archived rows (older than memory) are addressed after in-memory ones by the client:
-        // index space = [archive rows .. memory rows], oldest first.
-        let archived: u32 = first_mem_abs.min(u32::MAX as u64) as u32;
-        let total = archived.saturating_add(mem);
-        let end = start.saturating_add(count).min(total);
-        // Keep absolute positions stable as memory rolls over. Shares can fetch only
-        // in-memory styled rows, as with the existing styled pane API.
-        let start = if self.auth.share.is_some() {
-            start.max(archived)
-        } else {
-            start
-        };
-        let mut lines = Vec::new();
-        if start < archived {
-            let a_end = end.min(archived);
-            if let Ok(rows) =
-                self.server
-                    .archive
-                    .lock()
-                    .unwrap()
-                    .read(pane, start as u64, a_end as u64)
-            {
-                let mut map: HashMap<u64, Row> = rows
-                    .into_iter()
-                    .map(|r| {
-                        (
-                            r.n,
-                            Row::new(
-                                vec![Span {
-                                    style: Style::default(),
-                                    cols: unicode_cols(&r.t),
-                                    text: r.t,
-                                }],
-                                r.w,
-                            ),
-                        )
-                    })
-                    .collect();
-                for n in start..a_end {
-                    lines.push(map.remove(&(n as u64)).unwrap_or_default());
-                }
-            }
-        }
-        if end > archived {
-            let sc = rt.screen.lock().unwrap();
-            for i in start.max(archived)..end {
-                lines.push(
-                    sc.engine
-                        .history_row((i - archived) as usize)
-                        .unwrap_or_default(),
-                );
-            }
-        }
-        ServerFrame::History {
-            pane: pane.into(),
-            req,
-            start,
-            total,
-            lines,
-        }
-    }
-
     async fn send_panes<W: AsyncWrite + Unpin>(&mut self, wr: &mut W) -> Result<()> {
         let now = Instant::now();
         for v in self.visible.clone() {
@@ -1041,7 +1086,7 @@ impl Session {
                 if view.unacked >= MAX_UNACKED {
                     continue;
                 }
-                if !echo && now < view.last_sent + self.interval(&v.pane) {
+                if now < view.eligible_at(screen_rev, self.interval(&v.pane), focused, echo, now) {
                     continue;
                 }
             }
@@ -1078,9 +1123,15 @@ impl Session {
                         virt: p.virt.then_some(p.image_id),
                     })
                     .collect();
+                let builds = sc.engine.row_projection_builds();
+                let rows = sc.engine.visible_rows_shared();
+                self.server.render_stats.projections.fetch_add(
+                    sc.engine.row_projection_builds() - builds,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 (
                     sc.epoch,
-                    sc.engine.visible_rows(),
+                    rows,
                     sc.engine.cursor(),
                     sc.engine.modes(),
                     // A harness may title the terminal after an envelope (spec 19 §4.1).
@@ -1107,11 +1158,16 @@ impl Session {
                             < view.last_sent
                                 + Duration::from_millis(1000 / self.bg_fps.max(1) as u64)
                     {
+                        view.deferred = Some((
+                            screen_rev,
+                            view.last_sent
+                                + Duration::from_millis(1000 / self.bg_fps.max(1) as u64),
+                        ));
                         continue;
                     }
                     let mut ops = Vec::new();
                     let n = scrolled.saturating_sub(view.scrolled);
-                    let mut base = view.rows.clone();
+                    let mut base = std::borrow::Cow::Borrowed(view.rows.as_ref());
                     if n > 0 && (n as usize) < rows.len() && !modes.alt_screen {
                         let n = n as usize;
                         if rows[..rows.len() - n] == base[n..]
@@ -1124,6 +1180,7 @@ impl Session {
                                 > rows.len() - n
                         {
                             ops.push(DiffOp::ScrollUp { n: n as u16 });
+                            let base = base.to_mut();
                             base.drain(..n);
                             base.extend(std::iter::repeat_n(Row::default(), n));
                         }
@@ -1154,6 +1211,7 @@ impl Session {
                     view.unacked += 1;
                     view.last_sent = now;
                     view.screen_rev = screen_rev;
+                    view.deferred = None;
                     view.scrolled = scrolled;
                     view.dirty_since_ack = true;
                     asyncio::write_frame(wr, &f).await?;
@@ -1165,7 +1223,7 @@ impl Session {
                         rev: 1,
                         cols,
                         rows: nrows,
-                        lines: rows.clone(),
+                        lines: rows.to_vec(),
                         cursor,
                         modes,
                         title: title.clone(),
@@ -1182,6 +1240,7 @@ impl Session {
                             unacked: 1,
                             last_sent: now,
                             screen_rev,
+                            deferred: None,
                             scrolled,
                             dirty_since_ack: true,
                             images: Vec::new(),
@@ -1190,6 +1249,10 @@ impl Session {
                     asyncio::write_frame(wr, &f).await?;
                 }
             }
+            self.server
+                .render_stats
+                .frames
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.send_images(wr, &v.pane, epoch, places, pixels).await?;
         }
         Ok(())
@@ -1252,3 +1315,11 @@ pub async fn write_and_ack(server: &Server, pane: &str, id: u64, bytes: Vec<u8>)
 #[cfg(test)]
 #[path = "render_push_tests.rs"]
 mod push_tests;
+
+#[path = "render_read.rs"]
+mod read;
+use read::MAX_READS;
+
+#[cfg(test)]
+#[path = "render_perf_tests.rs"]
+mod perf_tests;
