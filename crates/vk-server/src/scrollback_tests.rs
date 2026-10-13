@@ -123,7 +123,7 @@ fn housekeeping_drains_a_backlog_larger_than_one_compression_batch() {
 }
 
 #[test]
-fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover() {
+fn archive_failure_retains_rows_and_backs_off_until_the_archive_recovers() {
     let e = Env::new();
     e.server.archive_rows(
         "p",
@@ -138,7 +138,8 @@ fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover(
     std::fs::rename(&root, &saved).unwrap();
     std::fs::write(&root, b"not a directory").unwrap();
     e.server.housekeeping();
-    assert!(e.server.degraded.lock().unwrap().is_some());
+    assert!(e.server.archive_failure.lock().unwrap().is_some());
+    assert!(e.server.degraded.lock().unwrap().is_none());
     let runs = e
         .server
         .housekeeping_runs
@@ -157,17 +158,18 @@ fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover(
     e.server
         .with_core(|c| e.server.commit(c, crate::core::Tx::new()))
         .unwrap();
-    assert!(e.server.degraded.lock().unwrap().is_some());
+    assert!(e.server.archive_failure.lock().unwrap().is_some());
+    assert!(e.server.degraded.lock().unwrap().is_none());
     e.server.archive_rows(
         "p",
         vec![ArchivedRow {
             n: 1,
-            t: "skipped while degraded".into(),
+            t: "needle retained during archive outage".into(),
             w: false,
         }],
     );
-    assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), bytes);
-    assert_eq!(e.server.fts_buf.lock().unwrap().len(), queued);
+    assert!(e.server.archive.lock().unwrap().buffered_bytes() > bytes);
+    assert_eq!(e.server.fts_buf.lock().unwrap().len(), queued + 1);
     e.server
         .archive_failure
         .lock()
@@ -176,7 +178,8 @@ fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover(
         .unwrap()
         .retry_at = std::time::Instant::now();
     e.server.housekeeping();
-    assert!(e.server.degraded.lock().unwrap().is_some());
+    assert!(e.server.archive_failure.lock().unwrap().is_some());
+    assert!(e.server.degraded.lock().unwrap().is_none());
     assert!(e.server.housekeeping_delay() > std::time::Duration::from_secs(5));
     std::fs::remove_file(&root).unwrap();
     std::fs::rename(&saved, &root).unwrap();
@@ -192,7 +195,9 @@ fn archive_failure_pauses_growth_and_backs_off_until_archive_and_sqlite_recover(
     assert!(e.server.degraded.lock().unwrap().is_none());
     assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), 0);
     assert!(e.server.fts_buf.lock().unwrap().is_empty());
-    assert_eq!(e.fts_rows("p"), 1);
+    assert_eq!(e.fts_rows("p"), 2);
+    let rows = e.server.archive.lock().unwrap().read("p", 0, 2).unwrap();
+    assert_eq!(rows.iter().map(|r| r.n).collect::<Vec<_>>(), [0, 1]);
 }
 
 #[tokio::test]
@@ -220,6 +225,51 @@ async fn a_failed_shutdown_flush_releases_the_gate_for_a_later_attempt() {
     assert!(crate::run::flush_for_shutdown(&e.server).await.is_some());
     assert!(e.server.snapshot_permit().is_none());
     assert_eq!(e.server.archive.lock().unwrap().buffered_bytes(), 0);
+}
+
+#[tokio::test]
+async fn api_stop_reports_flush_failure_instead_of_success() {
+    let e = Env::new();
+    e.server.archive_rows(
+        "p",
+        vec![ArchivedRow {
+            n: 0,
+            t: "pending".into(),
+            w: false,
+        }],
+    );
+    let root = e.server.archive.lock().unwrap().root().to_path_buf();
+    let saved = root.with_extension("saved");
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    let error = e.call("server.stop", json!({})).await.unwrap_err();
+    assert!(error.message.contains("could not flush"), "{error:?}");
+    assert!(e.server.snapshot_permit().is_some());
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&saved, &root).unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_a_failed_restart_to_release_its_permit() {
+    let e = Env::new();
+    let restart = e.server.begin_snapshot_shutdown().unwrap();
+    e.server.seal_snapshot_shutdown(restart);
+    let server = e.server.clone();
+    let mut stop = tokio::spawn(async move { crate::run::flush_for_shutdown(&server).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut stop)
+            .await
+            .is_err()
+    );
+    // This is the exec-error path. The pending request must retry instead of disappearing.
+    e.server.resume_snapshot_persistence(restart);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), stop)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]

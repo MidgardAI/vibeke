@@ -178,3 +178,80 @@ while [ ! -e "$root/exit" ]; do sleep 0.01; done
         );
     }
 }
+
+#[test]
+fn failed_archive_flush_is_reported_and_a_second_signal_forces_stop() {
+    let s = Session::builder().prefix("vkstop").build();
+    let script = s.dir.path().join("producer.sh");
+    std::fs::write(
+        &script,
+        r#"set -eu
+root=$1
+for phase in initial outage; do
+    if [ "$phase" = outage ]; then
+        while [ ! -e "$root/go" ]; do sleep 0.01; done
+    fi
+    i=0
+    while [ "$i" -lt 100 ]; do
+        printf 'retained %s %s\n' "$phase" "$i"
+        i=$((i + 1))
+    done
+    printf 'READY_%s\n' "$phase"
+done
+while [ ! -e "$root/exit" ]; do sleep 0.01; done
+"#,
+    )
+    .unwrap();
+    let params = json!({"cwd": "/tmp", "command": ["/bin/sh", script, s.dir.path()]});
+    let workspace = s.json(&["api", "call", "workspace.create", &params.to_string()]);
+    let pane = workspace["root_pane"]["id"].as_str().unwrap();
+    s.wait_output(pane, "READY_initial", 30_000);
+    let child = s.pane(pane)["child_pid"].as_i64().unwrap();
+    let state = s.dir.path().join("state/default");
+    let root = state.join("scrollback");
+    let saved = state.join("scrollback.saved");
+    // Unlike permissions, replacing the directory fails writes even when tests run as root.
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::write(&root, "not a directory").unwrap();
+    std::fs::write(s.dir.path().join("go"), "").unwrap();
+    s.wait_output(pane, "READY_outage", 30_000);
+    let stop = s.cmd(&["server", "stop"]).output().unwrap();
+    assert!(
+        !stop.status.success(),
+        "failed flush must not report successful stop"
+    );
+    let error = format!(
+        "{}{}",
+        String::from_utf8_lossy(&stop.stdout),
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    assert!(error.contains("could not flush"), "{error}");
+    let pid = s.server_pid();
+    assert!(alive(pid.into()), "failed stop leaves the server serving");
+    signal_stop(&s);
+    wait_until("first signal's failed flush", || {
+        std::fs::read_to_string(state.join("logs/server.log"))
+            .unwrap_or_default()
+            .contains("shutdown flush failed; retrying")
+    });
+    assert!(alive(pid.into()));
+    signal_stop(&s);
+    wait_stopped(pid);
+    assert!(
+        alive(child),
+        "forced stop still retains the holder and child"
+    );
+    let store = vk_store::Store::open(&state.join("state.db")).unwrap();
+    let events = store
+        .events_after(0, 100, &["session.shutdown_unflushed".into()])
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "forced stop must record possible archive loss"
+    );
+    assert_eq!(events[0].data["reason"], "second_signal");
+    // Restore storage before Session's normal holder cleanup.
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&saved, &root).unwrap();
+}

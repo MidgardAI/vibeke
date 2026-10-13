@@ -208,12 +208,14 @@ async fn session_stop(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         return Ok(json!({"session": entry(server, name), "stopped": false}));
     }
     match tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         call_other(&socket, "server.stop", json!({"kill_panes": kill})),
     )
     .await
     {
-        Ok(Ok(_)) | Ok(Err(_)) => {}
+        Ok(Ok(_)) => {}
+        Ok(Err(message)) if message == "connection closed" => {}
+        Ok(Err(message)) => return Err(internal(message)),
         Err(_) => return Err(err(ErrorKind::Timeout, "server.stop timed out")),
     }
     if !wait_for(&socket, false, Duration::from_secs(10)).await {
@@ -303,6 +305,17 @@ fn server_restart(server: &Arc<Server>, p: &Value) -> R {
         // The new image starts its own gateway; a child of this image would outlive its
         // supervisor.
         let gateway_wanted = crate::gateway_supervisor::shutdown(&srv).await;
+        // A SIGTERM received while this restart was preparing must survive an exec failure
+        // or a successful exec. Yield the permit so the waiting signal path can stop us.
+        if srv
+            .signal_stop_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            *srv.restart_error.lock().unwrap() =
+                Some("restart cancelled by shutdown signal".into());
+            srv.resume_snapshot_persistence(snapshot_shutdown);
+            return;
+        }
         tracing::info!(binary = %exe.display(), "server.restart: exec");
         use std::os::unix::process::CommandExt;
         // Every descriptor of the server is close-on-exec (the listener, the state lock, the

@@ -84,6 +84,18 @@ impl Env {
         (entered_rx, resume_tx)
     }
 
+    fn pause_inside_commit(&self) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, resume) = self.pause_commit();
+        *self.pane.server.inside_snapshot_commit.lock().unwrap() = self
+            .pane
+            .server
+            .before_snapshot_commit
+            .lock()
+            .unwrap()
+            .take();
+        (entered, resume)
+    }
+
     async fn finish(&mut self) -> bool {
         let ok = (&mut self.pane.snapshot.as_mut().unwrap().worker)
             .await
@@ -372,4 +384,88 @@ async fn a_gap_during_snapshot_persistence_cannot_checkpoint_the_reset_screen() 
         std::io::ErrorKind::WouldBlock
     );
     assert!(e.pane.snapshot_dirty);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_pane_can_feed_while_a_snapshot_holds_the_commit_gate() {
+    let mut e = Env::new();
+    let (entered, resume) = e.pause_inside_commit();
+    e.pane.maybe_snapshot(true).await.unwrap();
+    entered.await.unwrap();
+    let mut other = Env::new();
+    other.pane.server = e.pane.server.clone();
+    let feed = tokio::spawn(async move {
+        other.pane.feed(0, b"responsive", true).await.unwrap();
+        other
+    });
+    // Bound this from a separate runtime worker: a synchronous gate regression cannot
+    // prevent the deadline from releasing the paused worker and reporting the failure.
+    let mut feed = feed;
+    let result = tokio::time::timeout(Duration::from_millis(500), &mut feed).await;
+    resume.send(()).unwrap();
+    assert!(e.finish().await);
+    let other = result
+        .expect("feed blocked on another pane's snapshot commit")
+        .unwrap();
+    assert_eq!(other.pane.rt.screen.lock().unwrap().fed_offset, 10);
+    assert!(other.pane.snapshot_armed);
+}
+
+#[tokio::test]
+async fn archive_outage_retains_evicted_rows_until_recovery_can_checkpoint() {
+    let mut e = Env::new();
+    let prefix = b"before outage\r\n".repeat(30);
+    e.pane.feed(0, &prefix, true).await.unwrap();
+    let root = e.pane.server.archive.lock().unwrap().root().to_path_buf();
+    let saved = root.with_extension("saved");
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    e.pane.server.housekeeping();
+    assert!(e.pane.server.archive_failure.lock().unwrap().is_some());
+    let mut offset = prefix.len() as u64;
+    for batch in 0..24 {
+        let text: String = (batch * 500..(batch + 1) * 500)
+            .map(|n| format!("outage_{n}\r\n"))
+            .collect();
+        e.pane.feed(offset, text.as_bytes(), true).await.unwrap();
+        offset += text.len() as u64;
+    }
+    let suffix = b"after outage\r\n".repeat(20);
+    e.pane.feed(offset, &suffix, true).await.unwrap();
+    offset += suffix.len() as u64;
+    assert!(e.pane.rt.screen.lock().unwrap().engine.scrolled_total() > 10_000);
+    e.pane.maybe_snapshot(true).await.unwrap();
+    assert!(
+        !e.finish().await,
+        "no checkpoint while the archive is unavailable"
+    );
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&saved, &root).unwrap();
+    e.pane
+        .server
+        .archive_failure
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retry_at = Instant::now();
+    e.pane.server.housekeeping();
+    assert!(e.pane.server.archive_failure.lock().unwrap().is_none());
+    let rows = e
+        .pane
+        .server
+        .archive
+        .lock()
+        .unwrap()
+        .read("p", 0, u64::MAX)
+        .unwrap();
+    let numbered: Vec<u64> = rows
+        .iter()
+        .filter_map(|r| r.t.strip_prefix("outage_"))
+        .map(|n| n.parse().unwrap())
+        .collect();
+    assert_eq!(numbered, (0..12_000).collect::<Vec<_>>());
+    e.pane.maybe_snapshot(true).await.unwrap();
+    assert!(e.finish().await);
+    e.checkpoint(offset).await;
 }

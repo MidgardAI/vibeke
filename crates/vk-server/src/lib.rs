@@ -105,8 +105,8 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::{Notify, broadcast, watch};
 use vk_proto::holder::{ProcStatus, SpawnSpec};
@@ -195,6 +195,9 @@ pub struct Server {
     /// Test hook: pause a snapshot worker after compression, before acquiring `core`.
     #[cfg(test)]
     pub(crate) before_snapshot_commit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test hook: pause while holding the commit side of the shutdown fence.
+    #[cfg(test)]
+    pub(crate) inside_snapshot_commit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub tokens: Mutex<HashMap<String, String>>,
     pub tracking: tracking::State,
     pub gateway: gateway_api::State,
@@ -221,7 +224,10 @@ pub struct Server {
     input_counter: AtomicU64,
     pub degraded: Mutex<Option<String>>,
     /// Held across the snapshot commit, so sealing shutdown fences even late workers.
-    snapshot_gate: Mutex<SnapshotGate>,
+    snapshot_gate: RwLock<SnapshotGate>,
+    snapshot_resumed: Notify,
+    /// A signal stop takes precedence over an in-flight exec restart.
+    pub(crate) signal_stop_requested: AtomicBool,
     /// Coalesced pane deadlines (spec 10 §1.3 wakeup budget).
     pub timers: Arc<timers::Scheduler>,
     /// Wakes the housekeeping task: archive rows to flush, or storage degraded.
@@ -356,6 +362,8 @@ impl Server {
             after_fts_drain: Mutex::new(None),
             #[cfg(test)]
             before_snapshot_commit: Mutex::new(None),
+            #[cfg(test)]
+            inside_snapshot_commit: Mutex::new(None),
             tokens: Mutex::new(tokens),
             tracking: Default::default(),
             gateway: Default::default(),
@@ -373,7 +381,9 @@ impl Server {
             shutdown: Notify::new(),
             input_counter: AtomicU64::new(rand::random::<u32>() as u64),
             degraded: Mutex::new(None),
-            snapshot_gate: Mutex::new(SnapshotGate::default()),
+            snapshot_gate: RwLock::new(SnapshotGate::default()),
+            snapshot_resumed: Notify::new(),
+            signal_stop_requested: AtomicBool::new(false),
             timers: Arc::default(),
             housekeeping_wake: Notify::new(),
             housekeeping_runs: AtomicU64::new(0),
@@ -407,11 +417,9 @@ impl Server {
                     self.enter_degraded(core, msg);
                     return Ok(events);
                 }
-                if self.archive_failure.lock().unwrap().is_none() {
-                    *self.degraded.lock().unwrap() = None;
-                    core.model.degraded = None;
-                    self.hardening.recovered();
-                }
+                *self.degraded.lock().unwrap() = None;
+                core.model.degraded = None;
+                self.hardening.recovered();
                 for e in &events {
                     let _ = self.events.send(Arc::new(e.clone()));
                 }
@@ -1863,9 +1871,13 @@ impl Server {
         if let Some(hook) = self.before_snapshot_commit.lock().unwrap().as_ref() {
             hook();
         }
-        let gate = self.snapshot_gate.lock().unwrap();
+        let gate = self.snapshot_gate.read().unwrap();
         if gate.sealed || fence.1.0 != gate.generation {
             return false;
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.inside_snapshot_commit.lock().unwrap().as_ref() {
+            hook();
         }
         let mut c = self.core.lock().unwrap();
         if let Some(epoch) = fence.0
@@ -1880,17 +1892,17 @@ impl Server {
     }
 
     pub(crate) fn snapshot_permit(&self) -> Option<SnapshotPermit> {
-        let gate = self.snapshot_gate.lock().unwrap();
+        let gate = self.snapshot_gate.read().unwrap();
         (!gate.shutting_down).then_some(SnapshotPermit(gate.generation))
     }
 
     pub(crate) fn snapshot_permitted(&self, permit: SnapshotPermit) -> bool {
-        let gate = self.snapshot_gate.lock().unwrap();
+        let gate = self.snapshot_gate.read().unwrap();
         !gate.sealed && gate.generation == permit.0
     }
 
     pub(crate) fn begin_snapshot_shutdown(&self) -> Option<SnapshotPermit> {
-        let mut gate = self.snapshot_gate.lock().unwrap();
+        let mut gate = self.snapshot_gate.write().unwrap();
         if gate.shutting_down {
             return None;
         }
@@ -1900,7 +1912,7 @@ impl Server {
     }
 
     pub(crate) fn seal_snapshot_shutdown(&self, permit: SnapshotPermit) {
-        let mut gate = self.snapshot_gate.lock().unwrap();
+        let mut gate = self.snapshot_gate.write().unwrap();
         if gate.generation == permit.0 {
             gate.sealed = true;
         }
@@ -1910,7 +1922,7 @@ impl Server {
     /// so workers left over from a timed-out shutdown remain fenced out.
     pub(crate) fn resume_snapshot_persistence(&self, permit: SnapshotPermit) {
         {
-            let mut gate = self.snapshot_gate.lock().unwrap();
+            let mut gate = self.snapshot_gate.write().unwrap();
             if gate.generation != permit.0 {
                 return;
             }
@@ -1918,6 +1930,7 @@ impl Server {
             gate.shutting_down = false;
             gate.sealed = false;
         }
+        self.snapshot_resumed.notify_waiters();
         for rt in self.panes.lock().unwrap().values() {
             rt.send(PaneCmd::Snapshot);
         }
@@ -1928,9 +1941,10 @@ impl Server {
         if crate::browser_pane::page_io::no_archive(self, pane) {
             return;
         }
-        // Degraded: archive writes pause with the snapshots (02 §4a); the rows stay in the ring.
-        if self.degraded.lock().unwrap().is_some() || self.archive_failure.lock().unwrap().is_some()
-        {
+        // SQLite degradation retains its existing policy. Archive-only failures keep rows
+        // buffered, including FTS, until the backoff retry succeeds; never discard history
+        // merely because a previous flush failed.
+        if self.degraded.lock().unwrap().is_some() {
             self.hardening.archive_skipped(rows.len());
             return;
         }
@@ -1974,8 +1988,8 @@ impl Server {
                 attempts,
             });
         }
-        let mut c = self.core.lock().unwrap();
-        self.enter_degraded(&mut c, message);
+        tracing::warn!(reason = %message, "archive persistence delayed; retaining buffered rows");
+        self.housekeeping_wake.notify_one();
     }
 
     pub(crate) fn housekeeping_delay(&self) -> std::time::Duration {

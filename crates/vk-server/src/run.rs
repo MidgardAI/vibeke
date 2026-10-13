@@ -78,7 +78,9 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
                 _ = hk.housekeeping_wake.notified() => {
                     tokio::time::sleep(hk.housekeeping_delay()).await;
                     housekeeping(&hk, false).await;
-                    if hk.degraded.lock().unwrap().is_some() {
+                    if hk.degraded.lock().unwrap().is_some()
+                        || hk.archive_failure.lock().unwrap().is_some()
+                    {
                         // Retry at the storage backoff deadline until it recovers.
                         hk.housekeeping_wake.notify_one();
                     }
@@ -122,18 +124,36 @@ pub async fn serve(server: Arc<Server>, listener: UnixListener) -> Result<()> {
             .expect("sigterm");
         let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             .expect("sigint");
-        loop {
-            tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
-            // Graceful stop: holders keep running; snapshot first so the next server replays little.
-            let Some(_) = flush_for_shutdown(&sd).await else {
-                continue;
-            };
-            crate::gateway_supervisor::shutdown(&sd).await;
-            crate::machines::stopped(&sd, "signal");
-            let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            std::process::exit(0);
+        tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+        sd.signal_stop_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        // Keep receiving signals while preparation waits for another stop/restart, a slow
+        // worker, or a failing disk. A second signal explicitly forces the exit.
+        let prepare = async {
+            loop {
+                if flush_for_shutdown(&sd).await.is_some() {
+                    crate::gateway_supervisor::shutdown(&sd).await;
+                    crate::machines::stopped(&sd, "signal");
+                    let _ = sd.ui.send(crate::UiEvent::Goodbye("server stopped".into()));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    return;
+                }
+                tracing::error!(
+                    "shutdown flush failed; retrying in 5 seconds; signal again to force exit"
+                );
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        };
+        let forced = tokio::select! {
+            _ = prepare => false,
+            _ = term.recv() => true,
+            _ = int.recv() => true,
+        };
+        if forced {
+            record_forced_shutdown(&sd).await;
+            std::process::exit(1);
         }
+        std::process::exit(0);
     });
     loop {
         let stream = match listener.accept().await {
@@ -176,7 +196,22 @@ async fn housekeeping(server: &Arc<Server>, prune: bool) {
 /// Wait for snapshots requested by this stop/restart. Unreachable holders retain their
 /// journals, so a bounded wait can fall back to replay instead of hanging shutdown forever.
 pub(crate) async fn flush_for_shutdown(server: &Arc<Server>) -> Option<crate::SnapshotPermit> {
-    let permit = server.begin_snapshot_shutdown()?;
+    let permit = loop {
+        // Register before checking the gate: resume must not be lost between the check
+        // and awaiting it. Successful stop exits; failed stop/exec wakes every waiter.
+        let resumed = server.snapshot_resumed.notified();
+        tokio::pin!(resumed);
+        resumed.as_mut().enable();
+        let begin = server.clone();
+        if let Some(permit) = tokio::task::spawn_blocking(move || begin.begin_snapshot_shutdown())
+            .await
+            .ok()
+            .flatten()
+        {
+            break permit;
+        }
+        resumed.await;
+    };
     let replies: Vec<_> = server
         .panes
         .lock()
@@ -207,6 +242,30 @@ pub(crate) async fn flush_for_shutdown(server: &Arc<Server>) -> Option<crate::Sn
         return None;
     }
     Some(permit)
+}
+
+/// A forced stop may have an unwritable database too. Record what happened when possible,
+/// but never make the second signal wait indefinitely for a storage lock or a failed disk.
+async fn record_forced_shutdown(server: &Arc<Server>) {
+    tracing::error!(
+        "forcing shutdown after a second signal; unflushed archive rows may be lost; holders retained"
+    );
+    let server = server.clone();
+    let record = tokio::task::spawn_blocking(move || {
+        let mut tx = Tx::new();
+        tx.event(
+            "session.shutdown_unflushed",
+            json!({}),
+            json!({"reason": "second_signal", "holders_retained": true}),
+        );
+        server.with_core(|c| server.commit(c, tx))
+    });
+    if !matches!(
+        tokio::time::timeout(Duration::from_secs(1), record).await,
+        Ok(Ok(Ok(_)))
+    ) {
+        tracing::error!("could not record forced shutdown before exit");
+    }
 }
 
 /// One control connection: newline-delimited JSON-RPC, pipelined, with optional switch to the
