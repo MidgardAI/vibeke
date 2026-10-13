@@ -32,7 +32,12 @@ An agent can leave work running after its turn ends. Examples are a development 
 - The agent details list each task with its kind, its command, and how long it has run.
 - The apps show the tasks next to the agent and in the conversation.
 
-Claude Code and the Codex app server report their background tasks to Vibeke. For other agents, Vibeke looks for shell commands that the agent started and that still run after the turn.
+Vibeke finds background work in these ways:
+
+- **Claude Code** reports its background tasks, including background subagents and monitors.
+- **Codex** records background terminals and sub-agents in its session file. A sub-agent counts from when it starts until it finishes or is closed.
+- **oh-my-pi** async jobs (`task` subagents and background `bash`) and **pi** runs from the `pi-subagents` package are reported by the Vibeke extension.
+- **Other agents:** Vibeke looks for shell commands that the agent started with a tool call and that still run after the turn. Servers that start together with the agent, such as MCP servers, do not count. Shell commands that you start yourself do not count.
 
 ## Configure an integration
 

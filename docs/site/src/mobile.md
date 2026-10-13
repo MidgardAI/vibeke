@@ -122,6 +122,8 @@ Files go only to a running agent.
 
 ## Find your way around
 
+- **Overview** shows what needs you across all your hosts. On a phone, it shows a tile for each workspace above a feed of activity. Tap a tile to show only that workspace.
+
 - **Long-press a row** in the workspace menu to **Pin**, **Rename** or **Close pane**. Tap **Close pane** twice to confirm.
 - **Search all agents** is a mode of the command palette. It searches terminals, sessions and past sessions on all your hosts. Type at least two characters.
 
@@ -144,6 +146,16 @@ Open a workspace to read the conversation, or switch to its terminal.
 
 The app keeps an unsent message for each pane. It is still there when you leave the pane or close the app.
 If the app cannot save a draft, it warns you. Keep the app open until you send or copy the text.
+
+### Messages that wait
+
+Claude Code and Codex keep a message in a queue when you send it while they work. The app shows such a message above the input box with a **Queued** label.
+The agent reads queued messages when it can, usually after its current step.
+Tap **Send now** to stop the current step and give the messages to the agent at once.
+
+- For Claude Code, Vibeke presses your `chat:sendNow` key. The default is `ctrl+x ctrl+s`. If you changed it in `~/.claude/keybindings.json`, Vibeke uses your key. It must be a key that a terminal can send, so `ctrl+enter` alone does not work.
+- For Codex, Vibeke presses `esc` while Codex shows "Messages to be submitted after next tool call". A follow-up that you queued with `tab` in Codex waits for the end of the turn. **Send now** does not send it.
+- **Send now** needs full access. It does nothing while the agent shows a question or an approval.
 
 ### Read the conversation
 

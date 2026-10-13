@@ -26,6 +26,13 @@ If the CLI is not found, use **Choose…** to select the `vibeke` executable.
 Pair the app with the remote host through the public relay. The remote host needs no inbound port.
 See [work on a remote machine](remote.md#connect-from-the-desktop-app) for the steps.
 
+## Overview
+
+Open **Overview** in the sidebar, or press `Cmd+Shift+H` (`Ctrl+Shift+H` on Windows and Linux).
+It counts the agents that wait for you, the agents that work, and the work that is ready to review.
+It lists open requests, and you can answer them there.
+It also lists the agents that work now and recent activity.
+
 ## Menu bar
 
 The Vibeke icon stays in the menu bar (the system tray on Windows and Linux) while the app runs.
