@@ -131,10 +131,16 @@ export function ApprovalCard({ host, r, showHost, full = false }: { host: HostSt
 }
 
 /** The inbox's approval cards (every own host), above the agents' interactions. */
-export function InboxApprovals({ showHost }: { showHost: boolean }) {
+/** Open approval requests on own full hosts, optionally narrowed by `only`. */
+export function useInboxApprovalRows(only?: (host: string, r: ApprovalRequest) => boolean) {
   const hosts = useAllHosts().filter(isOwnFullHost);
   const all = useApprovals();
-  const rows = hosts.flatMap((h) => (all.get(h.record.host_id)?.list ?? []).map((r) => ({ h, r })));
+  return hosts.flatMap((h) => (all.get(h.record.host_id)?.list ?? []).filter((r) => !only || only(h.record.host_id, r)).map((r) => ({ h, r })));
+}
+
+/** `only` keeps the requests it accepts (the overview's workspace filter). */
+export function InboxApprovals({ showHost, only }: { showHost: boolean; only?: (host: string, r: ApprovalRequest) => boolean }) {
+  const rows = useInboxApprovalRows(only);
   if (rows.length === 0) return null;
   return (
     <>

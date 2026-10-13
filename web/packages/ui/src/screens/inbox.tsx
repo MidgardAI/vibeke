@@ -1,7 +1,6 @@
 import { useMemo, useRef, type ReactNode } from 'react';
 import { Inbox as InboxIcon } from 'lucide-react';
-import { groupBatches, type Batch, type InboxItem } from '@vibeke/core';
-import { useApprovalCount } from '../app/approval-stores';
+import { groupBatches, type ApprovalRequest, type Batch, type InboxItem } from '@vibeke/core';
 import { useAnswers, useApp, useHosts, useInboxItems, useNow } from '../app/hooks';
 import { BatchCard } from '../components/batch-card';
 import { CatchUpSection } from '../components/catch-up';
@@ -10,26 +9,30 @@ import { Empty } from '../components/ui';
 import { t } from '../i18n';
 import { InboxRetainer, itemKey, type RetainedEntry } from '../lib/retain';
 import { useCatchUp } from '../lib/use-catch-up';
-import { InboxApprovals } from './approve';
+import { InboxApprovals, useInboxApprovalRows } from './approve';
+
+export interface InboxFilter {
+  item(item: InboxItem): boolean;
+  approval(host: string, r: ApprovalRequest): boolean;
+}
 
 /**
  * `after` (the menu-bar popover's agent list) renders below the cards, inside the same keyboard
  * list; with it, an empty inbox shows only `after` instead of the empty state. `empty` replaces
- * the empty state (the overview's quiet line). `filter` keeps only some cards (the overview's
- * workspace filter); approval requests and catch-up cards show only without one.
+ * the empty state (the overview's quiet line). `filter` keeps only some cards and approval
+ * requests (the overview's workspace filter); catch-up cards show only without one.
  */
-export function InboxScreen({ after, empty: emptyNode, filter }: { after?: ReactNode; empty?: ReactNode; filter?: (item: InboxItem) => boolean } = {}) {
+export function InboxScreen({ after, empty: emptyNode, filter }: { after?: ReactNode; empty?: ReactNode; filter?: InboxFilter } = {}) {
   const app = useApp();
   const hosts = useHosts();
   const all = useInboxItems();
-  const items = useMemo(() => (filter ? all.filter(filter) : all), [all, filter]);
+  const items = useMemo(() => (filter ? all.filter(filter.item) : all), [all, filter]);
   useAnswers();
   const now = useNow(500);
   const retainer = useRef(new InboxRetainer());
   const showHost = hosts.length > 1;
   // Approval requests from panes (spec 09 §3.2) come first: a pane waits on each one.
-  const approvalCount = useApprovalCount();
-  const approvals = filter ? 0 : approvalCount;
+  const approvals = useInboxApprovalRows(filter?.approval).length;
   // What happened while the app was in the background (cards only after a long absence).
   const catchUpAll = useCatchUp();
   const catchUp = filter ? { ...catchUpAll, cards: [] } : catchUpAll;
@@ -68,7 +71,7 @@ export function InboxScreen({ after, empty: emptyNode, filter }: { after?: React
   const cards = (
     <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list={after ? undefined : true}>
       <CatchUpSection catchUp={catchUp} showHost={showHost} />
-      {!filter && <InboxApprovals showHost={showHost} />}
+      <InboxApprovals showHost={showHost} only={filter?.approval} />
       {rows.map((r) => (
         <div key={r.key}>{r.node}</div>
       ))}

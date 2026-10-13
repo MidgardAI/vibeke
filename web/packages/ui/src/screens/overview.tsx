@@ -4,7 +4,7 @@
 // over one feed: tapping a tile narrows the feed to that workspace, and the grid shrinks to a strip
 // once the feed scrolls under it. Answers happen in the feed only, never on a tile.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, Globe, Plus, X } from 'lucide-react';
 import type { InboxItem } from '@vibeke/core';
 import { useApprovalCount } from '../app/approval-stores';
@@ -24,7 +24,7 @@ import { toolSummary } from '../lib/tool-summary';
 import { useGitStatus } from '../lib/use-git-status';
 import type { WorkspaceRow } from '../lib/workspaces';
 import { navigate, workspaceRoute } from '../router';
-import { InboxScreen } from './inbox';
+import { InboxScreen, type InboxFilter } from './inbox';
 
 const FEED_STATUS: Record<FeedKind, Status> = { working: 'working', finished: 'review', error: 'error', rate_limited: 'need', exited: 'idle' };
 const FEED_TONE: Record<FeedKind, string> = { working: 'text-info', finished: 'text-add', error: 'text-del', rate_limited: 'text-need', exited: 'text-muted' };
@@ -393,7 +393,16 @@ function Phone() {
     return () => io.disconnect();
   }, [ov.active.length > 0]);
 
-  const filter = useCallback((it: InboxItem) => !!selRow && it.host_id === selRow.host && selRow.panes.some((p) => p.pane.id === it.interaction.pane), [selRow]);
+  const filter = useMemo<InboxFilter | undefined>(
+    () =>
+      selRow
+        ? {
+            item: (it) => it.host_id === selRow.host && selRow.panes.some((p) => p.pane.id === it.interaction.pane),
+            approval: (host, r) => host === selRow.host && r.workspace === selRow.workspace.id,
+          }
+        : undefined,
+    [selRow],
+  );
   const feed = filterFeed(ov.feed, sel).slice(0, 40);
 
   return (
@@ -453,7 +462,7 @@ function Phone() {
       </div>
 
       <div className="-mt-1">
-        <InboxScreen key={sel ?? 'all'} filter={sel ? filter : undefined} empty={null} />
+        <InboxScreen key={sel ?? 'all'} filter={filter} empty={null} />
       </div>
 
       <div className="space-y-3 px-3">
