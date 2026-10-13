@@ -10,6 +10,7 @@ pub mod compat;
 pub mod handoff;
 pub mod mcp;
 pub mod plugin_native;
+pub mod share;
 pub mod shell_integration;
 pub mod show;
 pub mod verbs;

@@ -446,6 +446,15 @@ async fn dispatch(g: Global, args: Vec<String>) -> i32 {
                 }
             }
         }
+        // `vibeke share watch|review|list|revoke` over the gateway bridge (spec 20 §5.2).
+        Some("share") => {
+            let gr = &g;
+            let rest = &args[1..];
+            with_client(gr, |mut c| async move {
+                vk_cli::share::run_share(&mut c, gr, rest).await
+            })
+            .await
+        }
         // Receiving handoffs (16 §15.2): `vibeke handoff incoming|accept|decline|resume|prefs`,
         // and inside a pane `send|cancel|redeem` through auth.approve.
         Some("handoff") if vk_cli::handoff::handles(args.get(1).map(String::as_str)) => {

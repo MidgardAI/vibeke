@@ -36,6 +36,7 @@ vibeke integration install hermes --yes
 | `~/.hermes/plugins/vibeke/__init__.py` | New file. |
 | `~/.hermes/config.yaml` | Adds `vibeke` to `plugins.enabled`. |
 | `~/.hermes/skills/vibeke/SKILL.md` | New file: the Vibeke skill. |
+| `~/.hermes/skills/vibeke-remote/SKILL.md` | New file: the skill for the messaging gateway. |
 
 If `HERMES_HOME` is set, Vibeke uses that folder instead of `~/.hermes`.
 
@@ -43,9 +44,40 @@ The installer saves a backup of `config.yaml` before its first change. It change
 
 The skill teaches Hermes the `vibeke` commands for panes, agents, tasks, previews, the agent browser and images. A line after the header of the skill marks it as managed by Vibeke. The installer does not replace a `vibeke` skill without that line.
 
+The `vibeke-remote` skill follows the same rules as the `vibeke` skill. The installer does not replace a file without the mark. `integration status` lists it, and a missing one makes the status partial.
+
 The first line of each plugin file marks it as managed by Vibeke. A reinstall overwrites it. If a file exists at that path without the mark, the installer refuses to replace it.
 
 The plugin stays inactive outside a Vibeke pane.
+
+## Start work from Slack or another chat
+
+Hermes can run a messaging gateway, for example for Slack. The `vibeke` skill stops outside a Vibeke pane. The `vibeke-remote` skill is for this case. It lets Hermes start an agent on the host and post links for your team.
+
+Hermes runs on the host, outside every pane. It uses the `vibeke` command with your user account. It needs no extra login. Your host needs the gateway (`vibeke gateway on`) and an account login (`vibeke login`) for links.
+
+A typical chat:
+
+1. A teammate writes: "@hermes add a dark mode toggle to the settings page".
+2. Hermes creates a workspace, starts an agent and sends it the task.
+3. Hermes posts a **watch link** so the team can follow the agent.
+4. When the agent declares its preview, Hermes posts a **review link**. Designers try the app and send notes.
+5. After the agent opens a pull request, Hermes posts a **continue link** and comments on the pull request.
+
+The links are limited to GitHub accounts and work for several people. Each teammate signs in with GitHub once. See [work with a teammate](../sharing.md) and [move work to another host](../handoff.md#continue-a-session-from-a-link).
+
+The skill tells Hermes to follow these rules:
+
+- Post links, never terminal output.
+- Ask the requester before it uses `--any-github` or `--link`, which let more people in.
+- Tell the requester which GitHub accounts can open each link.
+
+Set the default accounts in your config:
+
+```toml
+[sharing]
+github = ["alice", "bob"]
+```
 
 ## Check
 
@@ -62,7 +94,7 @@ vibeke integration doctor hermes
 vibeke integration uninstall hermes --yes
 ```
 
-This deletes the plugin folder and the skill, and removes `vibeke` from `plugins.enabled`. It refuses to delete a file that Vibeke did not write.
+This deletes the plugin folder and both skills, and removes `vibeke` from `plugins.enabled`. It refuses to delete a file that Vibeke did not write.
 
 ## Limits
 

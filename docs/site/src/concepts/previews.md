@@ -230,6 +230,23 @@ vibeke browser feedback --wait 600
 
 The command returns your notes when you send them. Agents that use the Vibeke MCP server have the `browser_feedback` tool for the same purpose.
 
+## Share a preview for design review
+
+You can send one preview to a designer as a link. The designer opens it in their own browser, uses the running app and sends notes. The notes reach the agent that owns the preview.
+
+```sh
+vibeke share review v4                  # v4 is the preview handle
+vibeke share review v4 --notes held     # notes wait for you to release them
+```
+
+You can also choose **Design review** in the **People** form (`prefix+alt+v`). By default only the GitHub accounts in `[sharing] github` can open the link, and their notes go straight to the agent. Use `--link` to let the first person who opens it in, and then the notes are held for you.
+
+The designer picks an element with a click or an area with a drag, writes a note for each pick and sends them. When the agent changes the app, hot reload shows the change at the same link. If the browser cannot run the preview itself, the screen shows your host's browser instead. That view cannot leave the preview.
+
+A review link reaches only that preview. It does not give access to terminals, files, git, agents or other previews. Requests from the designer's browser to your app travel end-to-end encrypted through your host. An app that calls another local port, such as an API on a different port, cannot reach it from a review.
+
+See [work with a teammate](../sharing.md#share-a-running-app-for-design-review) for who can open a link and how held notes work.
+
 ## Next steps
 
 - [Using the terminal interface](../terminal.md): learn the default keys, including the image gallery.

@@ -118,6 +118,7 @@ pub struct Config {
     pub graphics: Graphics,
     pub compat: Compat,
     pub update: Update,
+    pub sharing: Sharing,
     /// `[layouts.<name>]`: named declarative layouts (07 §2.14 `LayoutSpec`, parsed by the
     /// server) for `vibeke layout apply <name>` and `workspace create --layout <name>`.
     pub layouts: BTreeMap<String, toml::Value>,
@@ -989,6 +990,15 @@ pub struct CompatHerdr {
     /// Serve `server.stop` / `herdr server stop` on the compat endpoint (stops this Vibeke
     /// session only, never from a plugin or a pane). Off: refused.
     pub allow_server_stop: bool,
+}
+
+/// `[sharing]` — defaults for `vibeke share` and `vibeke handoff link`.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sharing {
+    /// GitHub logins that may open links made without `--github`, `--any-github` or `--link`.
+    /// Empty by default: the commands then ask for `--github`.
+    pub github: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

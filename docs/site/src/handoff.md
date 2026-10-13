@@ -72,6 +72,61 @@ imported pane there.
 
 A handoff copies work after an agent turn. It does not move process memory or close the source workspace. Both copies remain available.
 
+## Continue a session from a link
+
+A **continue link** turns an agent's session into one link. The session includes the branch, the uncommitted changes and the conversation. A teammate opens the link and continues the session on their own host. Your host can be offline by then.
+
+Your host must be signed in to an account (`vibeke login`) and the gateway must run (`vibeke gateway on`).
+
+1. Create the link from the pane that runs the agent:
+
+   ```sh
+   vibeke handoff link --pane <pane>
+   ```
+
+   Vibeke packs the session in the same way as a normal handoff, encrypts it on your host and uploads it. The command prints progress and then the link. In the terminal client, press `l` in the **Handoffs** view instead.
+2. Send the link. The link holds the key, so only people who have the link can read the session. The account server never sees the content.
+3. Your teammate opens the link in the browser app or the desktop app. They see a short summary: the repository, branch, agent, task title, the agent's last message and who sent it. They choose which of their hosts takes the session. In the terminal client, they paste the link in **Connections → Hosts** (`p`).
+4. The chosen host downloads and checks the session. It adds it as an incoming handoff from a teammate. The usual accept steps follow (see [accept an incoming handoff](#accept-an-incoming-handoff)). Vibeke never imports a continue link by itself.
+
+On the host that takes the session, you can also run:
+
+```sh
+vibeke handoff open '<continue link>'
+```
+
+### Who can open the link
+
+By default the link is limited to the GitHub accounts in your `[sharing] github` config list. The host that opens the link downloads with its own account, and the account server checks the GitHub account.
+
+| Option | Who can open it |
+| --- | --- |
+| none | The GitHub accounts in `[sharing] github` |
+| `--github alice,bob` | Those GitHub accounts |
+| `--any-github` | Any GitHub account |
+| `--link` | Any signed-in account that has the link |
+
+If no accounts are set and you pass no option, the command asks you to set `[sharing] github` or pass `--github`.
+
+A link works for 7 days by default. Use `--ttl` (for example `--ttl 24h`, at most 30 days) to change that. Add `--interrupt` to end the agent's current turn before packing. Each account can store 2 GiB in total and 256 MiB for each session.
+
+### Add the link to a pull request
+
+```sh
+vibeke handoff link --pane <pane> --pr
+```
+
+With `--pr`, Vibeke uses your `gh` command to add a comment to the pull request of the pane's current branch. The comment looks like this:
+
+```markdown
+**Continue this session**: Claude Code on `feat/login`, sent by @alice, link valid until 21 Oct.
+[Open in Vibeke](https://app.vibeke.dev/#/continue?d=...)
+```
+
+Without `--pr`, Vibeke posts nothing. The command prints the link. Add `--json` to get the link, the Markdown comment and the expiry.
+
+The session uses the same exclusions as a normal handoff: secret-looking files, large untracked files and secrets in the conversation are left out. The continue screen says what was left out.
+
 ## Accept an incoming handoff
 
 An incoming handoff waits on the destination for 7 days. In the app, **Handoffs** in the sidebar
@@ -220,6 +275,6 @@ overlay or handoffs list, or `vibeke handoff resume <id>`.
 
 ## Next steps
 
-- [Work with a teammate](sharing.md) to send work to another person or share a pane.
+- [Work with a teammate](sharing.md) to send work to another person, share a pane or share an app for review.
 - [Pair your phone or browser](mobile.md) to start and accept handoffs from the app.
 - [Fix common problems](troubleshooting.md) if a transfer or pairing fails.

@@ -20,7 +20,9 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 /// The verbs this module runs.
-pub const VERBS: &[&str] = &["incoming", "accept", "decline", "resume", "prefs", "redeem"];
+pub const VERBS: &[&str] = &[
+    "incoming", "accept", "decline", "resume", "prefs", "redeem", "link", "open",
+];
 /// Verbs that ask the user through `auth.approve` when run inside a pane.
 pub const APPROVED_VERBS: &[&str] = &["send", "cancel", "redeem"];
 
@@ -31,7 +33,9 @@ vibeke handoff resume <id>\n\
 vibeke handoff prefs [--always-ask on|off]\n\
 vibeke handoff send <peer> [--pane P] [--interrupt] [--no-wait] [--reason TEXT] [--timeout-ms MS]\n\
 vibeke handoff cancel <job> [--no-wait] [--reason TEXT] [--timeout-ms MS]\n\
-vibeke handoff redeem <link> [--share-user] [--no-wait] [--reason TEXT] [--timeout-ms MS]";
+vibeke handoff redeem <link> [--share-user] [--no-wait] [--reason TEXT] [--timeout-ms MS]\n\
+vibeke handoff link [--pane P] [--github a,b | --any-github | --link] [--ttl 7d] [--interrupt] [--pr] [--json]\n\
+vibeke handoff open <link> [--json]";
 
 /// The message the CLI prints while it waits for the user's decision.
 pub const WAITING: &str =
@@ -725,6 +729,10 @@ pub async fn run<S>(client: &mut Client<S>, g: &Global, args: &[String]) -> i32
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    // `link` and `open` run over the gateway bridge (spec 20 §5.2).
+    if matches!(args.first().map(String::as_str), Some("link" | "open")) {
+        return crate::share::run_handoff(client, g, args).await;
+    }
     let cmd = match parse(args) {
         Ok(c) => c,
         Err(e) => {
