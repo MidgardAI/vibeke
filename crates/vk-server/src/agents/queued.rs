@@ -235,7 +235,7 @@ pub struct Binding {
 }
 
 fn binding_of(chord: &str) -> Option<Binding> {
-    let keys: Vec<String> = chord.split_whitespace().map(str::to_lowercase).collect();
+    let keys: Vec<String> = norm(chord).split_whitespace().map(str::to_string).collect();
     if keys.is_empty() {
         return None;
     }
@@ -284,10 +284,29 @@ fn binding_of(chord: &str) -> Option<Binding> {
 }
 
 /// Normalized chord text, for comparing a user's key with a default.
+/// A chord in one spelling: Claude's modifier aliases (`control`, `opt`, `option`, `meta`,
+/// `cmd`, `command`, `super`, `win`) become ours, and modifiers are sorted.
 fn norm(chord: &str) -> String {
     chord
         .split_whitespace()
-        .map(str::to_lowercase)
+        .map(|key| {
+            let lower = key.to_lowercase();
+            let parts: Vec<&str> = lower.split('+').collect();
+            let (base, mods) = parts.split_last().unwrap_or((&"", &[]));
+            let mut mods: Vec<&str> = mods
+                .iter()
+                .map(|m| match *m {
+                    "control" => "ctrl",
+                    "opt" | "option" | "meta" => "alt",
+                    "cmd" | "command" | "win" => "super",
+                    m => m,
+                })
+                .collect();
+            mods.sort_unstable();
+            mods.dedup();
+            mods.push(base);
+            mods.join("+")
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -619,6 +638,18 @@ mod tests {
         for k in ["ctrl+x ctrl+s", "ctrl+k ctrl+n", "alt+s"] {
             assert!(binding_of(k).unwrap().pty_safe, "{k}");
         }
+    }
+
+    #[test]
+    fn claude_modifier_aliases_name_the_same_key() {
+        let f =
+            r#"{"bindings":[{"context":"Chat","bindings":{"control+x control+s":"chat:submit"}}]}"#;
+        assert!(claude_send_now_keys(Some(f)).is_err());
+        let f = r#"{"bindings":[{"context":"Chat","bindings":{"Control+K Control+N":"chat:sendNow"}}]}"#;
+        assert_eq!(
+            claude_send_now_keys(Some(f)).unwrap().keys,
+            vec!["ctrl+k", "ctrl+n"]
+        );
     }
 
     #[test]

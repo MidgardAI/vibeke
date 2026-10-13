@@ -44,12 +44,14 @@ fn note_ended(run: &str, id: &str, at: i64) {
     }
 }
 
-fn ended_recently(run: &str, id: &str, now: i64) -> bool {
+/// Whether task `id` ended in the last [`ENDED_KEEP_MS`], and (with `since`, a start time) not
+/// before a task that started at `since`: a start after the end is a new task with the id.
+fn ended_recently(run: &str, id: &str, now: i64, since: Option<i64>) -> bool {
     ENDED
         .lock()
         .unwrap()
         .get(&(run.to_string(), id.to_string()))
-        .is_some_and(|t| now - *t < ENDED_KEEP_MS)
+        .is_some_and(|t| now - *t < ENDED_KEEP_MS && since.is_none_or(|s| s <= *t + SKEW_MS))
 }
 
 /// A shortened, redacted label for a task.
@@ -173,7 +175,7 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
     store(server, run, |r| {
         let mut next: Vec<BgTask> = tasks
             .into_iter()
-            .filter(|t| !ended_recently(run, &t.id, now))
+            .filter(|t| !ended_recently(run, &t.id, now, None))
             .map(|mut t| {
                 if let Some(old) = r.bg_tasks.iter().find(|o| o.id == t.id) {
                     t.since_ms = old.since_ms;
@@ -199,7 +201,7 @@ pub fn replace(server: &Arc<Server>, run: &str, tasks: Vec<BgTask>) {
 /// A transcript record says `task` started at `task.since_ms`.
 pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
     // An end recorded before its start (another source, or out of order) wins.
-    if ended_recently(run, &task.id, now_ms()) {
+    if ended_recently(run, &task.id, now_ms(), Some(task.since_ms)) {
         return;
     }
     store(server, run, |r| {
@@ -227,9 +229,16 @@ pub fn started(server: &Arc<Server>, run: &str, task: BgTask) {
 /// reuses the id (omp numbers its jobs from `bg_1` again in a resumed process).
 pub fn ended(server: &Arc<Server>, run: &str, id: &str, at_ms: Option<i64>) {
     let now = now_ms();
-    note_ended(run, id, at_ms.map_or(now, |t| t.min(now)));
-    // A task first seen after the end (allowing for report skew) is a newer task with the id.
+    // A task first seen after the end (allowing for report skew) is a newer task with the id:
+    // the end neither removes it nor makes a later report of it look ended.
     let ends = |t: &BgTask| t.id == id && at_ms.is_none_or(|at| t.since_ms <= at + SKEW_MS);
+    let newer = server.with_core(|c| {
+        c.run(run)
+            .is_some_and(|r| r.bg_tasks.iter().any(|t| t.id == id && !ends(t)))
+    });
+    if !newer {
+        note_ended(run, id, at_ms.map_or(now, |t| t.min(now)));
+    }
     store(server, run, |r| {
         if !r.bg_tasks.iter().any(ends) {
             return None;
