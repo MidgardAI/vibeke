@@ -2021,6 +2021,11 @@ async fn cached_ready_is_invalidated_by_live_changes() {
         assert_eq!(review_label(er, tr).as_deref(), Some("ready_for_review"));
     };
     back_to_ready().await;
+    // The finished check queued a background refresh. Let it land first: if it ran after the
+    // turn starts below, it would downgrade the task itself (correctly, but without the live
+    // watcher's reason), which is not what this test checks.
+    wait_until("check refresh settled", || !refresh_pending(&task)).await;
+    back_to_ready().await;
 
     // A turn starts on the bound run. The live watcher downgrades on its own; only then is the
     // attention list read: `attention.list` queues refreshes of stale tasks, and a refresh
