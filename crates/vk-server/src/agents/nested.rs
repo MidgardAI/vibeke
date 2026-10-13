@@ -102,10 +102,11 @@ pub(super) fn is_nested(server: &Server, pane: &str, h: Harness, pid: Option<u32
 
 /// A hook of the pane's own harness comes from a nested agent (Claude running `claude -p` in
 /// a tool) when the harness process behind it is another process than the recorded outer one,
-/// started from a shell under it: the tool's shell. Without this its `SessionStart` would take
-/// the pane's run over, and its hooks would receive what waits for the pane's agent (messages,
-/// page notes). A harness that runs hooks from a helper process of its own has no shell in
-/// between, so its hooks stay the pane's.
+/// below it, and is either started from a shell under it (the tool's shell) or runs the same
+/// executable (a second instance, also after `exec` replaced the shell). Without this its
+/// `SessionStart` would take the pane's run over, and its hooks would receive what waits for
+/// the pane's agent (messages, page notes). A helper process of the harness with another
+/// executable and no shell in between stays the pane's.
 pub(super) fn nested_same(chain: &[ProcInfo], outer: Proc) -> bool {
     let Some(at) = chain.iter().position(|p| Proc::of(p) == outer) else {
         return false;
@@ -113,7 +114,8 @@ pub(super) fn nested_same(chain: &[ProcInfo], outer: Proc) -> bool {
     let Some(own) = chain[..at].iter().position(|p| !is_shell(p)) else {
         return false;
     };
-    chain[own + 1..at].iter().any(is_shell)
+    let same_exe = chain[own].exe.is_some() && chain[own].exe == chain[at].exe;
+    same_exe || chain[own + 1..at].iter().any(is_shell)
 }
 
 /// Remember the harness process of `h` in `pane` after its signal was routed. Recomputed only

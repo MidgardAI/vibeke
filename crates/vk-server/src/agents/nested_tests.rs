@@ -94,6 +94,9 @@ fn same_harness_started_from_a_tool_shell_is_nested() {
         p(810, 800, "/bin/sh"),
         p(900, 300, "/Users/u/.local/share/claude/helper"),
         p(910, 900, "/bin/sh"),
+        // `exec claude -p` in the tool shell: no shell left between the two Claudes.
+        p(1000, 300, "/Users/u/.local/share/claude/versions/2.1.296"),
+        p(1010, 1000, "/bin/sh"),
     ] {
         t.insert(x.pid, x);
     }
@@ -103,6 +106,8 @@ fn same_harness_started_from_a_tool_shell_is_nested() {
     assert!(!nested_same(&chain(310), outer));
     // claude (800) under the tool zsh (400) under the pane's claude (300).
     assert!(nested_same(&chain(810), outer));
+    // A second Claude that replaced the tool shell (`exec`): nested too.
+    assert!(nested_same(&chain(1010), outer));
     // A helper of the pane's claude, without a shell in between: still the pane's agent.
     assert!(!nested_same(&chain(910), outer));
     // Not under the recorded agent at all.

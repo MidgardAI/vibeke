@@ -1911,15 +1911,16 @@ pub(crate) async fn deliver_text(
     } else {
         m.text.replace('\n', " ").into_bytes()
     };
-    // Hold the pane's input lock from paste to Enter so no client or API caller can interleave.
-    server.agents.lock_input(&run.pane);
+    // From paste to Enter, people's keys and pastes wait in the automation hold (spec 19 §4.2)
+    // and reach the pane right after the Enter: never dropped, never submitted with our text.
+    let hold = server.input_hold.hold(&run.pane);
     let st =
         crate::render::write_and_ack(server, &run.pane, server.next_internal_input_id(), bytes)
             .await;
     if st != vk_proto::holder::InputStatus::Written
         && st != vk_proto::holder::InputStatus::Duplicate
     {
-        server.agents.unlock_input(&run.pane);
+        drop(hold);
         return (
             MessageState::DeliveryUnknown,
             Some(format!(
@@ -1928,11 +1929,10 @@ pub(crate) async fn deliver_text(
         );
     }
     tokio::time::sleep(Duration::from_millis(80)).await;
-    // Recheck before submitting: still idle, nothing opened, nobody typed into the pane just
-    // now (people's input meanwhile waits in the automation hold), and the input box holds
-    // exactly our text (never a user draft merged with it).
+    // Recheck before submitting: still idle, nothing opened, and the input box holds exactly
+    // our text (never a user draft merged with it). Typing meanwhile is held, so it needs no
+    // check here.
     let changed: Option<&str> = {
-        let typed = !force && crate::mentions::delivery::typing_wait(server, &run.pane).is_some();
         let quiet = server.with_core(|c| {
             c.run(m.run)
                 .is_some_and(|r| force || r.execution.value == Execution::Idle)
@@ -1951,9 +1951,7 @@ pub(crate) async fn deliver_text(
                 || norm(m.text).starts_with(&norm(&t)) && !t.is_empty()
                 || force && norm(&t).ends_with(&norm(m.text))
         });
-        if typed {
-            Some("someone typed in the pane")
-        } else if !quiet {
+        if !quiet {
             Some("the agent started working or a question opened")
         } else if !ours {
             Some("the input box does not show exactly the pasted text")
@@ -1962,7 +1960,7 @@ pub(crate) async fn deliver_text(
         }
     };
     if let Some(why) = changed {
-        server.agents.unlock_input(&run.pane);
+        drop(hold);
         return (
             MessageState::DeliveryUnknown,
             Some(format!(
@@ -1977,7 +1975,7 @@ pub(crate) async fn deliver_text(
         b"\r".to_vec(),
     )
     .await;
-    server.agents.unlock_input(&run.pane);
+    drop(hold);
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(150)).await;
