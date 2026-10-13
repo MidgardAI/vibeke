@@ -49,5 +49,6 @@ mod security;
 mod state_backup;
 mod task_workspace;
 mod tracking;
+mod tui_persistence;
 mod update;
 mod v1_remainder;
