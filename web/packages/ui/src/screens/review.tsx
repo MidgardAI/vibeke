@@ -180,11 +180,20 @@ function Reviewer({ record }: { record: ReviewRecord }) {
   const conn: ReviewConnection = useMemo(() => app.reviewConnection(record), [app, record]);
   const state = useSyncExternalStore(conn.subscribe, conn.getSnapshot);
   const info = state.review;
+  // The content origin and the cookie jar never come from the link alone: the origin uses the
+  // sid the host reports over the authenticated channel, and the jar is keyed by the paired
+  // invitation (host + pid), so an edited link cannot reach another review's cookies.
+  const sid = info && info.sid.toLowerCase() === record.sid ? info.sid.toLowerCase() : null;
+  const jarKey = `${record.host_id}/${record.pid}`;
   const contentOrigin = useMemo(
-    () => (typeof window === 'undefined' ? null : reviewContentOrigin(window.location.origin, record.sid, app.platform.review?.contentOriginPattern)),
-    [record.sid, app],
+    () => (typeof window === 'undefined' || !sid ? null : reviewContentOrigin(window.location.origin, sid, app.platform.review?.contentOriginPattern)),
+    [sid, app],
   );
-  const [mode, setMode] = useState<'content' | 'screencast'>(contentOrigin && supportsContentOrigin() ? 'content' : 'screencast');
+  const [mode, setMode] = useState<'content' | 'screencast'>(supportsContentOrigin() ? 'content' : 'screencast');
+  // A host that reports another sid than the link carries gets the screencast, never a content origin.
+  useEffect(() => {
+    if (info && !sid) setMode('screencast');
+  }, [info, sid]);
   const [annotating, setAnnotating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -244,7 +253,7 @@ function Reviewer({ record }: { record: ReviewRecord }) {
         if (saveTimer) return;
         saveTimer = setTimeout(() => {
           saveTimer = null;
-          void store.set(record.sid, jar.toJSON(Date.now())).catch(() => {});
+          void store.set(jarKey, jar.toJSON(Date.now())).catch(() => {});
         }, 500);
       },
       now: () => Date.now(),
@@ -260,7 +269,7 @@ function Reviewer({ record }: { record: ReviewRecord }) {
     controller.current = c;
     // The jar first (requests need its cookies), then the frames.
     void store
-      .get(record.sid)
+      .get(jarKey)
       .catch(() => null)
       .then((data) => {
         if (disposed) return;
@@ -271,7 +280,7 @@ function Reviewer({ record }: { record: ReviewRecord }) {
       disposed = true;
       if (saveTimer) {
         clearTimeout(saveTimer);
-        void store.set(record.sid, jar.toJSON(Date.now())).catch(() => {});
+        void store.set(jarKey, jar.toJSON(Date.now())).catch(() => {});
       }
       c.dispose();
       controller.current = null;

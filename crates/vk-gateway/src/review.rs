@@ -235,6 +235,8 @@ pub fn authorize(gw: &Gateway, device: &Device, method: &str, p: Value) -> Resul
     };
     if method.starts_with("browser.annotation") {
         out.insert("author".into(), author(device));
+        // The server checks every draft against the preview this link reaches.
+        out.insert("within".into(), json!(preview));
     }
     Ok(Value::Object(out))
 }
@@ -306,6 +308,10 @@ pub async fn execute(gw: &Arc<Gateway>, device: &Device, method: &str, mut p: Va
         }
         "review.info" => info(gw, device).await,
         "browser.preview_open" => {
+            // An older server would open the page before ignoring `confine`: check first.
+            if !gw.server.has_feature("browser_confine").await {
+                return Err(too_old());
+            }
             // Detached, like the app API's: a cancelled request must not abandon a session the
             // host already opened.
             let (gw, device_id) = (gw.clone(), device.id.clone());
@@ -332,11 +338,26 @@ pub async fn execute(gw: &Arc<Gateway>, device: &Device, method: &str, mut p: Va
             // URLs on the server too.
             gw.server.call_as(&actor, method, p).await
         }
-        m if m.starts_with("browser.annotation") => gw.server.call_as(&actor, m, p).await,
+        m if m.starts_with("browser.annotation") => {
+            // An older server ignores `author`, `within` and `hold`: it would hand a reviewer the
+            // owner's draft and deliver held notes at once.
+            if !gw.server.has_feature("review_annotations").await {
+                return Err(too_old());
+            }
+            gw.server.call_as(&actor, m, p).await
+        }
         _ => Err(forbidden(format!(
             "{method} is not available to a design review"
         ))),
     }
+}
+
+/// The host's server predates design review support.
+fn too_old() -> ApiError {
+    ApiError::new(
+        "unsupported",
+        "this host's Vibeke server is too old for design review; update it",
+    )
 }
 
 /// `review.info {}` → `{preview: {id, handle, label, url, status, port, path}, owner, notes,

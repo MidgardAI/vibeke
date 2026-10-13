@@ -163,11 +163,11 @@ export class ReviewController {
       const port = e.ports[0];
       if (m?.t !== 'cookies.get' || !port) return;
       // A new page in the frame (navigation or reload): its sockets died with the old page.
+      // Mark them closed and give back their stream slots, so a socket still opening its stream
+      // closes it when it arrives and its late callbacks are ignored.
       this.pagePort?.close();
-      for (const [id, s] of this.sockets) {
-        s.conn?.close();
-        this.sockets.delete(id);
-      }
+      for (const s of this.sockets.values()) this.drop(s);
+      this.sockets.clear();
       this.pagePort = port;
       this.pagePath = m.path;
       port.onmessage = (ev) => this.pageMessage(port, ev);
@@ -375,6 +375,11 @@ export class ReviewController {
     const release = await this.limiter.take();
     const state: WsState = { conn: null, open: false, closed: false, release };
     this.sockets.set(m.id, state);
+    // Callbacks of this socket only, never of a newer page's socket with the same id.
+    const gone = (code: number, reason: string, clean = false) => {
+      if (this.sockets.get(m.id) === state) this.wsGone(m.id, code, reason, clean);
+      else this.drop(state);
+    };
     try {
       const host = m.url.replace(/^wss?:\/\//, '');
       const target = host.slice(host.indexOf('/')) || '/';
@@ -394,6 +399,7 @@ export class ReviewController {
       const frames = new FrameReader();
       const onFrames = (bytes: Uint8Array) => {
         for (const f of frames.push(bytes)) {
+          if (state.closed) return;
           if (f.type === 'text') this.toPage({ t: 'ws.message', id: m.id, data: f.data });
           else if (f.type === 'binary') {
             const buf = f.data.slice().buffer as ArrayBuffer;
@@ -401,7 +407,7 @@ export class ReviewController {
           } else if (f.type === 'ping') conn.write(encodeFrame(OP.pong, f.data, this.o.random(4))).catch(() => {});
           else if (f.type === 'close') {
             conn.write(encodeFrame(OP.close, closePayload(f.code === 1005 ? undefined : f.code), this.o.random(4))).catch(() => {});
-            this.wsGone(m.id, f.code === 1005 ? 1000 : f.code, f.reason, true);
+            gone(f.code === 1005 ? 1000 : f.code, f.reason, true);
           }
         }
       };
@@ -420,16 +426,24 @@ export class ReviewController {
               else if (ev.type === 'head') throw new Error(`upgrade refused (${ev.head.status})`);
             }
           } catch {
-            this.wsGone(m.id, 1006, '');
+            gone(1006, '');
           }
         },
-        end: () => this.wsGone(m.id, 1006, ''),
-        close: () => this.wsGone(m.id, 1006, ''),
+        end: () => gone(1006, ''),
+        close: () => gone(1006, ''),
       });
       await conn.write(writeRequest({ method: 'GET', target, headers }));
     } catch {
-      this.wsGone(m.id, 1006, '');
+      gone(1006, '');
     }
+  }
+
+  /** Close a socket's stream and give back its slot, once. */
+  private drop(s: WsState): void {
+    if (s.closed) return;
+    s.closed = true;
+    s.conn?.close();
+    s.release();
   }
 
   private wsGone(id: number, code: number, reason: string, clean = false): void {

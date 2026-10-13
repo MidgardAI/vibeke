@@ -500,21 +500,21 @@ where
         .await
 }
 
-/// Replace `@current` in a pane or workspace target with the real id.
+/// Replace a pane or workspace target (`%3`, `w2:p5`, a name, `@current`) with its id: the
+/// gateway compares share limits with canonical ids.
 async fn resolve_targets<S>(client: &mut Client<S>, c: &mut Common) -> Result<(), CallError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let wants = |v: &Option<String>| v.as_deref() == Some("@current");
-    if !wants(&c.pane) && !wants(&c.workspace) {
-        return Ok(());
+    if let Some(p) = c.pane.clone() {
+        let v = client.call("pane.get", json!({"pane": p})).await?;
+        c.pane = v["pane"]["id"].as_str().map(str::to_string);
     }
-    let me = client.call("pane.get", json!({"pane": "@current"})).await?;
-    if wants(&c.pane) {
-        c.pane = me["pane"]["id"].as_str().map(str::to_string);
-    }
-    if wants(&c.workspace) {
-        c.workspace = me["pane"]["workspace"].as_str().map(str::to_string);
+    if let Some(w) = c.workspace.clone() {
+        let v = client
+            .call("workspace.get", json!({"workspace": w}))
+            .await?;
+        c.workspace = v["workspace"]["id"].as_str().map(str::to_string);
     }
     Ok(())
 }

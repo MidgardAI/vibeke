@@ -176,6 +176,29 @@ impl Server {
         self.call(method, params).await
     }
 
+    /// Whether the server (the one connected now, connecting if needed) advertises `feature` in
+    /// its `client.hello` features. An unreachable server has none.
+    pub async fn has_feature(&self, feature: &str) -> bool {
+        {
+            let mut guard = self.conn.lock().await;
+            if guard
+                .as_ref()
+                .is_none_or(|c| !c.alive.load(Ordering::SeqCst))
+            {
+                match self.connect().await {
+                    Ok(c) => *guard = Some(c),
+                    Err(_) => return false,
+                }
+            }
+        }
+        self.info
+            .lock()
+            .unwrap()
+            .get("features")
+            .and_then(Value::as_array)
+            .is_some_and(|f| f.iter().any(|x| x.as_str() == Some(feature)))
+    }
+
     /// Call a server method, (re)connecting if needed.
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, ApiError> {
         let mut guard = self.conn.lock().await;

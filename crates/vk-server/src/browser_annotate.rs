@@ -209,6 +209,10 @@ pub struct Author {
     pub id: String,
     /// What people see: the GitHub login, or the share's label.
     pub label: String,
+    /// The one preview this reviewer's link reaches (the gateway's `within`), resolved to its
+    /// id. Every draft the reviewer reads or changes must be on it. Not stored.
+    #[serde(skip)]
+    pub within: Option<String>,
 }
 
 impl Author {
@@ -300,7 +304,34 @@ pub fn author_param(ctx: &Ctx, p: &Value) -> Result<Option<Author>, RpcError> {
         kind: kind.into(),
         id,
         label,
+        within: None,
     }))
+}
+
+/// `author_param` plus the reviewer's preview: a call carrying `author` must also carry
+/// `within` (the preview the gateway authorized), and it is resolved to the preview's id.
+pub fn author_scoped(server: &Server, ctx: &Ctx, p: &Value) -> Result<Option<Author>, RpcError> {
+    let Some(mut a) = author_param(ctx, p)? else {
+        return Ok(None);
+    };
+    // The gateway always sends `within` for a reviewer; other non-pane callers have full
+    // access anyway.
+    let Some(raw) = s(p, "within") else {
+        return Ok(Some(a));
+    };
+    let h = server
+        .with_core(|c| preview_home(c, raw))
+        .ok_or_else(|| not_found("preview", raw))?;
+    a.within = Some(h.id);
+    Ok(Some(a))
+}
+
+/// Whether a reviewer may touch a draft on target `t`: only on its own preview.
+fn within_ok(author: Option<&Author>, t: &AnnotationTarget) -> bool {
+    match author.and_then(|a| a.within.as_ref()) {
+        Some(w) => *t == AnnotationTarget::Preview(w.clone()),
+        None => true,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -705,6 +736,7 @@ fn drafts_of(server: &Server, t: &AnnotationTarget, author: Option<&Author>) -> 
 fn get_for(server: &Server, id: &str, author: Option<&Author>) -> Result<Draft, RpcError> {
     get(server, id)
         .filter(|d| author.is_none_or(|a| d.author.as_ref().is_some_and(|x| x.same(a))))
+        .filter(|d| within_ok(author, &d.target))
         .ok_or_else(|| not_found("annotation draft", id))
 }
 
@@ -735,7 +767,7 @@ pub async fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Op
     {
         return Some(Err(e));
     }
-    let author = match author_param(ctx, p) {
+    let author = match author_scoped(server, ctx, p) {
         Ok(a) => a,
         Err(e) => return Some(Err(e)),
     };
@@ -775,12 +807,18 @@ fn num(p: &Value, k: &str) -> Option<f64> {
 /// `browser.annotation_add {target, url, title?, viewport?, kind, selector?, role?, name?, text?,
 /// html?, rect?, covers?, image_b64?, note?, author?, capture?}` on the target's owner.
 pub fn add(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
-    let author = author_param(ctx, p)?;
+    let author = author_scoped(server, ctx, p)?;
     let target = p
         .get("target")
         .filter(|t| t.is_object())
         .ok_or_else(|| invalid("missing param `target` ({pane} | {session} | {preview})"))?;
     let (target, workspace) = target_of(server, ctx, target)?;
+    if !within_ok(author.as_ref(), &target) {
+        return Err(err(
+            ErrorKind::PermissionDenied,
+            "a reviewer annotates its own preview only",
+        ));
+    }
     let kind = s(p, "kind").unwrap_or("element");
     if !matches!(kind, "element" | "region" | "page") {
         return Err(invalid(format!(
@@ -1067,6 +1105,9 @@ fn read(server: &Server, ctx: &Ctx, p: &Value, author: Option<&Author>) -> R {
         return Ok(json!({"draft": d}));
     }
     let (t, _) = target_of(server, ctx, p)?;
+    if !within_ok(author, &t) {
+        return Err(not_found("annotation target", "for this reviewer"));
+    }
     let d = current(server, &t, author);
     if let Some(d) = &d
         && !may_see(server, ctx, d)
@@ -2144,6 +2185,11 @@ async fn pick_and_add(server: &Arc<Server>, src: &Source, act: Act, author: Opti
     let pick = pick.ok_or_else(|| not_found("element", "at that point"))?;
     let mut params = pick.fields();
     params["target"] = src.target.clone();
+    // A reviewer's picks in the host browser land on its preview, like its other notes.
+    if let Some(w) = author.and_then(|a| a.within.as_ref()) {
+        params["target"] = json!({"preview": w});
+        params["within"] = json!(w);
+    }
     params["url"] = json!(src.url);
     params["viewport"] = src.viewport.clone();
     if let Some(t) = &src.title {

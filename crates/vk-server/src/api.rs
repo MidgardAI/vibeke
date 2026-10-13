@@ -803,7 +803,15 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
             "machine": server.opts.machine,
             "capabilities": if ctx.pane_scope.is_some() { json!(["pane"]) } else { json!(["*"]) },
             // `browser_confine`: `browser.session_open {confine}` is honoured (spec 20 §3.7).
-            "features": ["render.v1", "events.v1", "render.scoped_share", "browser_confine"],
+            // `review_annotations`: annotation calls honour `author`, `within` and `hold`
+            // (spec 20 §3.3, §3.4).
+            "features": [
+                "render.v1",
+                "events.v1",
+                "render.scoped_share",
+                "browser_confine",
+                "review_annotations"
+            ],
             "client_id": ctx.client_id,
         })),
         "client.list" => {

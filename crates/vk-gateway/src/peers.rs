@@ -350,7 +350,13 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 .filter(|v| !v.is_empty())
                 .ok_or_else(|| ApiError::invalid("id is required"))?;
             // `{id: <pid>}` revokes the invitation and every device that came from it
-            // (spec 20 §2.4); their redemptions stay spent.
+            // (spec 20 §2.4); their redemptions stay spent. Cancel first, under the state lock
+            // that redemption also holds while it creates a device: afterwards no new device can
+            // come from it, and the list below sees every one that did.
+            let cancelled = cancel_invitation(&gw.state, id, &device.id).map_err(internal)?;
+            if cancelled {
+                gw.revoke_pid_ticket(id);
+            }
             let _ = gw.reload_devices();
             let from: Vec<String> = gw
                 .devices()
@@ -360,10 +366,6 @@ pub async fn dispatch(gw: &Arc<Gateway>, device: &Device, method: &str, p: &Valu
                 .collect();
             for d in &from {
                 gw.revoke(d).await.map_err(internal)?;
-            }
-            let cancelled = cancel_invitation(&gw.state, id, &device.id).map_err(internal)?;
-            if cancelled {
-                gw.revoke_pid_ticket(id);
             }
             if cancelled || !from.is_empty() {
                 let mut r = json!({"cancelled": "invitation"});

@@ -249,6 +249,10 @@ fn annotations_get_a_forced_target_and_an_author() {
     .unwrap();
     assert_eq!(r["target"], json!({"preview": "pv1"}));
     assert_eq!(r["author"], author, "the device cannot choose its author");
+    assert_eq!(
+        r["within"], "pv1",
+        "the server checks every draft against it"
+    );
     assert!(r.get("image_b64").is_none());
     assert_eq!(r["op_id"], "o");
     assert_eq!(
@@ -287,7 +291,7 @@ fn annotations_get_a_forced_target_and_an_author() {
             json!({"pane": "p1", "session": "b2", "draft": "d1"})
         )
         .unwrap(),
-        json!({"draft": "d1", "preview": "pv1", "author": author})
+        json!({"draft": "d1", "preview": "pv1", "author": author, "within": "pv1"})
     );
     for m in [
         "browser.annotation_update",

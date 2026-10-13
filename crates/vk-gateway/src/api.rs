@@ -2221,6 +2221,25 @@ impl Call<'_> {
             .filter(|v| !v.is_empty())
             .ok_or_else(|| ApiError::new("not_found", format!("no preview {preview}")))?
             .to_string();
+        // Review routing works on this host's previews only; a preview on another machine
+        // (`devbox/v4`) would lose its machine on every later call.
+        let here = self
+            .gw
+            .server
+            .info
+            .lock()
+            .unwrap()
+            .get("machine")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let machine = s(&pv, "machine").unwrap_or_default();
+        if preview.contains('/') || !(machine.is_empty() || machine == "local" || machine == here) {
+            return Err(ApiError::new(
+                "unsupported",
+                "design review links work for previews on this host only",
+            ));
+        }
         let pane = s(&pv, "pane").map(str::to_string);
         let workspace = match &pane {
             Some(pane) => self
@@ -2392,7 +2411,7 @@ impl Call<'_> {
         } else {
             Duration::from_secs(15 * 60)
         };
-        let (pairing, link) = crate::pair::create_invitation(
+        let (pairing, mut link) = crate::pair::create_invitation(
             &self.gw.state,
             &relay,
             &self.gw.host_name,
@@ -2403,6 +2422,11 @@ impl Call<'_> {
             uses,
         )
         .map_err(internal)?;
+        // The browser signs in with GitHub at this host's account server, whose keys the host
+        // checks the attestation with (spec 20 §2.3).
+        if github_access && let Some(sh) = link.share.as_mut() {
+            sh["account"] = json!(crate::account::account_server(&self.gw.cfg));
+        }
         self.gw.state.audit(&json!({"ts": now_s(), "event": "share.created", "by": self.device.id, "kind": kind, "pid": pairing.pid,
                                     "access": access, "uses": uses}));
         let url = if review.is_some() {
