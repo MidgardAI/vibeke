@@ -117,7 +117,8 @@ fn text_fields_keep_tab() {
     app.on_key(named(NamedKey::Escape));
     app.on_key(named(NamedKey::Tab));
     assert_eq!(showing(&app), Some(Tab::Handoffs));
-    // The People form: tab switches tabs on a choice, moves on from the name field.
+    // The People form: tab moves between its fields (on a choice too); the tabs are up on the
+    // strip.
     app.action("share_pane", None);
     assert_eq!(showing(&app), Some(Tab::People));
     for _ in 0..3 {
@@ -130,7 +131,7 @@ fn text_fields_keep_tab() {
         s => panic!("{s:?}"),
     }
     app.on_key(named(NamedKey::Tab));
-    assert_eq!(showing(&app), Some(Tab::Hosts));
+    assert_eq!(showing(&app), Some(Tab::People));
 }
 
 #[test]

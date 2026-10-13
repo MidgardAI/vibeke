@@ -2214,6 +2214,8 @@ pub fn entries(app: &App) -> Vec<Entry> {
 }
 
 pub fn open_list(app: &mut App) {
+    // A tab opens with the keys in the tab, not on the strip.
+    app.ux.connections.strip = false;
     for mi in 0..app.machines.len() {
         refresh(app, mi);
     }

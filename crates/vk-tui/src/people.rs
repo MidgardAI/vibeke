@@ -848,6 +848,8 @@ fn until_of(f: &Form, now: i64) -> String {
 
 /// Open the People tab on machine `mi`: on the list, or with `pane` straight on the form.
 pub(crate) fn open_on(app: &mut App, mi: usize, pane: Option<String>) {
+    // A tab opens with the keys in the tab, not on the strip.
+    app.ux.connections.strip = false;
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
         app.toast("that machine is offline");
         return;
@@ -898,11 +900,20 @@ pub(crate) fn leave(app: &mut App) {
 }
 
 /// The form's name field has the keys.
+#[cfg(test)]
 pub(crate) fn typing(app: &App) -> bool {
     app.ux
         .people
         .as_ref()
         .is_some_and(|v| matches!(&v.stage, Stage::Form(f) if f.focus == Field::Name))
+}
+
+/// The share form is open: tab / shift+tab move between its fields there.
+pub(crate) fn in_form(app: &App) -> bool {
+    app.ux
+        .people
+        .as_ref()
+        .is_some_and(|v| matches!(&v.stage, Stage::Form(f) if !f.confirming))
 }
 
 /// Why the link can't be used right now: the gateway is unreachable, or not online.
@@ -1124,6 +1135,8 @@ pub fn key(app: &mut App, ev: KeyEvent) {
             match ev.key {
                 _ if quit => close(app),
                 _ if down => v.sel = (v.sel + 1).min(n.saturating_sub(1)),
+                // Up from the top row: the tab strip.
+                _ if up && v.sel == 0 => app.ux.connections.strip = true,
                 _ if up => v.sel = v.sel.saturating_sub(1),
                 Key::Char('x') if plain => ask_revoke(v),
                 Key::Char('n') if plain => new_share(app),
@@ -1144,6 +1157,11 @@ pub fn key(app: &mut App, ev: KeyEvent) {
                 v.busy = None;
                 v.creating = None;
                 v.stage = Stage::List;
+            } else if matches!(ev.key, Key::Named(NamedKey::Up))
+                && f.fields().first() == Some(&f.focus)
+            {
+                // Up from the first field: the tab strip.
+                app.ux.connections.strip = true;
             } else if v.busy.is_none() && form_key(f, &ev) {
                 submit(app);
             }
@@ -1171,7 +1189,7 @@ fn form_key(f: &mut Form, ev: &KeyEvent) -> bool {
     let prev = fields[(at + n - 1) % n];
     match &ev.key {
         Key::Named(NamedKey::Enter) => return true,
-        // Tab reaches here only from the name field (elsewhere it switches tabs).
+        // Tab and shift+tab move between the fields (the Connections view leaves them to the form).
         Key::Named(NamedKey::Tab) if ev.mods.shift() => f.focus = prev,
         Key::Named(NamedKey::Tab) | Key::Named(NamedKey::Down) => f.focus = next,
         Key::Named(NamedKey::Up) => f.focus = prev,

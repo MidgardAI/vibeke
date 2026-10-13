@@ -71,7 +71,7 @@ Press `prefix+alt+i` to view new images. The sidebar also lists recent images. S
 ## Phone and desktop access
 
 The desktop app has a **Connect to this Mac/computer** flow.
-**Connections** (`prefix` then `alt+d`) has four tabs, switched with `tab` and `shift+tab`: **Devices** pairs a phone or browser (also **Pair a phone** in the command palette) and lists and revokes paired devices; **People** lists, creates and revokes colleagues' shared access to a pane or workspace; **Hosts** manages your paired hosts and handoff invitations; **Handoffs** lists incoming handoffs (`prefix+shift+h`).
+**Connections** (`prefix` then `alt+d`) has four tabs. Switch them with `tab` and `shift+tab`, or press `up` from the top of a list or form and then `left` and `right`. In a form, `left` and `right` (or `space`) change the selected option, and `tab`, `shift+tab`, `up` and `down` move between the fields. The tabs are: **Devices** pairs a phone or browser (also **Pair a phone** in the command palette) and lists and revokes paired devices; **People** lists, creates and revokes colleagues' shared access to a pane or workspace; **Hosts** manages your paired hosts and handoff invitations; **Handoffs** lists incoming handoffs (`prefix+shift+h`).
 
 See [desktop access](desktop.md) and [phone and browser access](mobile.md).
 

@@ -57,6 +57,9 @@ pub struct State {
     /// The machine the view was opened on (the Handoffs tab lists every machine; its title
     /// names this one).
     pub mi: usize,
+    /// The tab strip has the keys: left/right switch tabs, down or enter go back into the tab.
+    /// Reached with up from the top of a tab's form or list.
+    pub strip: bool,
 }
 
 /// Open `tab` on machine `mi`.
@@ -102,11 +105,11 @@ pub fn action(app: &mut App, action: &str) -> bool {
     true
 }
 
-/// A text field in `tab` has the keys: tab keeps its meaning there.
+/// A text field or a form in `tab` has the keys: tab keeps its meaning there (the next field).
 fn typing(app: &App, tab: Tab) -> bool {
     match tab {
         Tab::Hosts => crate::sharing::typing(app),
-        Tab::People => crate::people::typing(app),
+        Tab::People => crate::people::in_form(app),
         Tab::Devices | Tab::Handoffs => false,
     }
 }
@@ -136,8 +139,34 @@ pub fn switch(app: &mut App, from: Tab, to: Tab) {
     app.dirty = true;
 }
 
-/// A key in `tab`: tab / shift+tab switch tabs, anything else is the tab's.
+/// A key in `tab`. On the tab strip (see [`State::strip`]) left/right switch tabs and down,
+/// enter or esc go back into the tab. Otherwise tab / shift+tab switch tabs, except in a form,
+/// where they move between its fields; anything else is the tab's.
 pub fn key(app: &mut App, ev: KeyEvent, tab: Tab) {
+    if app.ux.connections.strip && ev.kind != KeyKind::Release {
+        let plain = !ev.mods.ctrl() && !ev.mods.alt();
+        let by = match ev.key {
+            Key::Named(NamedKey::Left) => Some(-1),
+            Key::Char('h') if plain => Some(-1),
+            Key::Named(NamedKey::Right) => Some(1),
+            Key::Char('l') if plain => Some(1),
+            Key::Named(NamedKey::Tab) if plain => Some(if ev.mods.shift() { -1 } else { 1 }),
+            _ => None,
+        };
+        match (by, &ev.key) {
+            (Some(by), _) => {
+                switch(app, tab, tab.step(by));
+                app.ux.connections.strip = true;
+            }
+            (None, Key::Named(NamedKey::Down | NamedKey::Enter | NamedKey::Escape)) => {
+                app.ux.connections.strip = false;
+            }
+            (None, Key::Char('j')) if plain => app.ux.connections.strip = false,
+            _ => {}
+        }
+        app.dirty = true;
+        return;
+    }
     if ev.kind != KeyKind::Release
         && matches!(ev.key, Key::Named(NamedKey::Tab))
         && !ev.mods.ctrl()
@@ -170,14 +199,32 @@ pub(crate) fn area<'a>(app: &App, g: &'a mut Grid, tab: Tab, mi: usize) -> Area<
             if i > 0 {
                 x += a.g.put_str(x, y, " · ", t.dim(), end.saturating_sub(x));
             }
-            let st = if *tb == tab {
+            let strip = app.ux.connections.strip;
+            let st = if *tb == tab && strip {
+                vk_proto::render::Style {
+                    attrs: vk_proto::render::attr::BOLD,
+                    ..t.sel(t.accent)
+                }
+            } else if *tb == tab {
                 t.sel(t.accent)
             } else {
                 t.text()
             };
-            x += a.g.put_str(x, y, tb.name(), st, end.saturating_sub(x));
+            let name = if *tb == tab && strip {
+                format!("‹ {} ›", tb.name())
+            } else {
+                tb.name().to_string()
+            };
+            x += a.g.put_str(x, y, &name, st, end.saturating_sub(x));
         }
-        a.g.put_str(x, y, "   (tab switches)", t.dim(), end.saturating_sub(x));
+        let hint = if app.ux.connections.strip {
+            "   ←/→ switch tabs · ↓ back"
+        } else if typing(app, tab) {
+            "   (↑ from the top for the tabs)"
+        } else {
+            "   (tab switches)"
+        };
+        a.g.put_str(x, y, hint, t.dim(), end.saturating_sub(x));
         a.y += 1;
     }
     a.line("", t.text());

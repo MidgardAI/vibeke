@@ -426,6 +426,8 @@ fn view_mut(app: &mut App) -> Option<&mut View> {
 
 /// Open the Devices tab on machine `mi` at `stage` ([`crate::connections`] routes the actions).
 pub(crate) fn open_on(app: &mut App, mi: usize, stage: Stage) {
+    // A tab opens with the keys in the tab, not on the strip.
+    app.ux.connections.strip = false;
     if !app.machines.get(mi).is_some_and(|m| m.connected()) {
         app.toast("that machine is offline");
         return;

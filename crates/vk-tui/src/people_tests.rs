@@ -1014,3 +1014,49 @@ fn no_teams_keeps_the_old_choices_and_unknown_teams_read_well() {
         "@alice and everyone in Acme"
     );
 }
+
+/// In the share form, left/right change the focused option and tab / shift+tab move between the
+/// fields; up from the first field reaches the tab strip, where left/right switch tabs and down
+/// goes back.
+#[test]
+fn form_keys_and_the_tab_strip() {
+    let (mut app, mut rxs) = opened();
+    app.size = (140, 40);
+    app.on_key(ch('n'));
+    let start = form(&app).focus;
+    // Tab moves to the next field inside the form, not to another tab.
+    app.on_key(named(NamedKey::Tab));
+    assert!(matches!(app.mode, Mode::Popup(Popup::People)));
+    assert_ne!(form(&app).focus, start);
+    app.on_key(KeyEvent {
+        mods: vk_proto::input::Mods::SHIFT,
+        ..named(NamedKey::Tab)
+    });
+    assert_eq!(form(&app).focus, start);
+    // Up to the first field, then once more: the tab strip.
+    for _ in 0..6 {
+        if form(&app).fields().first() == Some(&form(&app).focus) {
+            break;
+        }
+        app.on_key(named(NamedKey::Up));
+    }
+    assert_eq!(form(&app).focus, Field::Kind);
+    // Left/right on a field change its option.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(form(&app).kind, Kind::Review);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(form(&app).kind, Kind::Watch);
+    app.on_key(named(NamedKey::Up));
+    assert!(app.ux.connections.strip);
+    assert!(screen(&app).contains("‹ People ›"), "{}", screen(&app));
+    // On the strip, right switches to the next tab and keeps the strip.
+    app.on_key(named(NamedKey::Right));
+    assert_eq!(app.ux.connections.last, crate::connections::Tab::Hosts);
+    assert!(app.ux.connections.strip);
+    app.on_key(named(NamedKey::Left));
+    assert_eq!(app.ux.connections.last, crate::connections::Tab::People);
+    // Down goes back into the tab.
+    app.on_key(named(NamedKey::Down));
+    assert!(!app.ux.connections.strip);
+    commands(&mut rxs[0]);
+}
