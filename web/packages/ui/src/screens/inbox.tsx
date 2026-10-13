@@ -1,6 +1,6 @@
 import { useMemo, useRef, type ReactNode } from 'react';
 import { Inbox as InboxIcon } from 'lucide-react';
-import { groupBatches, type Batch } from '@vibeke/core';
+import { groupBatches, type Batch, type InboxItem } from '@vibeke/core';
 import { useApprovalCount } from '../app/approval-stores';
 import { useAnswers, useApp, useHosts, useInboxItems, useNow } from '../app/hooks';
 import { BatchCard } from '../components/batch-card';
@@ -14,20 +14,25 @@ import { InboxApprovals } from './approve';
 
 /**
  * `after` (the menu-bar popover's agent list) renders below the cards, inside the same keyboard
- * list; with it, an empty inbox shows only `after` instead of the empty state.
+ * list; with it, an empty inbox shows only `after` instead of the empty state. `empty` replaces
+ * the empty state (the overview's quiet line). `filter` keeps only some cards (the overview's
+ * workspace filter); approval requests and catch-up cards show only without one.
  */
-export function InboxScreen({ after }: { after?: ReactNode } = {}) {
+export function InboxScreen({ after, empty: emptyNode, filter }: { after?: ReactNode; empty?: ReactNode; filter?: (item: InboxItem) => boolean } = {}) {
   const app = useApp();
   const hosts = useHosts();
-  const items = useInboxItems();
+  const all = useInboxItems();
+  const items = useMemo(() => (filter ? all.filter(filter) : all), [all, filter]);
   useAnswers();
   const now = useNow(500);
   const retainer = useRef(new InboxRetainer());
   const showHost = hosts.length > 1;
   // Approval requests from panes (spec 09 §3.2) come first: a pane waits on each one.
-  const approvals = useApprovalCount();
+  const approvalCount = useApprovalCount();
+  const approvals = filter ? 0 : approvalCount;
   // What happened while the app was in the background (cards only after a long absence).
-  const catchUp = useCatchUp();
+  const catchUpAll = useCatchUp();
+  const catchUp = filter ? { ...catchUpAll, cards: [] } : catchUpAll;
 
   const entries = retainer.current.update(
     items,
@@ -55,6 +60,7 @@ export function InboxScreen({ after }: { after?: ReactNode } = {}) {
   }
 
   const empty = rows.length === 0 && approvals === 0 && catchUp.cards.length === 0;
+  if (empty && emptyNode !== undefined && !after) return <>{emptyNode}</>;
   if (empty && !after) {
     return <Empty icon={<InboxIcon className="size-10" />} title={t.inbox.empty} hint={t.inbox.emptyHint} />;
   }
@@ -62,7 +68,7 @@ export function InboxScreen({ after }: { after?: ReactNode } = {}) {
   const cards = (
     <div className="space-y-3 px-3 pb-6 pt-2 sm:px-4" data-nav-list={after ? undefined : true}>
       <CatchUpSection catchUp={catchUp} showHost={showHost} />
-      <InboxApprovals showHost={showHost} />
+      {!filter && <InboxApprovals showHost={showHost} />}
       {rows.map((r) => (
         <div key={r.key}>{r.node}</div>
       ))}

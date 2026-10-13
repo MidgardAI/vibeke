@@ -24,7 +24,7 @@ export const en = {
   off: 'Off',
   unknownError: 'Something went wrong',
 
-  tabs: { inbox: 'Inbox', panes: 'Panes', focus: 'Focus', changes: 'Changes' },
+  tabs: { overview: 'Overview', inbox: 'Inbox', panes: 'Panes', focus: 'Focus', changes: 'Changes' },
 
   conn: {
     reconnecting: 'Reconnecting…',
@@ -933,6 +933,7 @@ export const en = {
     allowAlways: 'Allow always (asks to confirm)',
     open: 'Open the selected item',
     back: 'Back / close',
+    overview: 'Overview',
     inbox: 'Inbox',
     workspace: 'First workspace',
     panel: 'Show / hide the changes panel',
@@ -1018,6 +1019,55 @@ export const en = {
     summary: 'Summary',
     noSummary: 'The assistant returned no summary.',
     label: 'Catch-up',
+  },
+
+  overview: {
+    title: 'Overview',
+    headline: (needs: number, working: number, review: number) => {
+      const parts: string[] = [];
+      if (needs) parts.push(`${needs} ${plural(needs, 'agent waits', 'agents wait')} for you`);
+      if (working) parts.push(`${working} ${plural(working, 'is', 'are')} working`);
+      if (review) parts.push(`${review} ${plural(review, 'is', 'are')} ready to review`);
+      return parts.length ? parts.join(' · ') : 'All quiet. Nothing needs you.';
+    },
+    greeting: (hour: number) => (hour < 5 ? 'Good evening' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'),
+    needs: 'Needs you',
+    working: 'Working',
+    workingNow: 'Working now',
+    review: 'Ready to review',
+    done: 'Done',
+    hosts: 'Hosts',
+    previews: 'Previews',
+    activity: 'Activity',
+    oldest: (age: string) => `oldest ${age}`,
+    background: (n: number) => `${n} in background`,
+    hostsOnline: (online: number, total: number) => `${online} of ${total} online`,
+    calm: 'Nothing needs you',
+    calmHint: 'Requests from your agents show up here.',
+    noWorking: 'No agent is working right now.',
+    noReview: 'Nothing is waiting for review.',
+    noActivity: 'Agents you start show up here.',
+    reviewDiff: 'Review changes',
+    openPreview: 'Open preview',
+    openWorkspace: 'Open workspace',
+    more: (n: number) => `+${n} more`,
+    idle: (n: number) => `${n} idle`,
+    clearFilter: 'Show every workspace',
+    filterBy: (name: string) => `Show only ${name}`,
+    earlier: 'Earlier',
+    keyAllow: 'allow',
+    keyDeny: 'deny',
+    keyMove: 'move',
+    panes: (n: number) => plural(n, '1 pane', `${n} panes`),
+    turns: (n: number) => plural(n, '1 turn', `${n} turns`),
+    event: {
+      working: 'Working',
+      finished: 'Finished',
+      error: 'Stopped with an error',
+      rate_limited: 'Hit a rate limit',
+      exited: 'Exited',
+    } as Record<string, string>,
+    hostStatus: { online: 'online', connecting: 'connecting', offline: 'offline', idle: 'not connected' } as Record<string, string>,
   },
 
   replies: {

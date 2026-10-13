@@ -174,7 +174,7 @@ describe('selection', () => {
     expect(resolveLegacy({ name: 'focus' }, sorted)).toEqual(workspaceRoute('h1', top.workspace.id));
     expect(resolveLegacy({ name: 'changes' }, sorted, { host: 'h1', ws: 'w-done' })).toEqual(workspaceRoute('h1', 'w-done', { panel: 'changes' }));
     expect(resolveLegacy({ name: 'changes' }, sorted, { host: 'h1', ws: 'gone' })).toEqual(workspaceRoute('h1', top.workspace.id, { panel: 'changes' }));
-    expect(resolveLegacy({ name: 'panes' }, [])).toEqual({ name: 'inbox' });
+    expect(resolveLegacy({ name: 'panes' }, [])).toEqual({ name: 'overview' });
     expect(resolveLegacy({ name: 'inbox' }, sorted)).toBeNull();
     expect(resolveLegacy(workspaceRoute('h1', 'w'), sorted)).toBeNull();
   });

@@ -1,4 +1,4 @@
-// Hash routes (spec 16 §9.3): `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
+// Hash routes (spec 16 §9.3): `#/overview`, `#/inbox`, workspaces `#/w/<host>/<workspace>[/t/<pane>]` with
 // `?panel=changes|files|screenshots|previews|off&file=…&commit=…&base=…&view=diff&show=term|conversation&preview=<id>&expand=1`, push deep links from the gateway
 // (`#/i/<host>/<interaction>`, `#/r/<host>/<run>`, `#/inbox`, `#/approve/<host>[/<request>]`) and the
 // pairing link `#/pair?d=…`, review and continue links (`#/review?d=…`, `#/continue?d=…`), the
@@ -40,6 +40,8 @@ export interface WorkspaceRoute {
 
 export type Route =
   | { name: 'home' }
+  /** Every host's workspaces at a glance: counts, requests, working agents, a feed. */
+  | { name: 'overview' }
   | { name: 'tui'; host: string; workspace?: string; pane?: string }
   | { name: Tab }
   | { name: 'crew' }
@@ -88,6 +90,7 @@ export function parseRoute(hash: string): Route {
   switch (a) {
     case undefined:
       return { name: 'home' };
+    case 'overview':
     case 'inbox':
     case 'panes':
     case 'focus':
@@ -191,6 +194,7 @@ export function formatRoute(r: Route): string {
       return '#/';
     case 'tui':
       return `#/tui/${enc(r.host)}` + (r.workspace || r.pane ? '?' + new URLSearchParams({ ...(r.workspace ? { workspace: r.workspace } : {}), ...(r.pane ? { pane: r.pane } : {}) }) : '');
+    case 'overview':
     case 'inbox':
     case 'panes':
     case 'focus':
@@ -270,7 +274,7 @@ export function navigate(to: Route | string, opts: { replace?: boolean } = {}): 
   }
 }
 
-/** Routes that are one level below the inbox: Back from them goes up to it. */
+/** Routes that are one level below the overview: Back from them goes up to it. */
 export const isDeepRoute = (r: Route): boolean => r.name === 'workspace' || r.name === 'interaction' || r.name === 'run' || r.name === 'pane' || (r.name === 'approve' && !!r.id) || (r.name === 'handoffs' && !!r.id);
 
 /**

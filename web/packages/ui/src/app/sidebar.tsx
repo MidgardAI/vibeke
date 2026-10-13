@@ -14,6 +14,7 @@ import {
   GitBranch,
   Home,
   Inbox,
+  LayoutDashboard,
   ListFilter,
   PackageOpen,
   PanelLeft,
@@ -247,6 +248,14 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
       <div className="shrink-0 space-y-px px-2 pb-2">
         <Row leading={<Plus className="size-4" />} onClick={() => (close(), emitUi('new-agent'))}>
           {t.sidebar.newAgent}
+        </Row>
+        <Row
+          leading={<LayoutDashboard className="size-4" />}
+          active={route.name === 'overview'}
+          onClick={() => go({ name: 'overview' })}
+          title={`${t.tabs.overview} (${keyLabel(mac, 'mod+shift+o')})`}
+        >
+          {t.tabs.overview}
         </Row>
         <Row
           leading={<Inbox className="size-4" />}

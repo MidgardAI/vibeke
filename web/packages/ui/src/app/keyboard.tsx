@@ -239,6 +239,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
             return;
           case 'new-agent':
             return setSheet({ kind: 'new' });
+          case 'overview':
           case 'inbox':
           case 'panes':
           case 'focus':
@@ -287,6 +288,7 @@ export function KeyboardLayer({ surface }: { surface: Surface }) {
     const mod = (k: string) => keyLabel(mac, `mod+${k}`);
     const c = (id: string, title: string, run: () => void, shortcut?: string, keywords?: string): PaletteItem => ({ id: `c:${id}`, group: 'command', title, run, shortcut, keywords });
     const out: PaletteItem[] = [
+      c('overview', `${t.palette.go} ${t.tabs.overview}`, () => navigate({ name: 'overview' }), keyLabel(mac, 'mod+shift+o'), 'dashboard home'),
       c('inbox', `${t.palette.go} ${t.tabs.inbox}`, () => navigate({ name: 'inbox' }), mod('1')),
       c('workspace', t.palette.firstWorkspace, () => actionsRef.current.firstWorkspace(), mod('2'), 'workspaces panes'),
       c('panel', t.palette.togglePanel, () => actionsRef.current.panel(), mod('3'), 'changes diff'),

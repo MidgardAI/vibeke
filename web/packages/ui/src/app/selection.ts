@@ -112,12 +112,12 @@ export function resolveLegacy(route: Route, rows: readonly WorkspaceRow[], last:
     case 'panes':
     case 'focus': {
       const top = mostUrgent([...rows]);
-      return top ? workspaceRoute(top.host, top.workspace.id) : { name: 'inbox' };
+      return top ? workspaceRoute(top.host, top.workspace.id) : { name: 'overview' };
     }
     case 'changes': {
       const prev = last ? rows.find((r) => r.host === last.host && r.workspace.id === last.ws) : undefined;
       const target = prev ?? mostUrgent([...rows]);
-      return target ? workspaceRoute(target.host, target.workspace.id, { panel: 'changes' }) : { name: 'inbox' };
+      return target ? workspaceRoute(target.host, target.workspace.id, { panel: 'changes' }) : { name: 'overview' };
     }
     default:
       return null;

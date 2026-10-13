@@ -7,9 +7,10 @@ import { useScrollMemory } from '../lib/scroll-memory';
 import { resolveLanguage, t } from '../i18n';
 import { useStore } from '../lib/store';
 import type { UiPlatform } from '../platform';
-import { mostUrgent, workspaceOfPane } from '../lib/workspaces';
+import { workspaceOfPane } from '../lib/workspaces';
 import { ensureParentEntry, formatRoute, hashFromUrl, isDeepRoute, navigate, useRoute, workspaceRoute, type Route } from '../router';
 import { InboxScreen } from '../screens/inbox';
+import { OverviewScreen } from '../screens/overview';
 import { IncomingScreen } from '../screens/incoming';
 import { CrewScreen, IdleLockOverlay, InteractionRoute, RunRoute, Tour, useIdleLock } from '../screens/misc';
 import { PairScreen } from '../screens/pair';
@@ -135,7 +136,6 @@ function Main() {
   const hosts = useHosts();
   // Live hosts only: a saved dashboard (offline cold start) must not decide where `#/` goes.
   const liveHosts = useAllHosts();
-  const items = useInboxItems();
   const rows = useWorkspaceRows();
   useThemeEffect(prefs.theme, prefs.termFont);
   useEffect(() => {
@@ -143,15 +143,14 @@ function Main() {
   }, [prefs.language]);
   useIdleLock();
 
-  // A deep link opened cold (notification, shared link): Back goes up to the inbox, not out.
+  // A deep link opened cold (notification, shared link): Back goes up to the overview, not out.
   useEffect(() => {
-    if (isDeepRoute(route)) ensureParentEntry({ name: 'inbox' });
+    if (isDeepRoute(route)) ensureParentEntry({ name: 'overview' });
   }, []);
   // Incoming handoffs (nav badge) and outgoing jobs (toasts when a sheet closed early).
   useHandoffStores();
   // Approval requests from panes (inbox cards, the review screen).
   useApprovalStores();
-  const approvals = useApprovalCount();
 
   // Notification taps routed into the running app.
   useEffect(() => app.platform.notifications?.onOpen((url) => navigate(hashFromUrl(url))), [app]);
@@ -159,19 +158,15 @@ function Main() {
   // Hosts known well enough to pick a destination: a dashboard, or every host settled offline.
   const ready = liveHosts.some((h) => h.dashboard) || (liveHosts.length > 0 && liveHosts.every((h) => h.status !== 'connecting' && h.status !== 'idle'));
 
-  // `#/` → Inbox when anything is open, else the most urgent workspace; no hosts → pairing.
-  const decided = useRef(false);
+  // `#/` → the overview; no hosts → pairing.
   useEffect(() => {
     if (route.name !== 'home') return;
     if (hosts.length === 0) return navigate({ name: 'pair', d: null }, { replace: true });
     if (app.platform.tui && prefs.preferredTuiHost && hosts.some((h) => h.record.host_id === prefs.preferredTuiHost && (h.info?.kind ?? h.record.kind ?? 'device') === 'device')) {
       return navigate({ name: 'tui', host: prefs.preferredTuiHost }, { replace: true });
     }
-    if (!ready && !decided.current) return;
-    decided.current = true;
-    const top = mostUrgent(rows);
-    navigate(items.length || approvals || !top ? { name: 'inbox' } : workspaceRoute(top.host, top.workspace.id), { replace: true });
-  }, [route.name, hosts.length, ready, items.length, approvals, rows, prefs.preferredTuiHost]);
+    navigate({ name: 'overview' }, { replace: true });
+  }, [route.name, hosts.length, prefs.preferredTuiHost]);
 
   // Old routes (Panes, Focus, Changes tabs; pane links) → their workspace.
   const routeKey = formatRoute(route);
@@ -202,7 +197,7 @@ function Main() {
       </Layout>}
       <Toasts />
       <IdleLockOverlay />
-      {hosts.some((h) => (h.info?.kind ?? h.record.kind ?? 'device') === 'device') && (route.name === 'inbox' || route.name === 'workspace') && <Tour />}
+      {hosts.some((h) => (h.info?.kind ?? h.record.kind ?? 'device') === 'device') && (route.name === 'overview' || route.name === 'inbox' || route.name === 'workspace') && <Tour />}
       {route.name !== 'tui' && route.name !== 'review' && <KeyboardLayer surface="full" />}
     </>
   );
@@ -271,6 +266,8 @@ function Screen({ route }: { route: Route }) {
           <CrewScreen />
         </Framed>
       );
+    case 'overview':
+      return <OverviewScreen />;
     case 'inbox':
       return (
         <Framed title={t.tabs.inbox} sub={<InboxSub />} width="narrow" scrollKey="inbox">

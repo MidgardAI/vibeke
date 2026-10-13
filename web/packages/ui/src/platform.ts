@@ -276,6 +276,7 @@ export type UiCommand =
   | 'shortcuts'
   | 'find'
   | 'new-agent'
+  | 'overview'
   | 'inbox'
   | 'panes'
   | 'focus'

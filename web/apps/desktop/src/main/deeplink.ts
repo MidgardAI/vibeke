@@ -58,6 +58,7 @@ function fromParts(path: string, query: URLSearchParams): string | null {
       if (parts.length !== 1 || !dv || !B64URL.test(dv)) return null;
       return `#/${a}?d=${dv}`;
     }
+    case 'overview':
     case 'inbox':
     case 'panes':
     case 'focus':

@@ -61,6 +61,7 @@ export function buildMenu(a: MenuActions): Menu {
         { label: 'Command Palette…', accelerator: 'CommandOrControl+K', click: cmd('palette') },
         { label: 'Find', accelerator: 'CommandOrControl+F', click: cmd('find') },
         { type: 'separator' },
+        { label: 'Overview', accelerator: 'CommandOrControl+Shift+O', click: cmd('overview') },
         { label: 'Inbox', accelerator: 'CommandOrControl+1', click: cmd('inbox') },
         { label: 'First Workspace', accelerator: 'CommandOrControl+2', click: cmd('workspace') },
         { label: 'Toggle Changes Panel', accelerator: 'CommandOrControl+3', click: cmd('panel') },
