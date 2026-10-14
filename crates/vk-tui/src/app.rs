@@ -2035,8 +2035,9 @@ impl App {
             && ev.key == Key::Char('c')
             && ev.mods == Mods::CTRL
             && self.focused_pane().is_none()
+            && !self.keymap.is_prefix(&ev)
             && match &self.mode {
-                Mode::Normal => !self.keymap.is_prefix(&ev) && self.keymap.direct(&ev).is_none(),
+                Mode::Normal => self.keymap.direct(&ev).is_none(),
                 Mode::Prefix(p) => {
                     matches!(self.keymap.resolve(&p.seq, &ev), keymap::Resolve::None)
                 }

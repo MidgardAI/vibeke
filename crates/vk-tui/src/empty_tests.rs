@@ -94,6 +94,9 @@ fn ctrl_c_bindings_win_over_the_empty_exit() {
     app.on_key(ctl('c'));
     assert!(app.quit.is_none());
     assert!(matches!(app.mode, Mode::Prefix(_)));
+    // A second press passes the prefix through instead of exiting.
+    app.on_key(ctl('c'));
+    assert!(app.quit.is_none());
 
     let (mut app, _rx) = fleet();
     empty(&mut app);
