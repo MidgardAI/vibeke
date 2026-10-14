@@ -11,7 +11,11 @@ import { dashboard, host, ws } from '../../../../packages/ui/test/fixtures';
 
 const calls: { method: string; params: Record<string, unknown> }[] = [];
 const held = new Map<string, (() => void)[]>();
-const canonical = (path: string) => path.replace(/^~(?=\/|$)/, '/host').replace(/\/+$/, '') || '/';
+const canonical = (input: string) => {
+  let path = input === '~' ? '/host' : input.startsWith('~/') ? `/host/${input.slice(2)}` : input;
+  while (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+  return path || '/';
+};
 const dirs: Record<string, string[]> = {
   '/host': ['code'],
   '/host/code': ['repo', 'linked', 'scratch'],
