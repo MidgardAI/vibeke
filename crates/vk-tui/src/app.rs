@@ -2029,12 +2029,19 @@ impl App {
         }
         // Raw mode makes ctrl+c an input key rather than a signal. With no pane to
         // receive it, leave through the normal detach path. This also works when a
-        // surrounding multiplexer captures our prefix or detach is unbound.
+        // surrounding multiplexer captures our prefix or detach is unbound. A binding the
+        // user gave ctrl+c (as the prefix, a direct key or a prefixed chord) still wins.
         if ev.kind != KeyKind::Release
             && ev.key == Key::Char('c')
             && ev.mods == Mods::CTRL
             && self.focused_pane().is_none()
-            && matches!(self.mode, Mode::Normal | Mode::Prefix(_))
+            && match &self.mode {
+                Mode::Normal => !self.keymap.is_prefix(&ev) && self.keymap.direct(&ev).is_none(),
+                Mode::Prefix(p) => {
+                    matches!(self.keymap.resolve(&p.seq, &ev), keymap::Resolve::None)
+                }
+                _ => false,
+            }
         {
             self.mode = Mode::Normal;
             self.action("detach", None);

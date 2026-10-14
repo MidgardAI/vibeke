@@ -86,6 +86,28 @@ fn ctrl_c_does_not_exit_from_a_prompt() {
 }
 
 #[test]
+fn ctrl_c_bindings_win_over_the_empty_exit() {
+    let (mut app, _rx) = fleet();
+    empty(&mut app);
+    app.config.keys.prefix = "ctrl+c".into();
+    app.keymap = Keymap::from_config(&app.config);
+    app.on_key(ctl('c'));
+    assert!(app.quit.is_none());
+    assert!(matches!(app.mode, Mode::Prefix(_)));
+
+    let (mut app, _rx) = fleet();
+    empty(&mut app);
+    app.config
+        .keys
+        .bindings
+        .insert("new_workspace".into(), "prefix+ctrl+c".into());
+    app.keymap = Keymap::from_config(&app.config);
+    app.on_key(ctl('b'));
+    app.on_key(ctl('c'));
+    assert!(app.quit.is_none());
+}
+
+#[test]
 fn configured_detach_still_works_on_the_empty_screen() {
     let (mut app, _rx) = fleet();
     empty(&mut app);
