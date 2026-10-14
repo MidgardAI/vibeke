@@ -323,6 +323,7 @@ export const en = {
     addFavorite: 'Add to favorites',
     removeFavorite: 'Remove from favorites',
     pickFolder: 'Choose a folder on the host',
+    useFolder: 'Use this folder',
     folderRequired: 'Choose a folder first.',
     worktree: 'New worktree',
     worktreeHint: 'Works on its own branch in a separate folder.',
@@ -337,7 +338,7 @@ export const en = {
     viewOnly: 'This device can only view this host, so it cannot start agents.',
     limitedFolder: 'This device has limited access. It cannot start agents in new folders or worktrees.',
     oldHost: 'Update Vibeke on the host to start agents in new folders or worktrees.',
-    notGit: 'This workspace is not a Git repository.',
+    notGit: 'This folder is not in a Git repository.',
     checkingGit: 'Checking the repository…',
     branchProblem: {
       empty: 'Enter a branch name.',

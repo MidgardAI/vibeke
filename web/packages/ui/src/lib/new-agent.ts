@@ -112,6 +112,7 @@ export interface StartParams {
   harness: string;
   prompt?: string;
   workspace?: string;
+  cwd?: string;
   new_workspace?: { cwd: string };
   worktree?: { branch: string; base?: string };
 }
@@ -119,8 +120,11 @@ export interface StartParams {
 export function buildStartParams(i: StartInput): StartParams {
   const prompt = i.prompt.trim();
   const p: StartParams = { harness: i.harness, ...(prompt ? { prompt } : {}) };
-  if (i.where.kind === 'folder') p.new_workspace = { cwd: normalizeFolder(i.where.cwd) };
-  else p.workspace = i.where.id;
+  if (i.where.kind === 'folder') {
+    const cwd = normalizeFolder(i.where.cwd);
+    if (i.worktree) p.cwd = cwd;
+    else p.new_workspace = { cwd };
+  } else p.workspace = i.where.id;
   if (i.worktree) p.worktree = { branch: i.worktree.branch.trim(), ...(i.worktree.base ? { base: i.worktree.base } : {}) };
   return p;
 }

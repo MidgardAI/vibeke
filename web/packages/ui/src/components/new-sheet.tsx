@@ -31,7 +31,10 @@ import { workspaceRoute, navigate } from '../router';
 import { PathPicker } from './path-picker';
 import { Button, Notice, Segmented, Sheet, Toggle, cx } from './ui';
 
-type GitInfo = { state: 'idle' | 'loading' | 'none' } | { state: 'ready'; defaultBranch: string | null; currentBranch: string | null };
+type GitInfo =
+  | { state: 'idle' | 'loading' | 'none' }
+  | { state: 'error'; message: string }
+  | { state: 'ready'; cwd: string; defaultBranch: string | null; currentBranch: string | null };
 
 export function NewSheet({
   open,
@@ -57,13 +60,16 @@ export function NewSheet({
   // A host folder typed or chosen for a new workspace; null = use the workspace chips.
   const [folder, setFolder] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [selectingFolder, setSelectingFolder] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const folderPickRef = useRef(0);
   const [harness, setHarness] = useState<string | null>(null);
   const [harnesses, setHarnesses] = useState<HarnessInfo[]>([]);
   const [prompt, setPrompt] = useState('');
   const [worktree, setWorktree] = useState(false);
   const [branch, setBranch] = useState('');
   const [baseChoice, setBaseChoice] = useState<'default' | 'current'>('default');
-  const [git, setGit] = useState<GitInfo>({ state: 'idle' });
+  const [gitResult, setGitResult] = useState<{ key: string | null; info: GitInfo }>({ key: null, info: { state: 'idle' } });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The id of the last submission, kept so a retry of the same start never creates a second agent.
@@ -111,32 +117,55 @@ export function NewSheet({
     };
   }, [open, h?.record.host_id]);
 
-  // Branches of the chosen workspace, for "Start from" (also tells whether it is a Git repository).
+  // Branches of the chosen workspace or host folder. Resolve host paths before asking Git:
+  // `fs.browse` expands `~` and follows symlinks; `worktree.list` takes an absolute cwd.
   const gitWs = open && mode === 'agent' && !whereBlock && folder === null ? wsId : null;
+  const gitFolder = open && mode === 'agent' && !whereBlock && folder !== null ? normalizeFolder(folder) || null : null;
+  const gitKey = hid && (gitWs || gitFolder) ? JSON.stringify([hid, gitWs, gitFolder]) : null;
+  const git: GitInfo = gitResult.key === gitKey ? gitResult.info : { state: gitKey ? 'loading' : 'idle' };
   useEffect(() => {
-    if (!gitWs || !hid) {
-      setGit({ state: 'idle' });
+    if (!gitKey || !hid) {
+      setGitResult({ key: null, info: { state: 'idle' } });
       return;
     }
     let live = true;
+    const setGit = (info: GitInfo) => live && setGitResult({ key: gitKey, info });
     setGit({ state: 'loading' });
     setBaseChoice('default');
-    app
-      .conn(hid)
-      ?.request('worktree.list', { workspace: gitWs })
-      .then((r) => {
+    const timer = setTimeout(async () => {
+      try {
+        const conn = app.conn(hid);
+        if (!conn) throw new Error(t.conn.hostOffline);
+        const cwd = gitFolder ? (await conn.request('fs.browse', { path: gitFolder })).path : wsRow!.root_path;
         if (!live) return;
+        const r = await conn.request('worktree.list', gitFolder ? { cwd } : { workspace: gitWs! });
         const def = r.worktrees.find((x) => x.main)?.branch ?? null;
-        setGit({ state: 'ready', defaultBranch: def, currentBranch: wsRow?.branch ?? def });
-      })
-      .catch(() => live && setGit({ state: 'none' }));
+        const current = gitFolder
+          ? r.worktrees.filter((x) => cwd === x.path || cwd.startsWith(`${normalizeFolder(x.path)}/`)).sort((a, b) => b.path.length - a.path.length)[0]?.branch ?? null
+          : wsRow?.branch ?? def;
+        setGit({ state: 'ready', cwd, defaultBranch: def, currentBranch: current });
+      } catch (e) {
+        const message = errorMessage(e);
+        setGit(/not a git repository|not_a_repo/i.test(message) ? { state: 'none' } : { state: 'error', message });
+      }
+    }, gitFolder ? 120 : 0);
     return () => {
       live = false;
+      clearTimeout(timer);
     };
-  }, [gitWs, hid]);
+  }, [app, gitKey, gitWs, gitFolder, hid, wsRow?.root_path, wsRow?.branch]);
+
+  useEffect(() => {
+    folderPickRef.current++;
+    setSelectingFolder(false);
+    setFolderError(null);
+    return () => {
+      folderPickRef.current++;
+    };
+  }, [open, mode, hid, folder, picking]);
 
   const gitReady = git.state === 'ready';
-  const worktreeOn = worktree && gitReady && folder === null && !whereBlock;
+  const worktreeOn = worktree && gitReady && !whereBlock;
   const defaultBranch = git.state === 'ready' ? git.defaultBranch : null;
   const currentBranch = git.state === 'ready' ? git.currentBranch : null;
   const canChooseBase = !!defaultBranch && !!currentBranch && defaultBranch !== currentBranch;
@@ -159,7 +188,7 @@ export function NewSheet({
     } else {
       setFolder(a.where.cwd);
     }
-    setWorktreeOn(a.worktree && a.where.kind === 'workspace');
+    setWorktreeOn(a.worktree);
   };
 
   const submit = async () => {
@@ -173,7 +202,8 @@ export function NewSheet({
       let target = wsId;
       if (mode === 'agent') {
         if (!harness) return;
-        const params = buildStartParams({ harness, prompt, where, worktree: worktreeOn ? { branch, ...(base ? { base } : {}) } : null });
+        const source = where.kind === 'folder' && worktreeOn && git.state === 'ready' ? { ...where, cwd: git.cwd } : where;
+        const params = buildStartParams({ harness, prompt, where: source, worktree: worktreeOn ? { branch, ...(base ? { base } : {}) } : null });
         opRef.current = opIdFor(opRef.current, { hid, params }, newOpId);
         const r = await conn.request('agent.start', { ...params, op_id: opRef.current.id });
         pane = r.pane;
@@ -219,10 +249,29 @@ export function NewSheet({
     if (!conn) return Promise.reject(new Error(t.conn.hostOffline));
     return conn.request('fs.browse', { path, ...(prefix ? { prefix } : {}) });
   };
+  const selectFolder = async (value: string) => {
+    const path = normalizeFolder(value);
+    if (!path || selectingFolder) return;
+    const attempt = ++folderPickRef.current;
+    setSelectingFolder(true);
+    setFolderError(null);
+    try {
+      const result = await browse(path);
+      if (attempt !== folderPickRef.current) return;
+      setFolder(result.path);
+      setPicking(false);
+    } catch (e) {
+      if (attempt === folderPickRef.current) setFolderError(errorMessage(e));
+    } finally {
+      if (attempt === folderPickRef.current) setSelectingFolder(false);
+    }
+  };
 
   const folderChip = (cwd: string, fav: boolean) => ({ value: cwd, label: folderLabel(cwd), title: cwd, fav });
   const isFav = folder !== null && folders.favorites.includes(normalizeFolder(folder));
   const selectedFolder = folder !== null && !picking ? normalizeFolder(folder) : null;
+  const folderChips = [...folders.favorites.map((p) => folderChip(p, true)), ...recentOnly(folders).map((p) => folderChip(p, false))];
+  if (selectedFolder && !folderChips.some((p) => p.value === selectedFolder)) folderChips.push(folderChip(selectedFolder, false));
   const wsChipValue = folder === null || whereBlock ? wsId : null;
 
   return (
@@ -243,7 +292,13 @@ export function NewSheet({
             label={t.newAgent.host}
             value={h?.record.host_id ?? null}
             options={hosts.map((x) => ({ value: x.record.host_id, label: x.info?.host_name ?? x.record.name }))}
-            onChange={setHost}
+            onChange={(id) => {
+              setHost(id);
+              setWs(null);
+              setFolder(null);
+              setPicking(false);
+              setWorktree(false);
+            }}
           />
         )}
         {mode === 'agent' && again && (
@@ -271,6 +326,7 @@ export function NewSheet({
             setWs(id);
             setFolder(null);
             setPicking(false);
+            setWorktree(false);
           }}
         />
         {mode === 'agent' && (
@@ -279,7 +335,7 @@ export function NewSheet({
               <div>
                 <div className="mb-1 text-sm text-muted">{t.newAgent.folder}</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {[...folders.favorites.map((p) => folderChip(p, true)), ...recentOnly(folders).map((p) => folderChip(p, false))].map((o) => (
+                  {folderChips.map((o) => (
                     <button
                       key={o.value}
                       type="button"
@@ -288,6 +344,7 @@ export function NewSheet({
                       onClick={() => {
                         setFolder(o.value);
                         setPicking(false);
+                        setWorktree(false);
                       }}
                       aria-pressed={selectedFolder === o.value}
                       className={cx(
@@ -305,6 +362,7 @@ export function NewSheet({
                     onClick={() => {
                       setPicking(true);
                       setFolder((f) => f ?? '~/');
+                      setWorktree(false);
                     }}
                     aria-pressed={picking}
                     className={cx('h-9 rounded-full border px-3 text-sm disabled:opacity-50', picking ? 'border-accent bg-accent/10 text-fg' : 'border-border text-muted')}
@@ -317,15 +375,30 @@ export function NewSheet({
             )}
             {picking && !whereBlock && (
               <div className="space-y-1.5">
-                <PathPicker value={folder ?? ''} onChange={setFolder} browse={browse} label={t.newAgent.pickFolder} />
-                <Button
-                  size="md"
-                  icon={<Star aria-hidden className={cx(isFav && 'fill-current')} />}
-                  disabled={normalizeFolder(folder ?? '') === ''}
-                  onClick={toggleFav}
-                >
-                  {isFav ? t.newAgent.removeFavorite : t.newAgent.addFavorite}
-                </Button>
+                <PathPicker
+                  value={folder ?? ''}
+                  onChange={(value) => {
+                    setFolder(value);
+                    setWorktree(false);
+                  }}
+                  onSubmit={(value) => void selectFolder(value)}
+                  browse={browse}
+                  label={t.newAgent.pickFolder}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" size="md" busy={selectingFolder} disabled={folderMissing} onClick={() => void selectFolder(folder ?? '')}>
+                    {t.newAgent.useFolder}
+                  </Button>
+                  <Button
+                    size="md"
+                    icon={<Star aria-hidden className={cx(isFav && 'fill-current')} />}
+                    disabled={normalizeFolder(folder ?? '') === ''}
+                    onClick={toggleFav}
+                  >
+                    {isFav ? t.newAgent.removeFavorite : t.newAgent.addFavorite}
+                  </Button>
+                </div>
+                {folderError && <div className="text-xs text-danger" role="alert">{folderError}</div>}
                 {folderMissing && <div className="text-xs text-muted">{t.newAgent.folderRequired}</div>}
               </div>
             )}
@@ -334,10 +407,10 @@ export function NewSheet({
                 <div className="min-w-0">
                   <div className="text-sm text-fg">{t.newAgent.worktree}</div>
                   <div className="text-xs text-muted">
-                    {whereBlock ?? (folder !== null ? t.newAgent.notGit : git.state === 'none' ? t.newAgent.notGit : git.state === 'loading' ? t.newAgent.checkingGit : t.newAgent.worktreeHint)}
+                    {whereBlock ?? (git.state === 'none' ? t.newAgent.notGit : git.state === 'error' ? git.message : git.state === 'loading' ? t.newAgent.checkingGit : t.newAgent.worktreeHint)}
                   </div>
                 </div>
-                <Toggle checked={worktreeOn} onChange={setWorktreeOn} label={t.newAgent.worktree} disabled={!gitReady || folder !== null || !!whereBlock} />
+                <Toggle checked={worktreeOn} onChange={setWorktreeOn} label={t.newAgent.worktree} disabled={!gitReady || picking || !!whereBlock} />
               </div>
               {worktreeOn && (
                 <div className="mt-2 space-y-3">
@@ -398,7 +471,7 @@ export function NewSheet({
           block
           size="lg"
           busy={busy}
-          disabled={!h || !where || (mode === 'agent' && (!harnessReady || folderMissing || !!problem))}
+          disabled={!h || !where || (mode === 'agent' && (!harnessReady || folderMissing || (picking && !whereBlock) || !!problem || (worktree && !gitReady && !whereBlock)))}
           onClick={() => void submit()}
         >
           {mode === 'agent' ? t.newAgent.start : t.newAgent.create}
