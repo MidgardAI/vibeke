@@ -5137,6 +5137,16 @@ export type NotificationSendResult = {
   cursor?: Cursor;
 };
 
+export type PaneArrangeParams = {
+  pane?: Target;
+  layout?: "next" | "columns" | "rows" | "main-left" | "main-top" | "tiled";
+};
+
+export type PaneArrangeResult = {
+  tab: Tab;
+  cursor?: Cursor;
+};
+
 export type PaneCanSeePathsParams = {
   pane?: Target;
   paths?: string[];
@@ -5359,6 +5369,9 @@ export type PaneResizeParams = {
   direction: "right" | "down" | "left" | "up";
   cells?: number;
   percent?: number;
+  mode?: "edge" | "size";
+  cols?: number;
+  rows?: number;
 };
 
 export type PaneResizeResult = {
@@ -5474,6 +5487,16 @@ export type PaneSplitResult = {
   cursor?: Cursor;
 };
 
+export type PaneSwapParams = {
+  pane?: Target;
+  direction?: "next" | "previous";
+};
+
+export type PaneSwapResult = {
+  tab: Tab;
+  cursor?: Cursor;
+};
+
 export type PaneSyncInputParams = {
   action?: "start" | "stop" | "status" | "on" | "off";
   enabled?: boolean;
@@ -5495,6 +5518,15 @@ export type PaneSyncInputResult = {
   }[];
   stopped?: string[];
   groups: SyncGroup[];
+  cursor?: Cursor;
+};
+
+export type PaneToggleSplitParams = {
+  pane?: Target;
+};
+
+export type PaneToggleSplitResult = {
+  tab: Tab;
   cursor?: Cursor;
 };
 
@@ -8598,6 +8630,7 @@ export interface Methods {
   "notification.list": { params: NotificationListParams; result: NotificationListResult };
   "notification.read": { params: NotificationReadParams; result: NotificationReadResult };
   "notification.send": { params: NotificationSendParams; result: NotificationSendResult };
+  "pane.arrange": { params: PaneArrangeParams; result: PaneArrangeResult };
   "pane.can_see_paths": { params: PaneCanSeePathsParams; result: PaneCanSeePathsResult };
   "pane.close": { params: PaneCloseParams; result: PaneCloseResult };
   "pane.current": { params: PaneCurrentParams; result: PaneCurrentResult };
@@ -8623,7 +8656,9 @@ export interface Methods {
   "pane.send_keys": { params: PaneSendKeysParams; result: PaneSendKeysResult };
   "pane.send_text": { params: PaneSendTextParams; result: PaneSendTextResult };
   "pane.split": { params: PaneSplitParams; result: PaneSplitResult };
+  "pane.swap": { params: PaneSwapParams; result: PaneSwapResult };
   "pane.sync_input": { params: PaneSyncInputParams; result: PaneSyncInputResult };
+  "pane.toggle_split": { params: PaneToggleSplitParams; result: PaneToggleSplitResult };
   "pane.wait_idle": { params: PaneWaitIdleParams; result: PaneWaitIdleResult };
   "pane.wait_output": { params: PaneWaitOutputParams; result: PaneWaitOutputResult };
   "pane.zoom": { params: PaneZoomParams; result: PaneZoomResult };
@@ -9070,6 +9105,7 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "notification.list": { mutating: false, scope: "pane", paneScope: "open" },
   "notification.read": { mutating: true, scope: "pane", paneScope: "open" },
   "notification.send": { mutating: true, scope: "pane", paneScope: "open" },
+  "pane.arrange": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.can_see_paths": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.close": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.current": { mutating: false, scope: "pane", paneScope: "open" },
@@ -9095,7 +9131,9 @@ export const METHOD_INFO: Record<MethodName, { mutating: boolean; scope: "full" 
   "pane.send_keys": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.send_text": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.split": { mutating: true, scope: "pane", paneScope: "own_target" },
+  "pane.swap": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.sync_input": { mutating: true, scope: "full", paneScope: "forbidden" },
+  "pane.toggle_split": { mutating: true, scope: "pane", paneScope: "own_target" },
   "pane.wait_idle": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.wait_output": { mutating: false, scope: "pane", paneScope: "open" },
   "pane.zoom": { mutating: true, scope: "pane", paneScope: "own_target" },

@@ -17,6 +17,8 @@ pub struct Bound {
     pub index: Option<usize>,
     /// The binding names `altgr+…` explicitly: it matches AltGr text keys (03 §7.1).
     pub altgr: bool,
+    /// Newly added defaults and aliases yield to existing user/repo/plugin bindings.
+    pub fallback: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,14 @@ pub struct Keymap {
     pub passthrough: bool,
     /// `keys.altgr_mode`: AltGr text keys are text (`text`, `auto`) or chords (`chord`).
     pub altgr_text: bool,
+}
+
+fn overlaps(a: &Bound, b: &Bound) -> bool {
+    a.prefix == b.prefix
+        && a.chords
+            .iter()
+            .zip(&b.chords)
+            .all(|(x, y)| key_matches(x, y))
 }
 
 impl Keymap {
@@ -53,12 +63,17 @@ impl Keymap {
                         action: action.to_string(),
                         index: indexed.then_some(i),
                         altgr: names_altgr(s),
+                        fallback: vk_config::is_fallback_pane_binding(action, spec),
                     });
                 }
             }
         };
-        for (action, spec) in &cfg.keys.bindings {
+        for (action, spec) in &vk_config::effective_bindings(&cfg.keys) {
             add(action, spec);
+        }
+        // Configured commands must take priority over new fallback defaults too.
+        for (i, c) in cfg.keys.command.iter().enumerate() {
+            add(&format!("command:{i}"), &c.key);
         }
         // Vibeke actions without a config key yet (08 §6.5, §6.6).
         for (action, spec) in [
@@ -71,9 +86,6 @@ impl Keymap {
             if !cfg.keys.bindings.contains_key(action) {
                 add(action, spec);
             }
-        }
-        for (i, c) in cfg.keys.command.iter().enumerate() {
-            add(&format!("command:{i}"), &c.key);
         }
         let mut km = Keymap {
             prefix,
@@ -97,6 +109,22 @@ impl Keymap {
         {
             km.add_plugin_binding("command_palette", "ctrl+shift+p");
         }
+        // Optional tmux aliases follow the built-in action's binding. Rebinding or
+        // unbinding that action disables its aliases; an explicit chord always wins.
+        for (action, original, alias) in [
+            ("split_vertical", "prefix+v", "prefix+%"),
+            ("split_horizontal", "prefix+minus", "prefix+\""),
+            ("focus_pane_left", "prefix+h", "prefix+left"),
+            ("focus_pane_right", "prefix+l", "prefix+right"),
+            ("focus_pane_up", "prefix+k", "prefix+up"),
+            ("focus_pane_down", "prefix+j", "prefix+down"),
+        ] {
+            if cfg.keys.bindings.get(action).is_some_and(|s| s == original)
+                && km.add_plugin_binding(action, alias)
+            {
+                km.bindings.last_mut().unwrap().fallback = true;
+            }
+        }
         km
     }
 
@@ -110,22 +138,30 @@ impl Keymap {
         if b.chords.is_empty() {
             return false;
         }
-        let clash = self.bindings.iter().any(|o| {
-            o.prefix == b.prefix
-                && o.chords
-                    .iter()
-                    .zip(b.chords.iter())
-                    .all(|(x, y)| key_matches(x, y))
-        });
-        if clash {
+        let candidate = Bound {
+            prefix: b.prefix,
+            chords: b.chords.clone(),
+            action: action.to_string(),
+            index: None,
+            altgr: names_altgr(spec),
+            fallback: false,
+        };
+        if self
+            .bindings
+            .iter()
+            .any(|o| !o.fallback && overlaps(o, &candidate))
+        {
             return false;
         }
+        self.bindings
+            .retain(|o| !o.fallback || !overlaps(o, &candidate));
         self.bindings.push(Bound {
             prefix: b.prefix,
             chords: b.chords,
             action: action.to_string(),
             index: None,
             altgr: names_altgr(spec),
+            fallback: false,
         });
         true
     }

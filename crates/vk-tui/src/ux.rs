@@ -51,6 +51,7 @@ pub struct State {
     pub sidebar: crate::sidebar::State,
     pub popups: crate::popup_pane::State,
     pub nav: crate::navkeys::State,
+    pub pane_controls: crate::pane_controls::State,
     pub hover: crate::mouse_focus::State,
     pub tip: crate::sidebar_tip::State,
     pub sync: crate::sync_input::State,

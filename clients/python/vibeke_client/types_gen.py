@@ -5536,6 +5536,16 @@ NotificationSendResult = TypedDict("NotificationSendResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PaneArrangeParams = TypedDict("PaneArrangeParams", {
+    "pane": NotRequired["Target"],
+    "layout": NotRequired[Literal["next", "columns", "rows", "main-left", "main-top", "tiled"]],
+})
+
+PaneArrangeResult = TypedDict("PaneArrangeResult", {
+    "tab": "Tab",
+    "cursor": NotRequired["Cursor"],
+})
+
 PaneCanSeePathsParams = TypedDict("PaneCanSeePathsParams", {
     "pane": NotRequired["Target"],
     "paths": NotRequired[List[str]],
@@ -5764,6 +5774,9 @@ PaneResizeParams = TypedDict("PaneResizeParams", {
     "direction": Literal["right", "down", "left", "up"],
     "cells": NotRequired[int],
     "percent": NotRequired[float],
+    "mode": NotRequired[Literal["edge", "size"]],
+    "cols": NotRequired[int],
+    "rows": NotRequired[int],
 })
 
 PaneResizeResult = TypedDict("PaneResizeResult", {
@@ -5885,6 +5898,16 @@ PaneSplitResult = TypedDict("PaneSplitResult", {
     "cursor": NotRequired["Cursor"],
 })
 
+PaneSwapParams = TypedDict("PaneSwapParams", {
+    "pane": NotRequired["Target"],
+    "direction": NotRequired[Literal["next", "previous"]],
+})
+
+PaneSwapResult = TypedDict("PaneSwapResult", {
+    "tab": "Tab",
+    "cursor": NotRequired["Cursor"],
+})
+
 PaneSyncInputParams = TypedDict("PaneSyncInputParams", {
     "action": NotRequired[Literal["start", "stop", "status", "on", "off"]],
     "enabled": NotRequired[bool],
@@ -5908,6 +5931,15 @@ PaneSyncInputResult = TypedDict("PaneSyncInputResult", {
     "excluded": NotRequired[List["PaneSyncInputResultExcludedItem"]],
     "stopped": NotRequired[List[str]],
     "groups": List["SyncGroup"],
+    "cursor": NotRequired["Cursor"],
+})
+
+PaneToggleSplitParams = TypedDict("PaneToggleSplitParams", {
+    "pane": NotRequired["Target"],
+})
+
+PaneToggleSplitResult = TypedDict("PaneToggleSplitResult", {
+    "tab": "Tab",
     "cursor": NotRequired["Cursor"],
 })
 
@@ -9259,6 +9291,7 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "notification.list": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "notification.read": {"mutating": True, "scope": "pane", "pane_scope": "open"},
     "notification.send": {"mutating": True, "scope": "pane", "pane_scope": "open"},
+    "pane.arrange": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.can_see_paths": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.close": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.current": {"mutating": False, "scope": "pane", "pane_scope": "open"},
@@ -9284,7 +9317,9 @@ METHODS: Dict[str, Dict[str, Any]] = {
     "pane.send_keys": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.send_text": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.split": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
+    "pane.swap": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.sync_input": {"mutating": True, "scope": "full", "pane_scope": "forbidden"},
+    "pane.toggle_split": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},
     "pane.wait_idle": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.wait_output": {"mutating": False, "scope": "pane", "pane_scope": "open"},
     "pane.zoom": {"mutating": True, "scope": "pane", "pane_scope": "own_target"},

@@ -797,6 +797,9 @@ class Api:
     async def notification_send(self, params: "t.NotificationSendParams") -> "t.NotificationSendResult":
         return await self.call("notification.send", params)  # type: ignore[arg-type, return-value]
 
+    async def pane_arrange(self, params: "Optional[t.PaneArrangeParams]" = None) -> "t.PaneArrangeResult":
+        return await self.call("pane.arrange", params or {})  # type: ignore[arg-type, return-value]
+
     async def pane_can_see_paths(self, params: "Optional[t.PaneCanSeePathsParams]" = None) -> "t.PaneCanSeePathsResult":
         return await self.call("pane.can_see_paths", params or {})  # type: ignore[arg-type, return-value]
 
@@ -872,8 +875,14 @@ class Api:
     async def pane_split(self, params: "Optional[t.PaneSplitParams]" = None) -> "t.PaneSplitResult":
         return await self.call("pane.split", params or {})  # type: ignore[arg-type, return-value]
 
+    async def pane_swap(self, params: "Optional[t.PaneSwapParams]" = None) -> "t.PaneSwapResult":
+        return await self.call("pane.swap", params or {})  # type: ignore[arg-type, return-value]
+
     async def pane_sync_input(self, params: "Optional[t.PaneSyncInputParams]" = None) -> "t.PaneSyncInputResult":
         return await self.call("pane.sync_input", params or {})  # type: ignore[arg-type, return-value]
+
+    async def pane_toggle_split(self, params: "Optional[t.PaneToggleSplitParams]" = None) -> "t.PaneToggleSplitResult":
+        return await self.call("pane.toggle_split", params or {})  # type: ignore[arg-type, return-value]
 
     async def pane_wait_idle(self, params: "Optional[t.PaneWaitIdleParams]" = None) -> "t.PaneWaitIdleResult":
         return await self.call("pane.wait_idle", params or {})  # type: ignore[arg-type, return-value]

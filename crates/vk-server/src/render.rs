@@ -126,7 +126,13 @@ fn image_key(h: &[u8; 16]) -> String {
 }
 
 /// The `render.attach` features this server supports (listed in the attach result).
-pub const FEATURES: &[&str] = &["event_push", "scroll_report", "sync_input", "scoped_share"];
+pub const FEATURES: &[&str] = &[
+    "event_push",
+    "scroll_report",
+    "sync_input",
+    "scoped_share",
+    "pane_controls",
+];
 
 /// Most events replayed for a `Subscribe { after }` (older ones: `events.read`).
 const PUSH_BACKLOG: usize = 1000;

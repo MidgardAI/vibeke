@@ -304,6 +304,7 @@ Clients must accept new fields and event types. The API can change before versio
 | `notification.list` | Read | Pane |
 | `notification.read` | Write | Pane |
 | `notification.send` | Write | Pane |
+| `pane.arrange` | Write | Own panes |
 | `pane.can_see_paths` | Read | Pane |
 | `pane.close` | Write | Own panes |
 | `pane.current` | Read | Pane |
@@ -329,7 +330,9 @@ Clients must accept new fields and event types. The API can change before versio
 | `pane.send_keys` | Write | Own panes |
 | `pane.send_text` | Write | Own panes |
 | `pane.split` | Write | Own panes |
+| `pane.swap` | Write | Own panes |
 | `pane.sync_input` | Write | Full |
+| `pane.toggle_split` | Write | Own panes |
 | `pane.wait_idle` | Read | Pane |
 | `pane.wait_output` | Read | Pane |
 | `pane.zoom` | Write | Own panes |

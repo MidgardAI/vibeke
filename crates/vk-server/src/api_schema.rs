@@ -627,7 +627,7 @@ pane.pin :: {pane?: Target, pinned: bool} => {pane: Pane}
 pane.mark_seen :: {pane?: Target} => {pane: Pane}
 pane.mark_unread :: {pane?: Target} => {pane: Pane}
 pane.zoom :: {pane?: Target, zoomed?: bool} => {tab: Tab}
-pane.resize :: {pane?: Target, direction: right|down|left|up, cells?: int, percent?: number} => {layout: any}
+pane.resize :: {pane?: Target, direction: right|down|left|up, cells?: int, percent?: number, mode?: edge|size = edge, cols?: int, rows?: int} => {layout: any}
 pane.float :: {pane?: Target, tab?: Target, rect?: {x?: number, y?: number, w?: number, h?: number}, cwd?: string, command?: [string], focus?: bool} => {pane: Pane}
 pane.embed :: {pane: Target, target?: Target, direction?: right|down|left|up = right, ratio?: number} => {pane: Pane, tab: Tab}
 pane.send_text :: {pane?: Target, text: string, paste?: auto|bracketed|raw = auto} => {bytes: int}
@@ -1043,6 +1043,9 @@ blob.get :: {hash: string, range?: {offset?: int, length?: int}}
 blob.stat :: {hash: string} => {hash: string, mime: string, size: int, created_at: int, refs: int, path: string}
 
 # --- pane.move / scroll / screenshot ---
+pane.toggle_split :: {pane?: Target} => {tab: Tab}
+pane.swap :: {pane?: Target, direction?: next|previous = next} => {tab: Tab}
+pane.arrange :: {pane?: Target, layout?: next|columns|rows|main-left|main-top|tiled = next} => {tab: Tab}
 pane.move :: {pane?: Target, to: {tab?: Target, workspace?: Target, new_tab_in?: Target}, direction?: right|down|left|up = right, anchor?: Target, position?: {pane?: Target, direction?: string}, focus?: bool = false}
   => {pane: Pane, tab: Tab, previous_pane_handle: string, source_tab_closed: bool}
 # asks attached clients to scroll their view (event pane.scroll_requested); offset = rows above the live screen

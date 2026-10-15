@@ -96,7 +96,7 @@ fn default_keymap_fills_the_groups() {
         .iter()
         .map(|i| i.key.as_str())
         .collect();
-    assert_eq!(&pane[..4], &["v", "-", "x", "z"]);
+    assert_eq!(&pane[..4], &["v", "%", "-", "\""]);
     assert_eq!(item(&groups, "session", ":").label, "palette");
     assert_eq!(item(&groups, "session", "?").label, "this menu");
     // Every default prefix binding is placed somewhere.

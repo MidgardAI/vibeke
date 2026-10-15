@@ -21162,6 +21162,45 @@
         ]
       }
     },
+    "pane.arrange": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "layout": {
+            "type": "string",
+            "enum": [
+              "next",
+              "columns",
+              "rows",
+              "main-left",
+              "main-top",
+              "tiled"
+            ],
+            "default": "next"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tab": {
+            "$ref": "#/$defs/Tab"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "tab"
+        ]
+      }
+    },
     "pane.can_see_paths": {
       "mutating": false,
       "scope": "pane",
@@ -21940,6 +21979,20 @@
           },
           "percent": {
             "type": "number"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "edge",
+              "size"
+            ],
+            "default": "edge"
+          },
+          "cols": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "integer"
           }
         },
         "required": [
@@ -22356,6 +22409,41 @@
         ]
       }
     },
+    "pane.swap": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "next",
+              "previous"
+            ],
+            "default": "next"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tab": {
+            "$ref": "#/$defs/Tab"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "tab"
+        ]
+      }
+    },
     "pane.sync_input": {
       "mutating": true,
       "scope": "full",
@@ -22464,6 +22552,33 @@
         "required": [
           "group_id",
           "groups"
+        ]
+      }
+    },
+    "pane.toggle_split": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "params": {
+        "type": "object",
+        "properties": {
+          "pane": {
+            "$ref": "#/$defs/Target"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "tab": {
+            "$ref": "#/$defs/Tab"
+          },
+          "cursor": {
+            "$ref": "#/$defs/Cursor"
+          }
+        },
+        "required": [
+          "tab"
         ]
       }
     },

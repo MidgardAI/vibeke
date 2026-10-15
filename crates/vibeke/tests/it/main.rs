@@ -37,6 +37,7 @@ mod mouse_select;
 mod onboarding;
 mod orchestrate;
 mod osc_marks;
+mod pane_controls;
 mod parity;
 mod plugin_native;
 mod preview;

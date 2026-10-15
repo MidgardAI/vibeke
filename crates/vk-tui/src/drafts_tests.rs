@@ -52,6 +52,7 @@ pub(crate) fn fleet() -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
 pub(crate) fn fleet_n(n: usize) -> (App, Vec<UnboundedReceiver<ClientFrame>>) {
     let (mut app, rxs) = test_app(n);
     for m in app.machines.iter_mut() {
+        m.features.push("pane_controls".into());
         m.model.workspaces = vec![Workspace {
             id: "W1".into(),
             handle: "w1".into(),

@@ -20,8 +20,9 @@ pub use binding::{Binding, parse_binding, parse_prefix_key};
 pub use collision::{COLLISION_KEYS, Collision, FsAttribution};
 pub use events::Events;
 pub use keys::{
-    ACTION_ALIASES, COPY_MODE_ACTIONS, Conflict, ConflictReason, DEFAULT_KEYMAP, binding_clash,
-    canonical_action, check_keys, default_bindings, is_copy_mode_action, is_known_action,
+    ACTION_ALIASES, COPY_MODE_ACTIONS, Conflict, ConflictReason, DEFAULT_KEYMAP,
+    PANE_CONTROL_ACTIONS, binding_clash, canonical_action, check_keys, default_bindings,
+    effective_bindings, is_copy_mode_action, is_fallback_pane_binding, is_known_action,
 };
 pub use load::{
     ConfigError, Diagnostic, EXTERNAL_SECTIONS, Pos, Warning, config_path, config_path_with,

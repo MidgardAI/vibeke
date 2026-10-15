@@ -39,6 +39,16 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     ("close_pane", "prefix+x"),
     ("zoom", "prefix+z"),
     ("resize_mode", "prefix+r"),
+    ("break_pane", "prefix+!"),
+    ("move_pane", "prefix+m"),
+    ("toggle_split", "prefix+alt+t"),
+    ("swap_pane_previous", "prefix+{"),
+    ("swap_pane_next", "prefix+}"),
+    ("cycle_layout", "prefix+space"),
+    ("resize_pane_left", "prefix+ctrl+left"),
+    ("resize_pane_right", "prefix+ctrl+right"),
+    ("resize_pane_up", "prefix+ctrl+up"),
+    ("resize_pane_down", "prefix+ctrl+down"),
     ("toggle_sidebar", "prefix+b"),
     ("focus_pane_left", "prefix+h"),
     ("focus_pane_down", "prefix+j"),
@@ -99,6 +109,55 @@ pub const DEFAULT_KEYMAP: &[(&str, &str)] = &[
     // Images (spec 18 §5.3): view the newest new image.
     ("open_images", "prefix+alt+i"),
 ];
+
+/// New pane defaults yield to existing custom shortcuts during upgrades.
+pub const PANE_CONTROL_ACTIONS: &[&str] = &[
+    "break_pane",
+    "move_pane",
+    "toggle_split",
+    "swap_pane_previous",
+    "swap_pane_next",
+    "cycle_layout",
+    "resize_pane_left",
+    "resize_pane_right",
+    "resize_pane_up",
+    "resize_pane_down",
+];
+
+pub fn is_fallback_pane_binding(action: &str, binding: &str) -> bool {
+    PANE_CONTROL_ACTIONS.contains(&action)
+        && DEFAULT_KEYMAP
+            .iter()
+            .any(|(a, b)| *a == action && *b == binding)
+}
+
+/// Resolve upgrade defaults once for the loader, CLI conflict check and TUI.
+pub fn effective_bindings(keys: &crate::types::Keys) -> BTreeMap<String, String> {
+    let explicit: Vec<&str> = keys
+        .bindings
+        .iter()
+        .filter(|(a, b)| !is_fallback_pane_binding(a, b))
+        .map(|(_, b)| b.as_str())
+        .chain(keys.command.iter().map(|c| c.key.as_str()))
+        .collect();
+    let mut bindings = keys.bindings.clone();
+    bindings.retain(|a, b| {
+        if !is_fallback_pane_binding(a, b) {
+            return true;
+        }
+        let Some(mine) = canon_seqs(b) else {
+            return true;
+        };
+        !explicit.iter().filter_map(|s| canon_seqs(s)).any(|other| {
+            mine.iter().any(|(_, m)| {
+                other
+                    .iter()
+                    .any(|(_, o)| m.starts_with(o) || o.starts_with(m))
+            })
+        })
+    });
+    bindings
+}
 
 /// Copy-mode actions for `[keys.copy_mode]` per-key overrides (`key = "action"`; an empty
 /// value unbinds the key) — 03 §11.1, 08 §10.2. `mode = "vi" | "emacs"` picks the
@@ -201,7 +260,7 @@ pub fn check_keys(cfg: &Config) -> Vec<Conflict> {
             }
         }
     };
-    for (action, raw) in &cfg.keys.bindings {
+    for (action, raw) in &effective_bindings(&cfg.keys) {
         add(action.clone(), raw);
     }
     for (i, c) in cfg.keys.command.iter().enumerate() {
@@ -281,8 +340,10 @@ pub fn binding_clash(
         return Err(format!("unusable key binding `{raw}`"));
     };
     let mut others: Vec<(String, String)> = Vec::new();
-    for (action, b) in &cfg.keys.bindings {
-        others.push((action.clone(), b.clone()));
+    for (action, b) in &effective_bindings(&cfg.keys) {
+        if !is_fallback_pane_binding(action, b) {
+            others.push((action.clone(), b.clone()));
+        }
     }
     for (i, c) in cfg.keys.command.iter().enumerate() {
         others.push((format!("command[{i}]"), c.key.clone()));
@@ -306,6 +367,36 @@ pub fn binding_clash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_pane_defaults_yield_in_config_cli_checks_and_plugin_checks() {
+        let mut cfg = Config::default();
+        cfg.keys
+            .bindings
+            .insert("new_tab".into(), "prefix+m w".into());
+        assert!(check_keys(&cfg).is_empty());
+        assert!(!effective_bindings(&cfg.keys).contains_key("move_pane"));
+        assert_eq!(
+            binding_clash(&Config::default(), "prefix+alt+t", &[]).unwrap(),
+            None
+        );
+        let (loaded, warnings) = Config::parse(
+            "[keys]\nnew_tab = 'prefix+m w'\n[[keys.command]]\nkey = 'prefix+alt+t'\ncommand = 'make test'\n",
+            std::path::Path::new("config.toml"),
+        ).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!loaded.keys.bindings.contains_key("move_pane"));
+        assert!(!loaded.keys.bindings.contains_key("toggle_split"));
+        assert!(check_keys(&loaded).is_empty());
+        // A deliberately rebound new action remains a normal binding.
+        cfg.keys
+            .bindings
+            .insert("move_pane".into(), "prefix+c".into());
+        cfg.keys
+            .bindings
+            .insert("new_tab".into(), "prefix+c".into());
+        assert!(!check_keys(&cfg).is_empty());
+    }
 
     #[test]
     fn plugin_binding_clashes() {

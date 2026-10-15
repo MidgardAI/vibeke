@@ -262,6 +262,7 @@ pub struct Prompt {
 
 #[derive(Debug, Clone)]
 pub enum Popup {
+    MovePane(crate::pane_controls::Picker),
     /// Goto list (`prefix+g`): filter text + selection.
     Goto {
         filter: String,
@@ -2027,6 +2028,9 @@ impl App {
         if crate::gateway::key(self, &ev) {
             return;
         }
+        if crate::pane_controls::repeat_key(self, &ev) {
+            return;
+        }
         // Raw mode makes ctrl+c an input key rather than a signal. With no pane to
         // receive it, leave through the normal detach path. This also works when a
         // surrounding multiplexer captures our prefix or detach is unbound. A binding the
@@ -2403,7 +2407,10 @@ impl App {
             self.toast("This action is not available in this shared session");
             return;
         }
-        if crate::plugins::action(self, action) || crate::ux::action(self, action) {
+        if crate::pane_controls::action(self, action)
+            || crate::plugins::action(self, action)
+            || crate::ux::action(self, action)
+        {
             return;
         }
         if crate::browser::action_name(self, action)
@@ -2963,7 +2970,15 @@ impl App {
     }
 
     fn resize_key(&mut self, ev: KeyEvent) {
+        if ev.kind == KeyKind::Release {
+            self.mode = Mode::Resize;
+            return;
+        }
         if crate::floats::resize_key(self, &ev) {
+            return;
+        }
+        if !crate::pane_controls::supported(self) {
+            self.toast("Update the connected host to use pane resize controls");
             return;
         }
         let Some(pane) = self.focused_pane() else {
@@ -2985,7 +3000,7 @@ impl App {
             (Some(d), _) => {
                 self.command(
                     "pane.resize",
-                    json!({"pane": pane, "direction": d, "percent": step}),
+                    json!({"pane": pane, "direction": d, "percent": step, "mode": "size", "cols": self.pane_area().w.max(1), "rows": self.pane_area().h.max(1)}),
                     Pending::Ignore,
                 );
                 self.mode = Mode::Resize;

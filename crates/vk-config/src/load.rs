@@ -708,6 +708,7 @@ impl crate::types::Keys {
                 self.bindings.insert(canon, b);
             }
         }
+        self.bindings = crate::keys::effective_bindings(self);
     }
 }
 

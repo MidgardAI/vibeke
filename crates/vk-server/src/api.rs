@@ -1265,7 +1265,41 @@ pub async fn dispatch(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) 
                 .tab(&pane.tab)
                 .cloned()
                 .ok_or_else(|| not_found("tab", &pane.tab))?;
-            layout::resize(&mut tab.layout, &pane.id, dir, amount);
+            match s(p, "mode").unwrap_or("edge") {
+                "edge" => {
+                    layout::resize(&mut tab.layout, &pane.id, dir, amount);
+                }
+                "size" if amount.is_finite() && amount >= 0.0 => {
+                    match (p.get("cols"), p.get("rows")) {
+                        (None, None) => {
+                            layout::resize_size(&mut tab.layout, &pane.id, dir, amount);
+                        }
+                        (Some(cols), Some(rows)) => {
+                            let dimension = |v: &Value| {
+                                v.as_u64()
+                                    .filter(|n| *n > 0 && *n <= u16::MAX as u64)
+                                    .map(|n| n as u16)
+                            };
+                            let (Some(w), Some(h)) = (dimension(cols), dimension(rows)) else {
+                                return Err(invalid("cols and rows must be between 1 and 65535"));
+                            };
+                            layout::resize_size_in(
+                                &mut tab.layout,
+                                &pane.id,
+                                dir,
+                                amount,
+                                layout::Rect { x: 0, y: 0, w, h },
+                            );
+                        }
+                        _ => return Err(invalid("provide cols and rows together")),
+                    }
+                }
+                _ => {
+                    return Err(invalid(
+                        "mode must be edge or size; size requires a nonnegative percent",
+                    ));
+                }
+            }
             let mut tx = Tx::new();
             tx.tab(tab.clone());
             server.commit(&mut c, tx).map_err(internal)?;

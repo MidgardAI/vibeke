@@ -72,6 +72,7 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # [keys]
 # prefix             = "ctrl+b"
 # prefix_timeout_ms  = 1500
+# resize_repeat_ms   = 500              # repeat direct resize keys without another prefix; 0 disables
 # prefix_passthrough = true
 # prefix_menu        = true             # after the prefix, show every prefix key in groups (prefix+? shows it at once)
 # prefix_menu_ms     = 400              # wait this long for a second key first; 0 shows the menu immediately
@@ -113,6 +114,17 @@ Vibeke reloads the file after a change. If parsing fails, it keeps the previous 
 # close_pane               = "prefix+x"
 # zoom                     = "prefix+z"
 # resize_mode              = "prefix+r"
+# break_pane               = "prefix+!"
+# move_pane                = "prefix+m"
+# toggle_split             = "prefix+alt+t"
+# swap_pane_previous       = "prefix+{"
+# swap_pane_next           = "prefix+}"
+# cycle_layout             = "prefix+space"
+# resize_pane_left         = "prefix+ctrl+left"
+# resize_pane_right        = "prefix+ctrl+right"
+# resize_pane_up           = "prefix+ctrl+up"
+# resize_pane_down         = "prefix+ctrl+down"
+
 # toggle_sidebar           = "prefix+b"
 # focus_pane_left          = "prefix+h"
 # focus_pane_down          = "prefix+j"

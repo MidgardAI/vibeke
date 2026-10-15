@@ -263,6 +263,8 @@ impl Default for Paste {
 pub struct Keys {
     pub prefix: String,
     pub prefix_timeout_ms: u32,
+    /// Repeat prefixed resize keys for this long; zero disables repeating.
+    pub resize_repeat_ms: u32,
     pub prefix_passthrough: bool,
     /// Show the prefix menu (every prefix key in groups) after `prefix_menu_ms` without a
     /// second key. Once shown it stays until Esc or a key.
@@ -288,6 +290,7 @@ impl Default for Keys {
         Keys {
             prefix: s("ctrl+b"),
             prefix_timeout_ms: 1500,
+            resize_repeat_ms: 500,
             prefix_passthrough: true,
             prefix_menu: true,
             prefix_menu_ms: 400,

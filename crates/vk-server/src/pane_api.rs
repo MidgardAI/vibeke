@@ -27,12 +27,65 @@ use vk_term::PaletteChanges;
 
 pub const METHODS: &[(&str, bool)] = &[
     ("pane.move", true),
+    ("pane.toggle_split", true),
+    ("pane.swap", true),
+    ("pane.arrange", true),
     ("pane.scroll", true),
     ("pane.screenshot", false),
 ];
 
 fn conflict(reason: &str, msg: impl Into<String>) -> vk_proto::rpc::RpcError {
     err(ErrorKind::Conflict, format!("{reason}: {}", msg.into())).details(json!({"reason": reason}))
+}
+
+// These methods deliberately use the pane.* own-target authorization. They only
+// change the layout of the target pane's existing tab, never another workspace.
+fn arrange(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> R {
+    let pane = resolve_pane(server, ctx, s(p, "pane"))?;
+    let mut c = server.core.lock().unwrap();
+    let mut tab = c
+        .tab(&pane.tab)
+        .cloned()
+        .ok_or_else(|| not_found("tab", &pane.tab))?;
+    let panes = tab.layout.panes();
+    let i = panes
+        .iter()
+        .position(|id| id == &pane.id)
+        .ok_or_else(|| conflict("floating", "embed the floating pane before rearranging it"))?;
+    match method {
+        "pane.toggle_split" => {
+            layout::toggle_split(&mut tab.layout, &pane.id);
+        }
+        "pane.swap" => {
+            let j = match s(p, "direction").unwrap_or("next") {
+                "next" => (i + 1) % panes.len(),
+                "previous" => (i + panes.len() - 1) % panes.len(),
+                _ => return Err(invalid("direction must be next or previous")),
+            };
+            layout::swap(&mut tab.layout, &pane.id, &panes[j]);
+        }
+        "pane.arrange" => {
+            let name = s(p, "layout").unwrap_or("next");
+            let name = if name == "next" {
+                layout::next_preset(&tab.layout)
+            } else {
+                name
+            };
+            tab.layout = layout::preset(&panes, name).ok_or_else(|| {
+                invalid("layout must be next, columns, rows, main-left, main-top or tiled")
+            })?;
+        }
+        _ => unreachable!(),
+    }
+    if tab.layout == c.tab(&tab.id).unwrap().layout {
+        return Ok(json!({"tab": tab}));
+    }
+    tab.zoomed_pane = None;
+    let mut tx = Tx::new();
+    tx.event("tab.layout_changed", json!({"tab": tab.id}), json!({}));
+    tx.tab(tab.clone());
+    server.commit(&mut c, tx).map_err(internal)?;
+    Ok(json!({"tab": tab}))
 }
 
 // ---- pane.move ------------------------------------------------------------------------------
@@ -117,6 +170,12 @@ fn pane_move(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
             false
         }
         None => {
+            if !src.floating.is_empty() {
+                return Err(conflict(
+                    "last_tiled",
+                    "embed a floating pane before moving the last tiled pane out of this tab",
+                ));
+            }
             if c.tabs_of(&src.workspace).len() <= 1 && dest_ws_id != src.workspace {
                 return Err(conflict(
                     "last_pane",
@@ -706,6 +765,7 @@ fn pane_screenshot(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
 /// Dispatch hook for `pane.move|scroll|screenshot`.
 pub fn api(server: &Arc<Server>, ctx: &Ctx, method: &str, p: &Value) -> Option<R> {
     Some(match method {
+        "pane.toggle_split" | "pane.swap" | "pane.arrange" => arrange(server, ctx, method, p),
         "pane.move" => pane_move(server, ctx, p),
         "pane.scroll" => pane_scroll(server, ctx, p),
         "pane.screenshot" => pane_screenshot(server, ctx, p),

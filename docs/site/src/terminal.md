@@ -50,6 +50,58 @@ Your configuration can change these keys. Run `vibeke keys` to see active bindin
 After you close the last pane, press **Ctrl+C** to exit from the empty screen.
 Inside a pane, **Ctrl+C** goes to the program running there.
 
+## Rearrange panes
+
+These keys follow **Ctrl+B**:
+
+| Key | Action |
+| --- | --- |
+| `!` | Move the current pane into its own tab. |
+| `m` | Move the current pane into another tab in this workspace. |
+| `Alt+t` | Toggle the nearest split between side by side and top and bottom. |
+| `{` / `}` | Swap with the previous / next pane in layout order. |
+| `Space` | Cycle through layout presets for the whole tab. |
+| Arrow keys | Focus the pane in that direction. |
+| `%` / `"` | Create a side-by-side / top-and-bottom split. |
+
+Moving a pane keeps its running program and scrollback. An empty source tab closes.
+The move picker lists destination tabs. Select one with the arrow keys, then press Enter.
+Choose placement with an arrow key or `h`, `j`, `k`, `l`. Press Enter to move.
+Escape returns to the tab list. Escape from the list cancels the move.
+
+The orientation toggle changes the immediate split containing the focused pane.
+Other splits keep their orientation. Swapping keeps focus on the same pane.
+Layout presets are equal columns, equal rows, a main pane on the left, a main pane on top, and a grid.
+The first pane in layout order becomes the main pane.
+Embed a floating pane before using these actions.
+
+## Resize panes
+
+Press **Ctrl+B**, then **r** to enter resize mode:
+
+| Key | Action |
+| --- | --- |
+| Left or `h` | Shrink width. |
+| Right or `l` | Grow width. |
+| Up or `k` | Shrink height. |
+| Down or `j` | Grow height. |
+| `=` | Equalize pane sizes. |
+| Escape, Enter or `q` | Leave resize mode. |
+
+Each step changes the share of the nearest matching split by five percentage points.
+Hold Shift for steps of 25 percentage points.
+Resizing leaves at least four columns and two rows per pane when the terminal has room.
+Each child also keeps at least 5% of its split.
+
+For quick changes, press **Ctrl+B**, then **Ctrl+Arrow**.
+Repeat **Ctrl+Arrow** within 500 milliseconds without pressing the prefix again.
+Set `resize_repeat_ms` under `[keys]` to change this interval. Set it to `0` to disable repeats.
+
+The command palette also lists these pane actions.
+The `%`, `"` and arrow aliases apply while the corresponding split and focus actions use their default bindings.
+Custom bindings and commands take priority over the new pane shortcuts and aliases.
+Older hosts must be updated before using the new resize and layout controls.
+
 ## Setup and integrations
 
 First-run setup checks terminal support and offers integrations for detected agents.

@@ -8,7 +8,7 @@
     "proto": 2,
     "min": 1
   },
-  "method_count": 466,
+  "method_count": 469,
   "methods": [
     {
       "name": "adapter.control",
@@ -3672,6 +3672,20 @@
       "result": "{notification: Notification}"
     },
     {
+      "name": "pane.arrange",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, layout?: next|columns|rows|main-left|main-top|tiled = next}",
+      "result": "{tab: Tab}"
+    },
+    {
       "name": "pane.can_see_paths",
       "mutating": false,
       "scope": "pane",
@@ -3920,7 +3934,7 @@
       ],
       "milestone": "M1",
       "spec": "`{pane, direction, cells?|percent?}` → `{layout}`",
-      "params": "{pane?: Target, direction: right|down|left|up, cells?: int, percent?: number}",
+      "params": "{pane?: Target, direction: right|down|left|up, cells?: int, percent?: number, mode?: edge|size = edge, cols?: int, rows?: int}",
       "result": "{layout: any}"
     },
     {
@@ -4022,6 +4036,20 @@
       "result": "{pane: Pane}"
     },
     {
+      "name": "pane.swap",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target, direction?: next|previous = next}",
+      "result": "{tab: Tab}"
+    },
+    {
       "name": "pane.sync_input",
       "mutating": true,
       "scope": "full",
@@ -4034,6 +4062,20 @@
       "spec": "`{panes: [pane], enabled: bool}` → `{group_id}` — synchronized input",
       "params": "{action?: start|stop|status|on|off, enabled?: bool, panes?: [Target]|string, tab?: Target, pane?: Target, group?: string, all?: bool, include_agents?: bool = false}",
       "result": "{group_id: string|null, group?: SyncGroup, excluded?: [{pane: string, handle: string, reason: string}], stopped?: [string], groups: [SyncGroup]}"
+    },
+    {
+      "name": "pane.toggle_split",
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target",
+      "gateway": "actor_required",
+      "tables": [
+        "pane_api"
+      ],
+      "milestone": null,
+      "spec": null,
+      "params": "{pane?: Target}",
+      "result": "{tab: Tab}"
     },
     {
       "name": "pane.wait_idle",

@@ -204,7 +204,22 @@ pub const COMMANDS: &[(&str, &str, &str, &[&str], &str)] = &[
         "resize",
         "pane.resize",
         &["pane"],
-        "--direction d [--percent n]",
+        "--direction d [--percent n] [--mode edge|size]",
+    ),
+    ("pane", "toggle-split", "pane.toggle_split", &["pane"], ""),
+    (
+        "pane",
+        "swap",
+        "pane.swap",
+        &["pane"],
+        "[--direction next|previous]",
+    ),
+    (
+        "pane",
+        "arrange",
+        "pane.arrange",
+        &["pane"],
+        "[--layout next|columns|rows|main-left|main-top|tiled]",
     ),
     ("pane", "rename", "pane.rename", &["pane", "title"], ""),
     (

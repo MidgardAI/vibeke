@@ -101,7 +101,10 @@ Use `--json` to print JSON. Non-terminal output also uses JSON.
 | `focus` | `<pane>` | `pane.focus` | [--direction left\|right\|up\|down] |
 | `close` | `<pane>` | `pane.close` |  |
 | `zoom` | `<pane>` | `pane.zoom` |  |
-| `resize` | `<pane>` | `pane.resize` | --direction d [--percent n] |
+| `resize` | `<pane>` | `pane.resize` | --direction d [--percent n] [--mode edge\|size] |
+| `toggle-split` | `<pane>` | `pane.toggle_split` |  |
+| `swap` | `<pane>` | `pane.swap` | [--direction next\|previous] |
+| `arrange` | `<pane>` | `pane.arrange` | [--layout next\|columns\|rows\|main-left\|main-top\|tiled] |
 | `rename` | `<pane>` `<title>` | `pane.rename` |  |
 | `send-text` | `<pane>` `<text>` | `pane.send_text` | [--paste auto\|bracketed\|raw] |
 | `send-keys` | `<pane>` `<keys...>` | `pane.send_keys` | keys use the key grammar: enter ctrl+c alt+x y |

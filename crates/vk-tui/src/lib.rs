@@ -54,6 +54,7 @@ pub mod navkeys;
 pub mod notifications;
 pub mod onboarding;
 pub mod osc;
+pub mod pane_controls;
 pub mod pane_images;
 pub mod parity;
 #[cfg(test)]
