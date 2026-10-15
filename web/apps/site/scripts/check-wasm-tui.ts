@@ -246,7 +246,10 @@ try {
     // The reconnect smoke above and every guest share one loopback IP. Respect the
     // relay's admission bucket by retrying only its transient pairing refusal.
     await expect.poll(async () => {
-      if (await guest.getByRole('status').filter({ hasText: /^Connected$/ }).isVisible()) return true;
+      if (await guest.getByTestId('share-access').isVisible() && await guest.getByRole('status').filter({ hasText: /^Connected$/ }).isVisible()) return true;
+      // Shares open in the app's workspace view. Enter the terminal explicitly.
+      const openTerminal = guest.getByRole('button', { name: 'Open terminal', exact: true });
+      if (await openTerminal.isVisible()) await openTerminal.click();
       if (await guest.getByRole('status').filter({ hasText: /Could not reach the host/ }).isVisible())
         await guest.getByRole('button', { name: 'Accept invitation', exact: true }).click();
       return false;
