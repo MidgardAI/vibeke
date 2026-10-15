@@ -103,6 +103,11 @@
       "scope": "pane",
       "pane_scope": "own_target"
     },
+    "agent.queued": {
+      "mutating": false,
+      "scope": "pane",
+      "pane_scope": "open"
+    },
     "agent.read": {
       "mutating": false,
       "scope": "pane",
@@ -134,6 +139,11 @@
       "pane_scope": "own_target"
     },
     "agent.send_keys": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
+    "agent.send_now": {
       "mutating": true,
       "scope": "pane",
       "pane_scope": "own_target"
@@ -1303,6 +1313,11 @@
       "scope": "pane",
       "pane_scope": "open"
     },
+    "pane.arrange": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
     "pane.can_see_paths": {
       "mutating": false,
       "scope": "pane",
@@ -1428,10 +1443,20 @@
       "scope": "pane",
       "pane_scope": "own_target"
     },
+    "pane.swap": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
+    },
     "pane.sync_input": {
       "mutating": true,
       "scope": "full",
       "pane_scope": "forbidden"
+    },
+    "pane.toggle_split": {
+      "mutating": true,
+      "scope": "pane",
+      "pane_scope": "own_target"
     },
     "pane.wait_idle": {
       "mutating": false,
