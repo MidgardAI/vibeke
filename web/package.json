@@ -29,7 +29,7 @@
     "build:pwa:tui": "bun run build:tui && VIBEKE_WASM_TUI=1 bun run build"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.3",
     "sharp": "0.35.5",
     "typescript": "^7.0.2"
   },
