@@ -4,7 +4,7 @@
 // (`peer.redeem`), so that host can send work to the teammate's host directly.
 
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ExternalLink, Link2, LogIn, QrCode, Server, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Copy, ExternalLink, Link2, LogIn, QrCode, Server, ShieldCheck } from 'lucide-react';
 import { ChannelError, PairingError, hostKind, isReviewLink, linkData, linkExpired, linkRoute, needsAttestation, parseLink, transportOf, type AttestResult, type PairingLink } from '@vibeke/core';
 import { useAllHosts, useApp, usePrefs } from '../app/hooks';
 import { QrScanner, qrScanSupported } from '../components/qr-scanner';
@@ -131,6 +131,15 @@ export function PairScreen({ d }: { d: string | null }) {
   const local = link ? transportOf(link.relay) === 'local' : false;
   const unreachable = local && !app.platform.localTransport;
   const Panel = app.platform.extensions?.pairPanel;
+  // iOS gives a Home Screen app its own storage: a host paired in a Safari tab does not show up
+  // there, and a scanned QR code always opens Safari. Offer to carry the link over unclaimed.
+  const inst = app.platform.install;
+  const safariTab = !!inst?.iosShareSheet && !inst.standalone;
+  const copyLink = () => {
+    if (!raw) return;
+    const url = `${location.origin}${location.pathname}#/pair?d=${linkData(raw)}`;
+    void navigator.clipboard?.writeText(url).then(() => app.toast(t.pair.linkCopied, 'ok', 1500), () => {});
+  };
 
   const signIn = async () => {
     if (!link || !raw) return;
@@ -233,6 +242,16 @@ export function PairScreen({ d }: { d: string | null }) {
             {replacesOwn ? <Notice tone="warn">{t.pair.replacesOwn}</Notice> : known && <Notice>{t.pair.alreadyPaired}</Notice>}
             {expired && <Notice tone="danger">{t.pair.errors.expired}</Notice>}
             {unreachable && <Notice tone="warn">{t.pair.localOnly}</Notice>}
+            {safariTab && phase.k === 'form' && (
+              <Notice>
+                <div className="space-y-2">
+                  <div>{t.pair.homeScreen}</div>
+                  <Button size="sm" variant="secondary" icon={<Copy className="size-4" />} onClick={copyLink}>
+                    {t.pair.copyLink}
+                  </Button>
+                </div>
+              </Notice>
+            )}
 
             {/* Invitations and local links are bearer links: nobody confirms a fingerprint on the host side. */}
             {!share && !local && (
@@ -295,12 +314,17 @@ export function PairScreen({ d }: { d: string | null }) {
           <p className="text-sm text-muted">{t.pair.intro}</p>
           {parsed.error && <Notice tone="danger">{parsed.error}</Notice>}
           {scan ? (
-            <QrScanner
-              onResult={(text) => {
-                setScan(false);
-                setRaw(text);
-              }}
-            />
+            <>
+              <QrScanner
+                onResult={(text) => {
+                  setScan(false);
+                  setRaw(text);
+                }}
+              />
+              <Button block variant="ghost" onClick={() => setScan(false)}>
+                {t.cancel}
+              </Button>
+            </>
           ) : (
             qrScanSupported() && app.platform.qrScan !== false && (
               <Button block variant="secondary" icon={<QrCode className="size-5" />} onClick={() => setScan(true)}>
