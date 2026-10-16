@@ -340,7 +340,7 @@ export function InteractionCard({
               </button>
             </div>
           )}
-          {view && <DeliveryLine view={view} error={local?.error} onOpenPane={openPane} onRefresh={refresh} />}
+          {view && <DeliveryLine view={view} error={local?.error ?? it.delivery_error ?? undefined} onOpenPane={openPane} onRefresh={refresh} />}
         </div>
       </Card>
       <Sheet open={confirm !== null} onClose={() => setConfirm(null)} title={t.inbox.confirmTitle} role="alertdialog">

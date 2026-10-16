@@ -123,6 +123,17 @@ pub enum Event {
     },
 }
 
+/// A Codex follow-up question that waits while its turn continues. The id is the same JSON
+/// tuple Codex uses in its question replies, not the id of the already-completed tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingQuestion {
+    pub id: String,
+    pub message_id: String,
+    pub title: String,
+    pub options: Vec<String>,
+    pub ts_ms: Option<i64>,
+}
+
 /// A Claude `<task-notification>` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskNotification {
@@ -243,6 +254,9 @@ pub struct Parser {
     /// The rollout has `SubAgentActivity` items, which say when sub-agents start and end;
     /// inter-agent messages are then not used as ends.
     codex_activity: bool,
+    codex_questions: Vec<PendingQuestion>,
+    codex_question_messages: HashSet<String>,
+    codex_question_answers: HashMap<String, String>,
     activity: Option<Activity>,
     totals: TurnUsage,
     /// A title the user gave the session (Claude `/rename`, pi/omp `/name`); wins over `auto_title`.
@@ -280,6 +294,9 @@ impl Parser {
             codex_start_calls: HashSet::new(),
             codex_calls: HashMap::new(),
             codex_activity: false,
+            codex_questions: vec![],
+            codex_question_messages: HashSet::new(),
+            codex_question_answers: HashMap::new(),
             activity: None,
             totals: TurnUsage::default(),
             user_title: None,
@@ -296,6 +313,26 @@ impl Parser {
 
     pub fn activity(&self) -> Option<Activity> {
         self.activity
+    }
+
+    pub fn pending_questions(&self) -> &[PendingQuestion] {
+        &self.codex_questions
+    }
+
+    pub fn question_answered(&self, id: &str) -> bool {
+        self.codex_question_answers.contains_key(id)
+    }
+
+    pub fn question_answer(&self, id: &str) -> Option<&str> {
+        self.codex_question_answers.get(id).map(String::as_str)
+    }
+
+    pub fn question_answers(&self) -> &HashMap<String, String> {
+        &self.codex_question_answers
+    }
+
+    pub fn at_record_boundary(&self) -> bool {
+        self.carry.is_empty()
     }
 
     /// Usage of every completed turn so far.
@@ -759,6 +796,9 @@ impl Parser {
                     if pty == "user_message"
                         && let Some(m) = p.get("message").and_then(Value::as_str)
                     {
+                        if self.codex_question_replies(m) {
+                            return;
+                        }
                         self.prompt_seen(m);
                     }
                     if pty == "user_message"
@@ -798,6 +838,7 @@ impl Parser {
                     });
                 }
                 "task_complete" | "turn_complete" | "turn_aborted" => {
+                    self.codex_questions.clear();
                     let id = p
                         .get("turn_id")
                         .and_then(Value::as_str)
@@ -807,6 +848,11 @@ impl Parser {
                 }
                 "item_completed" => {
                     let item = &p["item"];
+                    if item.get("type").and_then(Value::as_str) == Some("AgentMessage")
+                        && item.get("delivery").and_then(Value::as_str) == Some("async")
+                    {
+                        self.codex_question_item(item, ts);
+                    }
                     if item.get("type").and_then(Value::as_str) == Some("CommandExecution")
                         && let Some(pid) = item.get("process_id").and_then(|x| {
                             x.as_str()
@@ -836,6 +882,15 @@ impl Parser {
                 _ => {}
             },
             Some("response_item") => match pty {
+                "message" if p.get("role").and_then(Value::as_str) == Some("user") => {
+                    if let Some(content) = p.get("content").and_then(Value::as_array) {
+                        for block in content {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                self.codex_question_replies(text);
+                            }
+                        }
+                    }
+                }
                 "function_call" | "local_shell_call" | "custom_tool_call" => {
                     let id = p
                         .get("call_id")
@@ -893,6 +948,84 @@ impl Parser {
             },
             _ => {}
         }
+    }
+
+    fn codex_question_item(&mut self, item: &Value, ts_ms: Option<i64>) {
+        let Some(id) = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let Some(questions) = item.get("questions").and_then(Value::as_array) else {
+            return;
+        };
+        if !self.codex_question_messages.insert(id.to_string()) {
+            return;
+        }
+        for (index, q) in questions.iter().take(32).enumerate() {
+            let Some(title) = q.get("title").and_then(Value::as_str) else {
+                continue;
+            };
+            if self.codex_questions.len() >= INPUTS_MAX {
+                break;
+            }
+            self.codex_questions.push(PendingQuestion {
+                id: serde_json::json!(["request_user_input_async", id, index]).to_string(),
+                message_id: id.to_string(),
+                title: title.to_string(),
+                options: q
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .take(32)
+                    .filter(|s| s.len() <= 512)
+                    .map(str::to_string)
+                    .collect(),
+                ts_ms,
+            });
+        }
+    }
+
+    fn codex_question_replies(&mut self, text: &str) -> bool {
+        // Only a committed user message can retire a question. Tool output saying
+        // {"accepted":true} acknowledges enqueueing the question, not answering it.
+        let Some(body) = tag(text, "send_user_message_question_reply") else {
+            return false;
+        };
+        let Ok(Value::Array(replies)) = serde_json::from_str::<Value>(body) else {
+            return false;
+        };
+        // A queued reply can be written after task_complete cleared the visible questions.
+        for reply in &replies {
+            if let (Some(id), Some(answer)) = (
+                reply.get("questionItemId").and_then(Value::as_str),
+                reply.get("answer").and_then(Value::as_str),
+            ) {
+                self.codex_question_answers
+                    .insert(id.to_string(), answer.to_string());
+            }
+        }
+        self.codex_questions.retain(|q| {
+            let answer = replies
+                .iter()
+                .find(|r| {
+                    r.get("questionItemId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id == q.id || id == q.message_id)
+                })
+                .and_then(|r| r.get("answer"))
+                .and_then(Value::as_str);
+            if let Some(answer) = answer {
+                self.codex_question_answers
+                    .insert(q.id.clone(), answer.to_string());
+            }
+            answer.is_none()
+        });
+        true
     }
 
     // ---- Codex sub-agents ------------------------------------------------------------------
@@ -1672,6 +1805,55 @@ mod tests {
         let index = "{\"id\":\"a\",\"thread_name\":\"First\"}\n{\"id\":\"b\",\"thread_name\":\"Other\"}\n{\"id\":\"a\",\"thread_name\":\"Renamed\"}\n";
         assert_eq!(codex_thread_name(index, "a").as_deref(), Some("Renamed"));
         assert_eq!(codex_thread_name(index, "c"), None);
+    }
+
+    #[test]
+    fn codex_follow_up_questions_outlive_the_tool_ack_and_other_work() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let item = serde_json::json!({"timestamp":"2026-10-16T10:00:00Z", "type":"event_msg", "payload": {
+            "type":"item_completed", "item":{"type":"AgentMessage", "id":"call_q", "delivery":"async",
+                "questions":[{"title":"Which environment?", "options":["Test", "Production"]}, {"title":"Any constraints?"}]}}});
+        p.feed(&lines(&[item.clone(), item.clone(),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call_q","output":"{\"accepted\":true}"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"work","name":"exec_command","arguments":"{}"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"Please keep going"}}),
+        ]));
+        assert_eq!(p.pending_questions().len(), 2);
+        assert_eq!(
+            p.pending_questions()[0].id,
+            r#"["request_user_input_async","call_q",0]"#
+        );
+        assert_eq!(p.pending_questions()[0].options, ["Test", "Production"]);
+        assert!(p.pending_questions()[1].options.is_empty());
+        assert_eq!(p.activity(), Some(Activity::Working));
+        let reply =
+            serde_json::json!([{"questionItemId":p.pending_questions()[0].id,"answer":"Test"}]);
+        let text = format!(
+            "<send_user_message_question_reply>\n{reply}\n</send_user_message_question_reply>"
+        );
+        p.feed(&lines(&[serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),item]));
+        assert_eq!(
+            p.pending_questions().len(),
+            1,
+            "replay must not restore an answered question"
+        );
+        assert!(p.question_answered(r#"["request_user_input_async","call_q",0]"#));
+        assert!(!p.question_answered(r#"["request_user_input_async","call_q",1]"#));
+        p.feed(&lines(&[serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}})]));
+        assert!(p.pending_questions().is_empty());
+    }
+
+    #[test]
+    fn codex_follow_up_questions_require_a_completed_async_message() {
+        let mut p = Parser::new(Format::CodexRollout);
+        for (event, delivery) in [("item_started", "async"), ("item_completed", "sync")] {
+            p.feed(&lines(&[
+                serde_json::json!({"type":"event_msg", "payload": {
+                "type":event, "item":{"type":"AgentMessage", "id":"q", "delivery":delivery,
+                "questions":[{"title":"Pick?", "options":["One"]}]}}}),
+            ]));
+        }
+        assert!(p.pending_questions().is_empty());
     }
 
     #[test]

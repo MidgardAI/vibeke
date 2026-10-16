@@ -424,6 +424,7 @@ export class AppModel {
         // Re-render cards that read `finals` (the answer store drives the inbox).
         const cur = this.answers.get(key);
         if (cur) this.answers.set(key, { ...cur });
+        if (live.status === 'open' && live.delivery === 'none' && live.delivery_error) return;
         if (live.status !== 'open' && (terminal.has(live.delivery) || live.delivery === 'decision_recorded')) return;
       } catch {
         return;

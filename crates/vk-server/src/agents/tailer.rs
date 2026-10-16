@@ -73,6 +73,7 @@ struct Tail {
     harness: String,
     path: PathBuf,
     offset: u64,
+    caught_up: bool,
     parser: Parser,
 }
 
@@ -159,6 +160,7 @@ pub fn track(run: &AgentRun) -> bool {
             harness: run.harness.clone(),
             path,
             offset: 0,
+            caught_up: false,
             parser: Parser::new(fmt),
         },
     );
@@ -228,6 +230,7 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
                 t.parser = Parser::new(t.parser.format());
             }
             t.offset = start + bytes.len() as u64;
+            t.caught_up = std::fs::metadata(&path).is_ok_and(|m| t.offset >= m.len());
             if t.parser.format() == Format::OmpJsonl
                 && let Some(title) = head.as_deref().and_then(transcript::head_title)
             {
@@ -256,11 +259,49 @@ pub fn poll_all(server: &Arc<Server>) -> usize {
             apply(server, &run, &harness, &ev, &totals, model.as_deref());
         }
         set_title(server, &run, &harness, title);
+        if let Some(questions) = pending_questions(&run)
+            && let Some(r) = server.with_core(|c| c.run(&run).cloned())
+        {
+            super::codex_questions::sync(server, &r, &questions);
+            if !bytes.is_empty() {
+                let answers = REG
+                    .lock()
+                    .unwrap()
+                    .tails
+                    .get(&path)
+                    .map(|t| t.parser.question_answers().clone())
+                    .unwrap_or_default();
+                super::codex_questions::sync_answers(server, &r, &answers);
+            }
+        }
     }
     if total > 0 {
         index_soon(server);
     }
     total
+}
+
+pub(super) fn pending_questions(run: &str) -> Option<Vec<transcript::PendingQuestion>> {
+    REG.lock()
+        .unwrap()
+        .tails
+        .values()
+        .find(|t| {
+            t.run == run
+                && t.caught_up
+                && t.parser.at_record_boundary()
+                && t.parser.format() == Format::CodexRollout
+        })
+        .map(|t| t.parser.pending_questions().to_vec())
+}
+
+pub(super) fn question_answer(run: &str, id: &str) -> Option<String> {
+    REG.lock()
+        .unwrap()
+        .tails
+        .values()
+        .find(|t| t.run == run && t.caught_up)
+        .and_then(|t| t.parser.question_answer(id).map(str::to_string))
 }
 
 fn apply(

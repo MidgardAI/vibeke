@@ -129,6 +129,59 @@ fn reasons(e: &Env, id: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn codex_follow_up_questions_stay_open_across_tools_and_steers() {
+    let e = env();
+    let run = add_run(&e, "r-codex-async", "p-codex-async", |r| {
+        r.harness = "codex".into();
+        r.execution = facet(Execution::Working, StateSource::Structured, 1.0);
+    });
+    let id = ask(&e, &run, "call_q");
+    e.server.with_core(|c| {
+        let mut it = c.interaction(&id).unwrap().clone();
+        it.native_ref = Some("codex-question:call_q".into());
+        it.opened_at_ms = now_ms() - 40_000;
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(c, tx).unwrap();
+    });
+    close_questions_for_tool(&e.server, &run, "other-tool");
+    assert_eq!(status(&e, &id), InteractionStatus::Open);
+    on_signal(
+        &e.server,
+        &run.pane,
+        Harness::Codex,
+        "UserPromptSubmit",
+        &json!({"session_id":run.harness_session_id, "prompt":"Continue checking"}),
+    );
+    assert_eq!(status(&e, &id), InteractionStatus::Open);
+    e.server
+        .agents
+        .inner
+        .lock()
+        .unwrap()
+        .no_dialog_since
+        .insert(run.pane.clone(), Instant::now() - Duration::from_secs(31));
+    e.server.agents.close_unseen_dialogs(
+        &e.server,
+        &run,
+        Harness::Codex,
+        &screen::ScreenMatch {
+            state: Some((Execution::Working, 0.8)),
+            dialog: None,
+        },
+    );
+    assert_eq!(status(&e, &id), InteractionStatus::Open);
+    on_signal(
+        &e.server,
+        &run.pane,
+        Harness::Codex,
+        "Stop",
+        &json!({"session_id":run.harness_session_id}),
+    );
+    assert_eq!(status(&e, &id), InteractionStatus::ResolvedElsewhere);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_new_prompt_closes_an_open_question() {
     let e = env();
     let run = add_run(&e, "r-ask", "p-ask", |_| {});

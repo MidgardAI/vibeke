@@ -8,6 +8,7 @@ Install the Codex CLI integration to see Codex state in the sidebar and to answe
 |---|---|
 | State | Codex hooks report turns, tool use, interrupts and the end of a session. |
 | Approval requests | A Codex approval becomes an inbox card. Vibeke sends your answer back through the hook. |
+| Follow-up questions | Queued questions appear in the inbox with their choices. Codex can keep working while they wait. Select a choice or enter an answer. Vibeke checks the question in the pane before it sends the answer. |
 | Other prompts | Vibeke answers other Codex prompts by sending keystrokes. This is best effort. |
 | Usage and limits | Vibeke reads the Codex session file. It records tokens for each turn and the account limits that Codex reports. |
 | Background tasks | Vibeke shows background terminals that Codex reports when it runs Codex through the Codex app server. See [Agents and interactions](../concepts/agents.md). |

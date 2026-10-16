@@ -44,6 +44,7 @@ impl Session {
             "VIBEKE_SOCKET",
             "VIBEKE_SESSION",
             "VIBEKE_PANE_TOKEN",
+            "VIBEKE_PANE_ULID",
             "XDG_CONFIG_HOME",
             "XDG_STATE_HOME",
             "XDG_RUNTIME_DIR",
@@ -1155,4 +1156,478 @@ fn send_now_delivers_a_message_claude_queued() {
         .api("agent.send_now", json!({"target": id}))
         .expect_err("nothing queued");
     assert!(e.to_string().contains("nothing"), "{e}");
+}
+
+// Codex's queue and inline question editor. These screens follow Codex's async_questions
+// renderer: no progress line for one question, numbered choices plus Other, and a composer
+// for free text. The fake records every input byte, so an unsolicited key is visible.
+const FAKE_CODEX_QUESTIONS: &str = r#"
+import datetime, json, os, select, subprocess, sys, time, tty
+d = sys.argv[1]
+tp = d + '/codex.jsonl'
+def line(payload, kind='event_msg'):
+    with open(tp, 'a') as f:
+        f.write(json.dumps({'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'type': kind, 'payload': payload}) + '\n')
+def hook(ev, **p):
+    p.update(session_id='cx-questions', transcript_path=tp)
+    subprocess.run([os.environ['VIBEKE_BIN'], 'hook', 'codex', ev], input=json.dumps(p).encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+line({'id':'cx-questions'}, 'session_meta')
+hook('SessionStart', source='startup')
+hook('UserPromptSubmit', prompt='prepare a preview')
+if os.path.exists(d+'/large'):
+    for _ in range(300): line({'type':'noop','padding':'x'*4096})
+pending = [{'title':'Which environment?', 'options':['Test','Production'], 'id':0}, {'title':'Any constraints?', 'id':1}]
+line({'type':'item_completed', 'item':{'type':'AgentMessage', 'id':'call_q', 'delivery':'async', 'questions':pending}})
+line({'type':'function_call_output','call_id':'call_q','output':'{"accepted":true}'}, 'response_item')
+tty.setraw(0)
+expanded, index, pointer, draft = False, 0, 0, ''
+delayed=[]
+def draw():
+    out = '\x1b[?2004h\x1b[H\x1b[2J• Working (1s • esc to interrupt)\r\n\r\n'
+    if pending:
+        out += '• Queued follow-up inputs\r\n'
+        if not expanded:
+            out += '  ? %d question%s\r\n    ⇧← to answer\r\n\r\n› Ask Codex to do anything\r\n' % (len(pending), '' if len(pending)==1 else 's')
+        else:
+            if len(pending)>1: out += '\r\n  %d of %d\r\n' % (index+1,len(pending))
+            q = pending[index]
+            out += '\r\n  '+q['title']+'\r\n\r\n'
+            if q.get('options'):
+                for n,label in enumerate(q['options']+[(draft or 'Other (write an answer)') if pointer==2 else 'Other']):
+                    out += '  %s %d. %s\r\n' % ('›' if n==pointer else ' ',n+1,label)
+            else: out += '  '+(draft or 'Type your answer')+'\r\n'
+            out += '\r\n  enter submit   ⌃] skip   ⇧→ '+('prev question' if index else 'main prompt')
+            if index+1<len(pending): out += '   ⇧← next question'
+            out += '\r\n'
+    else: out += '› Ask Codex to do anything\r\n'
+    os.write(1,out.encode())
+draw()
+open(d+'/ready','w').close()
+buf=b''
+while True:
+    if os.path.exists(d+'/replay-marker'):
+        os.unlink(d+'/replay-marker')
+        line({'type':'function_call','call_id':'replay-ready','name':'exec_command','arguments':json.dumps({'cmd':'printf replay-ready'})},'response_item')
+        line({'type':'function_call_output','call_id':'replay-ready','output':'Process running with session ID 424242'},'response_item')
+    if os.path.exists(d+'/flush-late'):
+        os.unlink(d+'/flush-late')
+        line({'type':'task_complete','turn_id':'t1'})
+        for reply in delayed: line({'type':'user_message','message':reply})
+        delayed=[]
+    if os.path.exists(d+'/skip-one'):
+        os.unlink(d+'/skip-one')
+        pending.pop(0)
+        expanded,index,pointer,draft=False,0,0,''
+        draw()
+    if os.path.exists(d+'/replace'):
+        os.unlink(d+'/replace')
+        pending[0]['title']='A replacement question?'
+        open(d+'/replaced','w').close()
+        draw()
+    if os.path.exists(d+'/work'):
+        os.unlink(d+'/work')
+        hook('PreToolUse', tool_name='Bash', tool_use_id='work', tool_input={'command':'check preview'})
+        hook('PostToolUse', tool_name='Bash', tool_use_id='work', tool_input={'command':'check preview'})
+        open(d+'/worked','w').close()
+        draw()
+    if os.path.exists(d+'/skip'):
+        os.unlink(d+'/skip')
+        pending=[]
+        draw()
+    if not select.select([0],[],[],0.1)[0]: continue
+    data=os.read(0,4096)
+    if not data: break
+    with open(d+'/keys','ab') as f: f.write(data)
+    buf+=data
+    while buf:
+        if buf.startswith(b'\x1b[200~'):
+            if b'\x1b[201~' not in buf: break
+            end=buf.index(b'\x1b[201~')
+            draft+=buf[6:end].decode()
+            buf=buf[end+6:]
+        elif buf.startswith(b'\x1b'):
+            seq=next((s for s in [b'\x1b[1;2D',b'\x1b[1;2C',b'\x1b[B',b'\x1bOB',b'\x1b[A',b'\x1bOA'] if buf.startswith(s)),None)
+            if seq is None: break
+            buf=buf[len(seq):]
+            if seq==b'\x1b[1;2D':
+                if not expanded: expanded=True
+                elif index+1<len(pending): index+=1
+                pointer,draft=0,''
+            elif seq==b'\x1b[1;2C':
+                if index: index-=1; pointer,draft=0,''
+                else: expanded=False
+            elif seq in [b'\x1b[B',b'\x1bOB']: pointer=min(pointer+1,2)
+            elif seq in [b'\x1b[A',b'\x1bOA']: pointer=max(pointer-1,0)
+        elif buf[0]==13:
+            buf=buf[1:]
+            if not expanded or not pending: continue
+            if os.path.exists(d+'/reject'):
+                os.write(1,b'\x1b[H\x1b[2JExpand terminal to read the entire option\r\n')
+                continue
+            q=pending[index]
+            answer=draft or q.get('options',[''])[pointer]
+            qid=json.dumps(['request_user_input_async','call_q',q['id']],separators=(',',':'))
+            reply='<send_user_message_question_reply>'+json.dumps([{'questionItemId':qid,'question':q['title'],'answer':answer}])+'</send_user_message_question_reply>'
+            if os.path.exists(d+'/late'): delayed.append(reply)
+            else: line({'type':'user_message','message':reply})
+            with open(d+'/answers','a') as f: f.write(json.dumps({'question':q['title'],'answer':answer})+'\n')
+            pending.pop(index)
+            expanded,index,pointer,draft=bool(pending),0,0,''
+        else: buf=buf[1:]
+        draw()
+"#;
+
+#[test]
+fn codex_follow_up_questions_are_answered_while_the_turn_keeps_working() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    let cards = || {
+        let v = s.api("interaction.list", json!({})).ok()?;
+        Some(
+            v["interactions"]
+                .as_array()?
+                .iter()
+                .filter(|i| i["pane"] == pane && i["status"] == "Open")
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    let questions = s.until("both follow-up question cards", 20, || {
+        cards().filter(|q| q.len() == 2)
+    });
+    assert!(
+        !d.join("keys").exists(),
+        "observing a queued question must never type into Codex"
+    );
+    std::fs::write(d.join("work"), "").unwrap();
+    s.until("Codex ran another tool", 15, || {
+        d.join("worked").exists().then_some(())
+    });
+    assert_eq!(
+        cards().unwrap().len(),
+        2,
+        "other work does not close asynchronous questions"
+    );
+    let free = questions
+        .iter()
+        .find(|q| q["title"] == "Any constraints?")
+        .unwrap();
+    s.api(
+        "interaction.answer",
+        json!({"interaction":free["id"],"text":"Keep the service running"}),
+    )
+    .unwrap();
+    let delivered = |it: &Value| {
+        s.until("verified answer delivery", 15, || {
+            let v = s
+                .api("interaction.get", json!({"interaction":it["id"]}))
+                .ok()?;
+            let delivery = &v["interaction"]["delivery"];
+            assert!(
+                !matches!(delivery.as_str(), Some("Failed" | "DeliveryUnknown")),
+                "{v}"
+            );
+            (delivery == "Delivered").then_some(())
+        });
+    };
+    delivered(free);
+    let screen = s
+        .api("pane.read", json!({"pane":pane, "source":"visible"}))
+        .unwrap();
+    assert!(
+        screen["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("⇧← to answer"),
+        "Vibeke must return to the main prompt: {screen}"
+    );
+    let choice = questions
+        .iter()
+        .find(|q| q["title"] == "Which environment?")
+        .unwrap();
+    let qid = choice["questions"][0]["id"].as_str().unwrap();
+    s.api(
+        "interaction.answer",
+        json!({"interaction":choice["id"],"choices":{qid:["1"]}}),
+    )
+    .unwrap();
+    delivered(choice);
+    let answers: Vec<Value> = std::fs::read_to_string(d.join("answers"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        answers,
+        vec![
+            json!({"question":"Any constraints?","answer":"Keep the service running"}),
+            json!({"question":"Which environment?","answer":"Production"})
+        ]
+    );
+    s.until("question cards clear", 15, || {
+        cards().filter(|q| q.is_empty())
+    });
+    assert_eq!(s.run_of(&pane).unwrap()["execution"]["value"], "Working");
+}
+
+#[test]
+fn codex_follow_up_questions_skipped_in_the_pane_clear_without_an_answer() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    s.until("queued question cards", 20, || s.open_interaction(&pane));
+    std::fs::write(d.join("skip"), "").unwrap();
+    s.until("skipped questions clear", 15, || {
+        s.open_interaction(&pane).is_none().then_some(())
+    });
+    assert!(
+        !d.join("keys").exists(),
+        "detection and cleanup must never send input"
+    );
+    assert!(
+        !d.join("answers").exists(),
+        "skipping a question is not a user answer"
+    );
+}
+
+#[test]
+fn codex_follow_up_answer_refuses_a_replacement_question() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    let question = s.until("question card", 20, || {
+        s.open_interaction(&pane)
+            .filter(|q| q["title"] == "Which environment?")
+    });
+    std::fs::write(d.join("replace"), "").unwrap();
+    s.until("replacement question shown", 10, || {
+        d.join("replaced").exists().then_some(())
+    });
+    let qid = question["questions"][0]["id"].as_str().unwrap();
+    s.api(
+        "interaction.answer",
+        json!({"interaction":question["id"],"choices":{qid:["1"]}}),
+    )
+    .unwrap();
+    s.until("stale answer refused", 15, || {
+        let it = s
+            .api("interaction.get", json!({"interaction":question["id"]}))
+            .ok()?;
+        (it["interaction"]["status"] == "Open" && it["interaction"]["delivery_error"].is_string())
+            .then_some(())
+    });
+    assert!(!d.join("answers").exists());
+    assert!(
+        !std::fs::read(d.join("keys"))
+            .unwrap_or_default()
+            .contains(&b'\r'),
+        "a changed question must never receive Enter"
+    );
+}
+
+#[test]
+fn codex_follow_up_cards_survive_replaying_a_large_session_after_restart() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("large"), "").unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    let before = s.until("question after a large transcript", 30, || {
+        s.open_interaction(&pane)
+    });
+    s.json(&["server", "stop"]);
+    std::fs::write(d.join("replay-marker"), "").unwrap();
+    s.until("session replay reached its end", 30, || {
+        s.run_of(&pane)
+            .filter(|r| r["bg_tasks"].to_string().contains("424242"))
+    });
+    let after = s.until("same card after restart and replay", 30, || {
+        s.open_interaction(&pane)
+    });
+    assert_eq!(after["id"], before["id"]);
+    assert!(!d.join("keys").exists());
+}
+
+#[test]
+fn codex_follow_up_does_not_claim_delivery_when_codex_rejects_enter() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("reject"), "").unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    let question = s.until("question card", 20, || {
+        s.open_interaction(&pane)
+            .filter(|q| q["title"] == "Which environment?")
+    });
+    let qid = question["questions"][0]["id"].as_str().unwrap();
+    s.api(
+        "interaction.answer",
+        json!({"interaction":question["id"],"choices":{qid:["1"]}}),
+    )
+    .unwrap();
+    s.until("delivery remains unconfirmed", 15, || {
+        let it = s
+            .api("interaction.get", json!({"interaction":question["id"]}))
+            .ok()?;
+        assert_ne!(it["interaction"]["delivery"], "Delivered", "{it}");
+        (it["interaction"]["delivery"] == "DeliveryUnknown").then_some(())
+    });
+    assert!(!d.join("answers").exists());
+}
+
+#[test]
+fn codex_follow_up_records_a_delayed_reply_after_the_turn_ends() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("late"), "").unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    let question = s.until("question card", 20, || {
+        s.open_interaction(&pane)
+            .filter(|q| q["title"] == "Which environment?")
+    });
+    let qid = question["questions"][0]["id"].as_str().unwrap();
+    s.api(
+        "interaction.answer",
+        json!({"interaction":question["id"],"choices":{qid:["1"]}}),
+    )
+    .unwrap();
+    s.until("Codex accepted the answer into its queue", 10, || {
+        let v = s
+            .api("interaction.get", json!({"interaction":question["id"]}))
+            .ok()?;
+        (v["interaction"]["delivery"] == "DecisionRecorded").then_some(())
+    });
+    let remaining = s.until(
+        "remaining question is answerable before the first reply is recorded",
+        10,
+        || {
+            s.open_interaction(&pane)
+                .filter(|q| q["title"] == "Any constraints?" && q["answerable"] == true)
+        },
+    );
+    s.api(
+        "interaction.answer",
+        json!({"interaction":remaining["id"],"text":"No other constraints"}),
+    )
+    .unwrap();
+    s.until(
+        "second answer is recorded without waiting for the model",
+        10,
+        || {
+            let v = s
+                .api("interaction.get", json!({"interaction":remaining["id"]}))
+                .ok()?;
+            (v["interaction"]["delivery"] == "DecisionRecorded").then_some(())
+        },
+    );
+    std::fs::write(d.join("flush-late"), "").unwrap();
+    s.until("late reply confirms delivery", 15, || {
+        let v = s
+            .api("interaction.get", json!({"interaction":question["id"]}))
+            .ok()?;
+        (v["interaction"]["delivery"] == "Delivered").then_some(())
+    });
+}
+
+#[test]
+fn codex_follow_up_partial_skip_offers_the_pane_instead_of_endless_retries() {
+    let Some(py) = python3() else {
+        return;
+    };
+    let s = Session::new();
+    let agent = s.dir.path().join("fake_codex_questions.py");
+    std::fs::write(&agent, FAKE_CODEX_QUESTIONS).unwrap();
+    let d = s.dir.path().join("io");
+    std::fs::create_dir_all(&d).unwrap();
+    let pane = s.pane(Path::new("/tmp"));
+    s.json(&[
+        "pane",
+        "run",
+        &pane,
+        &format!("{py} {} {}", agent.display(), d.display()),
+    ]);
+    s.until("question cards", 20, || s.open_interaction(&pane));
+    std::fs::write(d.join("skip-one"), "").unwrap();
+    s.until("remaining question offers answer in pane", 15, || {
+        let v = s.api("interaction.list", json!({})).ok()?;
+        v["interactions"]
+            .as_array()?
+            .iter()
+            .find(|q| {
+                q["pane"] == pane && q["title"] == "Any constraints?" && q["answerable"] == false
+            })
+            .cloned()
+    });
+    assert!(!d.join("keys").exists());
 }

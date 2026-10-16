@@ -6,6 +6,7 @@ pub mod acp;
 pub mod arbiter;
 pub mod bg;
 pub mod channel;
+mod codex_questions;
 mod codex_threads;
 mod gemini;
 #[cfg(test)]
@@ -558,14 +559,20 @@ impl Agents {
             screen::snapshot_of(&sc.engine)
         };
         // Codex shows its pending steers only on screen (Send now, `queued.rs`).
-        if h.family() == harness::Family::Codex {
+        let codex_question_editor = if h.family() == harness::Family::Codex {
             queued::from_codex_screen(server, &run, &snap.lines);
-        }
-        let (m, pending) = {
+            codex_questions::on_screen(server, &run, &snap.lines.join("\n"))
+        } else {
+            false
+        };
+        let (mut m, pending) = {
             let mut i = self.inner.lock().unwrap();
             let hold = i.holds.entry(pane.to_string()).or_default();
             screen::evaluate_snapshot(h, &snap, now_ms(), Some(hold))
         };
+        if codex_question_editor {
+            m.dialog = None;
+        }
         // A `hold_ms` rule that matches but has not held long enough yet: look again then.
         if let Some(ms) = pending {
             let (srv, pane2) = (server.clone(), pane.to_string());
@@ -633,7 +640,11 @@ impl Agents {
             c.model
                 .interactions
                 .iter()
-                .find(|i| i.pane == pane && i.status == InteractionStatus::Open)
+                .find(|i| {
+                    i.pane == pane
+                        && i.status == InteractionStatus::Open
+                        && !codex_questions::is_async(i)
+                })
                 .cloned()
         });
         // A screen picker whose signature changed (another picker, or the same title asking
@@ -847,6 +858,7 @@ impl Agents {
                         && !i.gate
                         && !gates.contains(&i.id)
                         && !is_sandbox_request(i)
+                        && !codex_questions::is_async(i)
                 })
                 .map(|i| (i.id.clone(), i.opened_at_ms))
                 .collect()
@@ -1225,6 +1237,7 @@ fn resolve_open(server: &Server, run: &str, reason: &str, pick: impl Fn(&Interac
                     && !i.gate
                     && !gates.contains(&i.id)
                     && !is_sandbox_request(i)
+                    && !codex_questions::is_async(i)
                     && pick(i)
             })
             .map(|i| i.id.clone())
@@ -2305,7 +2318,12 @@ fn record_decision(
 
 fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<String>) {
     let mut c = server.core.lock().unwrap();
-    let Some(mut it) = c.interaction(id).cloned() else {
+    let Some(mut it) = c.interaction(id).cloned().or_else(|| {
+        c.store
+            .find::<Interaction>("interaction", id)
+            .ok()
+            .flatten()
+    }) else {
         return;
     };
     if it.delivery == state {
@@ -2313,6 +2331,14 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
     }
     it.delivery = state;
     it.delivery_error = error.clone();
+    if state == DeliveryState::Failed && codex_questions::is_async(&it) {
+        // This path guarantees no answer text or Enter was sent. Keep the question retryable.
+        it.status = InteractionStatus::Open;
+        it.delivery = DeliveryState::None;
+        it.answer = None;
+        it.body_md =
+            Some("Your answer was not sent. Try again or answer the question in the pane.".into());
+    }
     let ev = match state {
         DeliveryState::Delivering => "interaction.delivery_started",
         DeliveryState::Delivered => "interaction.delivered",
@@ -2418,6 +2444,9 @@ async fn answer(server: &Arc<Server>, ctx: &Ctx, p: &Value) -> R {
         choices,
         text: s(p, "text").map(str::to_string),
     };
+    if codex_questions::is_async(&it) {
+        codex_questions::validate(&it, &answer).map_err(invalid)?;
+    }
     if let Some(why) = untypeable_answer(server, &it, &answer) {
         return Err(err(ErrorKind::Unsupported, why).details(
             json!({"reason": "answer_in_pane", "fallback": "focus the pane", "interaction": it.id}),
@@ -2733,6 +2762,9 @@ async fn deliver_keystrokes(
     let Some(rt) = server.pane_rt(&it.pane) else {
         return (DeliveryState::Failed, Some("pane gone".into()));
     };
+    if codex_questions::is_async(&it) {
+        return codex_questions::deliver(server, &rt, &it, answer).await;
+    }
     let screen_text = || rt.screen.lock().unwrap().engine.screen_text();
     let before = screen_text();
     let Some(dialog) = screen::evaluate(h, &before).dialog else {

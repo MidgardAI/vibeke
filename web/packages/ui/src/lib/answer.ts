@@ -49,6 +49,7 @@ export function deliveryView(local: LocalAnswer | undefined, live: Interaction |
 }
 
 function fromDelivery(i: Interaction): DeliveryView {
+  if (i.status === 'open' && i.delivery === 'none' && i.delivery_error) return 'error';
   switch (i.delivery) {
     case 'delivered':
       return 'delivered';

@@ -77,6 +77,7 @@ describe('delivery view', () => {
     expect(deliveryView({ phase: 'sent', label: 'allow', at: 0 }, { ...it, status: 'answered', delivery: 'delivering' })).toBe('delivering');
     expect(deliveryView({ phase: 'sent', label: 'allow', at: 0 }, { ...it, status: 'answered', delivery: 'delivered' })).toBe('delivered');
     expect(deliveryView({ phase: 'sent', label: 'allow', at: 0 }, { ...it, status: 'answered', delivery: 'failed' })).toBe('failed');
+    expect(deliveryView({ phase: 'sent', label: 'answer', at: 0 }, { ...it, status: 'open', delivery: 'none', delivery_error: 'Answer not sent' })).toBe('error');
     expect(deliveryView({ phase: 'unknown', label: 'allow', at: 0 }, it)).toBe('unknown');
     expect(deliveryView({ phase: 'unknown', label: 'allow', at: 0 }, { ...it, status: 'answered', delivery: 'delivered' })).toBe('delivered');
     expect(deliveryView({ phase: 'stale', label: 'allow', at: 0 }, it)).toBe('stale');
