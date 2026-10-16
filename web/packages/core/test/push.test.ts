@@ -43,17 +43,26 @@ function fakePush(): PushSupport & { subs: number; current: PushSubscriptionInfo
   return p;
 }
 
-function setup(hosts: string[], shares: string[] = []) {
+function setup(hosts: string[], shares: string[] = [], legacy?: { cacheAlerts: boolean; failAfterSave?: boolean }) {
   const calls: [string, string, any][] = [];
+  const devicePrefs = { privacy: 'minimal', notify_input: true, notify_done: true, notify_cache_cold: legacy?.cacheAlerts };
   const platform = testPlatform((sock, url) => {
     const host = new URL(url.replace('wss:', 'https:')).searchParams.get('host')!;
     serveGateway(sock, {
       hostPrivate: HOST,
       handle(method, params) {
         calls.push([host, method, params]);
-        if (method === 'hello') return { host_name: host, device_id: 'd', scope: 'full', server_version: '1', features: [] };
+        if (method === 'hello') return { host_name: host, device_id: 'd', scope: 'full', server_version: '1', features: legacy ? ['cache_cold'] : [] };
         if (method === 'dashboard.get') return { at: 1, workspaces: [], tabs: [], panes: [], runs: [], interactions: [], tasks: [] };
         if (method === 'events.subscribe') return { at: 1 };
+        if (method === 'prefs.get') return { device: devicePrefs, host: { dnd_until: 0 } };
+        if (method === 'prefs.set') {
+          Object.assign(devicePrefs, params.device);
+          if (legacy?.failAfterSave) {
+            legacy.failAfterSave = false;
+            throw { code: -32000, message: 'Reply failed after saving' };
+          }
+        }
         return {};
       },
     });
@@ -64,7 +73,7 @@ function setup(hosts: string[], shares: string[] = []) {
   const push = fakePush();
   const keystore = new MemKeyStore();
   const sync = new PushSync({ manager, push, keystore, random: randomBytes });
-  return { calls, manager, push, keystore, sync };
+  return { calls, manager, push, keystore, sync, devicePrefs };
 }
 
 describe('VAPID keys', () => {
@@ -110,7 +119,57 @@ describe('PushSync', () => {
     expect(subs[0]![2].vapid_private).toBe(b64.encode(keys.privateKey));
     expect(subs[0]![2].subscription.endpoint).toBe('https://web.push.apple.com/ep1');
     expect(typeof subs[0]![2].op_id).toBe('string');
+    expect(calls.some((c) => c[1].startsWith('prefs.'))).toBe(false);
     manager.stop();
+  });
+
+  test('existing subscriptions disable retired cache alerts on older hosts once', async () => {
+    const s = setup(['own'], ['shared'], { cacheAlerts: true });
+    await s.manager.start();
+    await flush(30);
+    const keys = await loadOrCreateVapid(s.keystore, randomBytes);
+    s.push.current = { endpoint: 'https://web.push.apple.com/existing', keys: { p256dh: 'pk', auth: 'au' } };
+    await s.keystore.set('push_sent', new TextEncoder().encode(JSON.stringify({ own: `${s.push.current.endpoint}|${b64.encode(keys.publicKey)}` })));
+
+    try {
+      await s.sync.start();
+      const changes = s.calls.filter((c) => c[1] === 'prefs.set');
+      expect(changes).toHaveLength(1);
+      expect(changes[0]![0]).toBe('own');
+      expect(changes[0]![2].device).toEqual({ notify_cache_cold: false });
+      expect(typeof changes[0]![2].op_id).toBe('string');
+      expect(s.devicePrefs).toEqual({ privacy: 'minimal', notify_input: true, notify_done: true, notify_cache_cold: false });
+      expect(s.calls.some((c) => c[0] === 'shared' && c[1].startsWith('prefs.'))).toBe(false);
+
+      s.sync.stop();
+      const again = new PushSync({ manager: s.manager, push: s.push, keystore: s.keystore, random: randomBytes });
+      await again.start();
+      expect(s.calls.filter((c) => c[1] === 'prefs.get')).toHaveLength(1);
+      expect(s.calls.filter((c) => c[1] === 'push.subscribe')).toHaveLength(1);
+      again.stop();
+    } finally {
+      s.sync.stop();
+      s.manager.stop();
+    }
+  });
+
+  test('an uncertain preference update is read back before another sync', async () => {
+    const s = setup(['h1'], [], { cacheAlerts: true, failAfterSave: true });
+    await s.manager.start();
+    await flush(30);
+    try {
+      await s.sync.start();
+      await s.sync.enable();
+      expect(s.calls.filter((c) => c[1] === 'prefs.set')).toHaveLength(1);
+      expect(s.calls.filter((c) => c[1] === 'push.subscribe')).toHaveLength(0);
+      await s.sync.syncAll();
+      expect(s.calls.filter((c) => c[1] === 'prefs.get')).toHaveLength(2);
+      expect(s.calls.filter((c) => c[1] === 'prefs.set')).toHaveLength(1);
+      expect(s.calls.filter((c) => c[1] === 'push.subscribe')).toHaveLength(1);
+    } finally {
+      s.sync.stop();
+      s.manager.stop();
+    }
   });
 
   test('supports_clear is sent only when the browser accepts silent pushes', async () => {
