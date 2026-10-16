@@ -46,24 +46,6 @@ enum Push {
     NeedsYou,
     /// A run finished (`notify_done`); replaces the host's notification.
     Done,
-    /// An idle run's prompt cache expires soon (`notify_cache_cold`); its own notification.
-    CacheCold,
-}
-
-/// How long a harness keeps an idle conversation's prompt cache. `None`: no notice.
-pub fn cache_ttl(harness: &str) -> Option<Duration> {
-    match harness {
-        "claude" | "codex" => Some(Duration::from_secs(300)),
-        _ => None,
-    }
-}
-
-/// The cache notice comes this long before the cache expires.
-const CACHE_LEAD: Duration = Duration::from_secs(45);
-
-/// When to send the cache notice after a run went idle.
-pub fn cache_notice_after(harness: &str) -> Option<Duration> {
-    cache_ttl(harness).map(|ttl| ttl.saturating_sub(CACHE_LEAD))
 }
 
 /// Per device, the open item keys its current needs-you notification shows. When none of them
@@ -86,7 +68,6 @@ impl Shown {
                 Push::NeedsYou | Push::Done => {
                     self.by_device.remove(&device);
                 }
-                Push::CacheCold => {}
             }
         }
     }
@@ -138,9 +119,6 @@ pub async fn run(gw: Arc<Gateway>) {
     // Pending "finished" checks: run id → debounce generation.
     let mut finished: HashMap<String, u64> = HashMap::new();
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<(String, u64)>(64);
-    // Pending prompt-cache notices: run id → generation (one per idle period).
-    let mut cold: HashMap<String, u64> = HashMap::new();
-    let (cold_tx, mut cold_rx) = tokio::sync::mpsc::channel::<(String, u64)>(64);
     let mut gen_counter = 0u64;
     let host = gw.keys.host_id();
     loop {
@@ -197,23 +175,9 @@ pub async fn run(gw: Arc<Gateway>) {
                                     tokio::time::sleep(Duration::from_secs(30)).await;
                                     let _ = tx.send((r, g)).await;
                                 });
-                                // The prompt cache starts to age now; only looked up when a
-                                // device wants the notice.
-                                if gw.devices().iter().any(|d| d.prefs.notify_cache_cold)
-                                    && let Ok(r) = gw.server.call("agent.get", json!({"target": run})).await
-                                    && let Some(after) = r.pointer("/run/harness").and_then(|h| h.as_str()).and_then(cache_notice_after)
-                                {
-                                    cold.insert(run.to_string(), gen_counter);
-                                    let (tx, r, g) = (cold_tx.clone(), run.to_string(), gen_counter);
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(after).await;
-                                        let _ = tx.send((r, g)).await;
-                                    });
-                                }
                             }
                             "working" => {
                                 finished.remove(run);
-                                cold.remove(run);
                                 open.items.remove(&format!("run:{run}"));
                             }
                             "error" | "rate_limited" => {
@@ -224,12 +188,6 @@ pub async fn run(gw: Arc<Gateway>) {
                                 shown.sent(Push::NeedsYou, sent);
                             }
                             _ => {}
-                        }
-                    }
-                    // A new turn or the end of the run: no cache notice for this idle period.
-                    "agent.turn_started" | "agent.exited" | "agent.session_ended" => {
-                        if let Some(run) = subject.get("run").and_then(|r| r.as_str()) {
-                            cold.remove(run);
                         }
                     }
                     // A pane asks the user to approve one call (09 §3.2 "Approved calls"): the
@@ -293,23 +251,6 @@ pub async fn run(gw: Arc<Gateway>) {
                     done.items.insert(format!("run:{run}"), Item::new(title, format!("#/r/{host}/{run}"), false, pane));
                     let sent = send(&gw, &done, Push::Done).await;
                     shown.sent(Push::Done, sent);
-                }
-            }
-            Some((run, g)) = cold_rx.recv() => {
-                if cold.get(&run) != Some(&g) { continue; }
-                cold.remove(&run);
-                let Ok(r) = gw.server.call("agent.get", json!({"target": run})).await else { continue };
-                let mut r = r;
-                normalize(&mut r);
-                let idle = r.pointer("/run/execution/value").and_then(|v| v.as_str()) == Some("idle");
-                let open_its = r.get("open_interactions").and_then(|v| v.as_u64()).unwrap_or(0);
-                // A run waiting on the user already has its own notification.
-                if idle && open_its == 0 {
-                    let title = format!("{}: prompt cache expires soon", describe_run(&gw, &run).await);
-                    let mut note = Open::default();
-                    let pane = r.pointer("/run/pane").and_then(|p| p.as_str()).map(str::to_string);
-                    note.items.insert(format!("cache:{run}"), Item::new(title, format!("#/r/{host}/{run}"), false, pane));
-                    send(&gw, &note, Push::CacheCold).await;
                 }
             }
         }
@@ -543,20 +484,12 @@ async fn send(gw: &Arc<Gateway>, open: &Open, kind: Push) -> Vec<(String, Vec<St
         let urgent = visible.items.values().any(|i| i.urgent);
         let wanted = match kind {
             Push::Done => d.prefs.notify_done,
-            Push::CacheCold => d.prefs.notify_cache_cold,
             Push::NeedsYou => !urgent || d.prefs.notify_input,
         };
         if !wanted {
             continue;
         }
-        let mut p = payload(gw, &visible, &d.prefs.privacy);
-        if kind == Push::CacheCold
-            && let Some(key) = visible.items.keys().next()
-        {
-            // Its own notification: it must not replace what needs the user.
-            p["tag"] = format!("vibeke:{}:{key}", gw.keys.host_id()).into();
-            p["renotify"] = false.into();
-        }
+        let p = payload(gw, &visible, &d.prefs.privacy);
         sent.push((d.id.clone(), visible.items.keys().cloned().collect()));
         let gw = gw.clone();
         tokio::spawn(async move {
@@ -614,29 +547,10 @@ mod tests {
             vec![("phone".into(), vec!["i2".into(), "note:n1".into()])],
         );
         assert!(shown.resolved(&open(&[])).is_empty());
-        // A cache notice has its own tag and changes nothing.
-        shown.sent(Push::NeedsYou, vec![("phone".into(), vec!["i3".into()])]);
-        shown.sent(
-            Push::CacheCold,
-            vec![("phone".into(), vec!["cache:r1".into()])],
-        );
-        assert_eq!(shown.resolved(&open(&[])), vec!["phone".to_string()]);
         assert_eq!(
             clear_payload("h1"),
             json!({"kind": "clear", "tag": "vibeke:h1", "host": "h1"})
         );
-    }
-
-    #[test]
-    fn cache_notice_comes_before_the_harness_cache_expires() {
-        for h in ["claude", "codex"] {
-            assert_eq!(cache_ttl(h), Some(Duration::from_secs(300)), "{h}");
-            let after = cache_notice_after(h).unwrap();
-            assert!(after < Duration::from_secs(300) && after >= Duration::from_secs(200));
-        }
-        for h in ["pi", "opencode", "gemini", ""] {
-            assert_eq!(cache_notice_after(h), None, "{h}");
-        }
     }
 
     #[test]

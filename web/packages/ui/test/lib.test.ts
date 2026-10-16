@@ -189,7 +189,7 @@ describe('prefs', () => {
   test('lenient parse with defaults', () => {
     expect(parsePrefs(null)).toEqual(DEFAULT_PREFS);
     expect(parsePrefs('not json')).toEqual(DEFAULT_PREFS);
-    const p = parsePrefs(JSON.stringify({ theme: 'light', termFont: 99, panelWidth: 5000, collapsed: ['done', 1], hostFilter: 7, pins: ['a/b', 3], quickReplies: { claude: ['go', '', 5] }, bogus: 1 }));
+    const p = parsePrefs(JSON.stringify({ theme: 'light', termFont: 99, panelWidth: 5000, collapsed: ['done', 1], hostFilter: 7, pins: ['a/b', 3], quickReplies: { claude: ['go', '', 5] }, cacheTtl: { claude: 60, codex: 5 }, bogus: 1 }));
     expect(p.theme).toBe('light');
     expect(p.panelWidth).toBe(760);
     expect(p.collapsed).toEqual(['done']);
@@ -198,6 +198,7 @@ describe('prefs', () => {
     expect(p.termFont).toBe(DEFAULT_PREFS.termFont);
     expect(p.pins).toEqual(['a/b']);
     expect(p.quickReplies).toEqual({ claude: ['go'] });
+    expect('cacheTtl' in p).toBe(false);
     expect((p as any).bogus).toBeUndefined();
   });
   test('store persists, pins toggle, seen marks', () => {
