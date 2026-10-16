@@ -182,6 +182,64 @@ async fn codex_follow_up_questions_stay_open_across_tools_and_steers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn codex_reply_during_editor_restoration_keeps_delivery_confirmed() {
+    let e = env();
+    let run = add_run(&e, "r-codex-confirm", "p-codex-confirm", |r| {
+        r.harness = "codex".into();
+    });
+    let original = ask(&e, &run, "call_confirm");
+    let (id, qid) = e.server.with_core(|c| {
+        let mut it = c.interaction(&original).unwrap().clone();
+        let qid = it.questions[0].id.clone();
+        it.id = codex_questions::interaction_id(&run.id, &qid);
+        it.native_ref = Some(format!("codex-question:{qid}"));
+        it.status = InteractionStatus::Answered;
+        it.delivery = DeliveryState::Delivering;
+        it.answer = Some(Answer {
+            text: Some("Keep the service running".into()),
+            ..Default::default()
+        });
+        let id = it.id.clone();
+        let mut tx = Tx::new();
+        tx.interaction(it);
+        e.server.commit(c, tx).unwrap();
+        (id, qid)
+    });
+    // An unrelated reply cannot confirm this answer.
+    codex_questions::sync_answers(
+        &e.server,
+        &run,
+        &HashMap::from([(qid.clone(), "Another answer".into())]),
+    );
+    let delivery = || {
+        e.server.with_core(|c| {
+            c.store
+                .find::<Interaction>("interaction", &id)
+                .unwrap()
+                .unwrap()
+                .delivery
+        })
+    };
+    assert_eq!(delivery(), DeliveryState::Delivering);
+    codex_questions::sync_answers(
+        &e.server,
+        &run,
+        &HashMap::from([(qid, "Keep the service running".into())]),
+    );
+    assert_eq!(delivery(), DeliveryState::Delivered);
+    // The in-flight screen walk finishes after the transcript has confirmed delivery.
+    for state in [
+        DeliveryState::DecisionRecorded,
+        DeliveryState::DeliveryUnknown,
+        DeliveryState::Failed,
+    ] {
+        set_delivery(&e.server, &id, state, Some("stale screen result".into()));
+        assert_eq!(delivery(), DeliveryState::Delivered);
+        assert_eq!(status(&e, &id), InteractionStatus::Answered);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_new_prompt_closes_an_open_question() {
     let e = env();
     let run = add_run(&e, "r-ask", "p-ask", |_| {});

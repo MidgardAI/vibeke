@@ -186,7 +186,7 @@ fn queued_steers(text: &str) -> bool {
         && text.contains("Queued follow-up inputs")
 }
 
-fn interaction_id(run: &str, question: &str) -> String {
+pub(super) fn interaction_id(run: &str, question: &str) -> String {
     format!(
         "cq{}",
         Sha256::digest(json!([run, question]).to_string().as_bytes())
@@ -236,7 +236,9 @@ pub(super) fn sync_answers(
             && it.status == InteractionStatus::Answered
             && matches!(
                 it.delivery,
-                DeliveryState::DecisionRecorded | DeliveryState::DeliveryUnknown
+                DeliveryState::Delivering
+                    | DeliveryState::DecisionRecorded
+                    | DeliveryState::DeliveryUnknown
             )
             && let Some(answer) = &it.answer
             && answer_text(&it, answer).is_ok_and(|(expected, _)| expected.trim() == value.trim())

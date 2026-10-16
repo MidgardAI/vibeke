@@ -2326,7 +2326,11 @@ fn set_delivery(server: &Server, id: &str, state: DeliveryState, error: Option<S
     }) else {
         return;
     };
-    if it.delivery == state {
+    // A rollout reply can confirm an async answer while its editor is still restoring.
+    // The older screen result must never replace that durable confirmation.
+    if it.delivery == state
+        || (codex_questions::is_async(&it) && it.delivery == DeliveryState::Delivered)
+    {
         return;
     }
     it.delivery = state;
