@@ -527,13 +527,12 @@ fn features(gw: &Gateway) -> Vec<&'static str> {
         "transcript",
         "workspace_views",
         // New agents in a worktree or folder, catch-up (`agent.turns`, the assistant), search,
-        // browser previews, `clear` pushes and prompt-cache notices.
+        // browser previews and `clear` pushes.
         "agent_new_workspace",
         "catch_up",
         "search",
         "browser_preview",
         "push_clear",
-        "cache_cold",
         "wasm_tui",
         "wasm_tui_share",
         // Embedded previews in the desktop app (`tunnel.*`, spec 06 B3.5).

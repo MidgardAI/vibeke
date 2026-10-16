@@ -375,7 +375,6 @@ Git execution rules (git can run configured programs):
 | `agent.state_changed` to `error` / `rate_limited` | "Claude · dashboard stopped: rate limited" |
 | `auth.approval_requested` (a pane asks to run one call, 09 §3.2) | "A pane asks to send a handoff", urgent, link `#/approve/<host>/<request>`; owner devices only; ended by `auth.approval_granted|denied|withdrawn` |
 | `notification.created` with urgency ≥ normal and **not** generated for an interaction already pushed (nor the high-urgency `auth.approve` one, pushed above) | title/body |
-| `agent.state_changed` from `working` to `idle`, harness with a known prompt-cache lifetime (Claude and Codex: 300 s) | "Claude · backend: prompt cache expires soon", 45 s before expiry, link `#/r/<host>/<run>`; per-device `notify_cache_cold` (default off); one per idle period, cancelled by a new turn, `working` again or the run ending, and skipped while the run has an open interaction; own tag `vibeke:<host id>:cache:<run>` |
 
 - One notification per host (`tag = vibeke:<host id>`), merged: one item shows its own text, several show "3 agents need you". `renotify` only when a new item is added.
 - Visible notifications only (WebKit revokes push permission for silent pushes). When items resolve, the app closes stale notifications on its next foreground via `registration.getNotifications()`. A device whose app said `push.subscribe {supports_clear: true}` also gets `{kind: "clear", tag: "vibeke:<host id>", host}` when every item its current notification showed is resolved (answered on another device or at the desk). A notification that a "finished" push or a notice replaced is never cleared this way. Apps opt in only where closing a notification from a push is allowed.
@@ -448,7 +447,7 @@ Inventory from an existing phone companion. It scrapes dialogs from pane text in
 | Tour | One-time intro per device; push setup offered after it |
 | Install / offline | `beforeinstallprompt` capture, iOS share-sheet guide; cached shell serves deep links offline; an offline pane shows its last mirror with "last seen" |
 
-Deferred: i18n beyond English (strings in one typed dictionary), in-app self-update (PWA update replaces it), prompt-cache warnings, chat view.
+Deferred: i18n beyond English (strings in one typed dictionary), in-app self-update (PWA update replaces it), chat view.
 
 ### 9.2 Decisions first
 

@@ -26,7 +26,6 @@ import {
   SquareTerminal,
   X,
 } from 'lucide-react';
-import { CacheChip } from '../components/cache-chip';
 import { PressRow, RowActionSheet } from '../components/pane-row';
 import { Badge, HarnessIcon, IconButton, Kbd, RelTime, Row, SectionHeader, StatusDot, cx, type Status } from '../components/ui';
 import { t } from '../i18n';
@@ -160,12 +159,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
             {status && <StatusDot status={status} ring className="absolute -bottom-1 -right-1 [--ring:var(--sidebar-bg)]" />}
           </span>
         }
-        trailing={
-          <>
-            <CacheChip run={r.primary?.run} inRow />
-            {r.open > 0 ? <Badge n={r.open} /> : <RelTime ms={r.lastActivityMs} />}
-          </>
-        }
+        trailing={r.open > 0 ? <Badge n={r.open} /> : <RelTime ms={r.lastActivityMs} />}
         sub={
           sub.length ? (
             <>
@@ -202,12 +196,7 @@ export function Sidebar({ route, mode }: { route: Route; mode: 'inline' | 'drawe
               className={cx(stale && 'opacity-60')}
               title={paneLabel(p)}
               leading={p.run ? <HarnessIcon harness={p.run.harness} /> : <SquareTerminal className="size-3.5 text-muted" strokeWidth={1.75} />}
-              trailing={
-                <>
-                  <CacheChip run={p.run} inRow />
-                  {ps ? <StatusDot status={ps} /> : undefined}
-                </>
-              }
+              trailing={ps ? <StatusDot status={ps} /> : undefined}
             >
               <span className="truncate text-[13px] text-fg/80">
                 {paneLabel(p)}

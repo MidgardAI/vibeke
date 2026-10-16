@@ -96,7 +96,6 @@ In **Settings → Alerts**, choose when the app notifies you:
 
 - **When an agent needs you**
 - **When an agent finishes**
-- **Cache going cold**: a warning before an idle agent loses its prompt cache. See [Prompt cache](#prompt-cache).
 
 Use **Do not disturb** to pause alerts for 30 minutes, 1 hour or 4 hours.
 **Notification detail** sets how much a push shows on the lock screen.
@@ -171,12 +170,6 @@ Tap **Send now** to stop the current step and give the messages to the agent at 
 The file viewer previews Markdown, images, SVG and JSON. Use **Source** and **Preview** to switch views.
 Large JSON shows only the first values. Images that are too large to preview show a notice.
 Images in the conversation appear inline. Tap one to open it.
-
-### Prompt cache
-
-An agent keeps your conversation in a short-lived cache on its provider. A message sent while the cache is warm is faster and costs less.
-The **Prompt cache** chip shows how long is left. Tap it for details.
-Set how long each agent keeps its cache in **Settings → Prompt cache**.
 
 ### Type, speak and send keys
 

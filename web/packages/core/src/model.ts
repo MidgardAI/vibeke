@@ -903,8 +903,6 @@ export interface DevicePrefs {
   privacy: 'full' | 'summary' | 'minimal';
   notify_input: boolean;
   notify_done: boolean;
-  /** Notify shortly before an idle Claude or Codex run's prompt cache expires (older gateways omit it). */
-  notify_cache_cold?: boolean;
 }
 
 /** One recorded turn of a run (`agent.turns`; the server's Turn record, passed through). */

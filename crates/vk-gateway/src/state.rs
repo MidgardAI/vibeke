@@ -75,9 +75,6 @@ pub struct DevicePrefs {
     pub notify_input: bool,
     #[serde(default)]
     pub notify_done: bool,
-    /// Notify shortly before an idle agent's prompt cache expires (`notify::cache_ttl`).
-    #[serde(default)]
-    pub notify_cache_cold: bool,
 }
 
 fn default_privacy() -> String {
@@ -1126,6 +1123,30 @@ mod tests {
             review: None,
             team_check: None,
         }
+    }
+
+    #[test]
+    fn devices_with_retired_cache_preferences_still_load() {
+        let t = tempfile::tempdir().unwrap();
+        let s = StateDir::open(t.path().join("gw")).unwrap();
+        let mut saved = serde_json::to_value([device("phone", None)]).unwrap();
+        saved[0]["prefs"] = serde_json::json!({
+            "privacy": "minimal",
+            "notify_input": true,
+            "notify_done": true,
+            "notify_cache_cold": true,
+        });
+        write_json(&s.path("devices.json"), &saved).unwrap();
+
+        let devices = s.devices().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "phone");
+        assert_eq!(devices[0].prefs.privacy, "minimal");
+        assert!(devices[0].prefs.notify_input);
+        assert!(devices[0].prefs.notify_done);
+        s.save_devices(&devices).unwrap();
+        let saved: serde_json::Value = read_json_or_default(&s.path("devices.json")).unwrap();
+        assert!(saved[0]["prefs"].get("notify_cache_cold").is_none());
     }
 
     #[test]
