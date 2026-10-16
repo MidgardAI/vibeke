@@ -43,8 +43,8 @@ export async function loadOrCreateVapid(store: KeyStore, random: (n: number) => 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Marker of what a host last received: endpoint + VAPID public key. */
-const marker = (sub: PushSubscriptionInfo, keys: VapidKeys, clear = false): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}${clear ? '|clear' : ''}`;
+/** Re-register existing subscriptions once to disable the retired cache alerts on older hosts. */
+const marker = (sub: PushSubscriptionInfo, keys: VapidKeys, clear = false): string => `${sub.endpoint}|${b64.encode(keys.publicKey)}${clear ? '|clear' : ''}|no-cache-alerts`;
 
 /**
  * Push goes only to the user's own hosts: the VAPID private key lets a host sign pushes as this
@@ -195,21 +195,26 @@ export class PushSync {
       if (!force && this.sent[c.id] === want) continue;
       this.inflight.add(c.id);
       jobs.push(
-        c
-          .request('push.subscribe', {
-            subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
-            vapid_private: b64.encode(keys.privateKey),
-            ...(clear ? { supports_clear: true } : {}),
-          })
-          .then(
-            () => {
-              this.sent[c.id] = want;
-            },
-            () => {
-              // Leave the marker stale; the next online transition retries.
-            },
-          )
-          .finally(() => this.inflight.delete(c.id)),
+        (async () => {
+          try {
+            if (st.info?.features.includes('cache_cold')) {
+              const { device } = await c.request('prefs.get', {});
+              if (device.notify_cache_cold === true) {
+                await c.request('prefs.set', { device: { notify_cache_cold: false } });
+              }
+            }
+            await c.request('push.subscribe', {
+              subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
+              vapid_private: b64.encode(keys.privateKey),
+              ...(clear ? { supports_clear: true } : {}),
+            });
+            this.sent[c.id] = want;
+          } catch {
+            // Leave the marker stale. The next sync reads prefs again before writing them.
+          } finally {
+            this.inflight.delete(c.id);
+          }
+        })(),
       );
     }
     if (jobs.length === 0) return;

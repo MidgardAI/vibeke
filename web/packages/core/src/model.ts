@@ -903,6 +903,8 @@ export interface DevicePrefs {
   privacy: 'full' | 'summary' | 'minimal';
   notify_input: boolean;
   notify_done: boolean;
+  /** Retired preference reported by older gateways; retained only to disable their cache alerts. */
+  notify_cache_cold?: boolean;
 }
 
 /** One recorded turn of a run (`agent.turns`; the server's Turn record, passed through). */
@@ -1259,7 +1261,7 @@ export interface AppApi {
   'events.subscribe': { params: { after?: number }; result: { at: number; reset?: boolean } };
   /** `dnd_until` is unix seconds; 0 = off. */
   'prefs.get': { params: Record<string, never>; result: { device: DevicePrefs; host: { dnd_until?: number } } };
-  'prefs.set': { params: { device?: DevicePrefs; host?: { dnd_until: number } }; result: unknown };
+  'prefs.set': { params: { device?: Partial<DevicePrefs>; host?: { dnd_until: number } }; result: unknown };
   'push.subscribe': {
     /** `supports_clear`: the service worker closes this host's notification on a `{kind: "clear", tag, host}` push. */
     params: {
