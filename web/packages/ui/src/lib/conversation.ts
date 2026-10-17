@@ -81,7 +81,7 @@ export function turnSteps(turn: TranscriptTurn): ConvBlock[] {
       }
       case 'thinking': {
         const text = (it.text ?? it.summary ?? '').trim();
-        if (text) out.push({ k: 'thinking', key, text });
+        if (text && text !== '[]' && text !== 'null') out.push({ k: 'thinking', key, text });
         return;
       }
       case 'image': {
@@ -112,11 +112,13 @@ export function turnSteps(turn: TranscriptTurn): ConvBlock[] {
 const isStep = (b: ConvBlock): b is Step => b.k === 'tool' || b.k === 'thinking';
 
 /** Fold runs of more than FOLD_OVER consecutive steps: the older ones become one "N steps" block. */
-export function foldSteps(blocks: ConvBlock[]): ConvBlock[] {
+export function foldSteps(blocks: ConvBlock[], completed = false): ConvBlock[] {
   const out: ConvBlock[] = [];
   let run: Step[] = [];
   const flush = () => {
-    if (run.length > FOLD_OVER) {
+    if (completed && run.length) {
+      out.push({ k: 'steps', key: `steps:${run[0]!.key}`, steps: run });
+    } else if (run.length > FOLD_OVER) {
       const hidden = run.slice(0, run.length - FOLD_KEEP);
       out.push({ k: 'steps', key: `steps:${hidden[0]!.key}`, steps: hidden });
       out.push(...run.slice(run.length - FOLD_KEEP));
@@ -134,7 +136,7 @@ export function foldSteps(blocks: ConvBlock[]): ConvBlock[] {
   return out;
 }
 
-export const turnBlocks = (turn: TranscriptTurn): ConvBlock[] => foldSteps(turnSteps(turn));
+export const turnBlocks = (turn: TranscriptTurn, completed = false): ConvBlock[] => foldSteps(turnSteps(turn), completed);
 
 /** `45s`, `31m 46s`, `2h 5m`. */
 export function workedFor(ms: number): string {
@@ -143,7 +145,7 @@ export function workedFor(ms: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
+  return `${h}h ${m % 60}m ${s % 60}s`;
 }
 
 export interface TurnStats {

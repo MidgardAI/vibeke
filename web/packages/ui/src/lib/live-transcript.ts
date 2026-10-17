@@ -4,14 +4,26 @@
 // `LatestFeed` owns the fetch loop: one request in flight per run, follow-ups coalesced, and every
 // response fenced by the run it was asked for, so a slow answer for run A never lands on run B.
 
-import type { AppEvent, HostManagerApi } from '@vibeke/core';
+import type { AgentRun, AppEvent, HostManagerApi, TranscriptPage } from '@vibeke/core';
+
+type ConversationRun = Pick<AgentRun, 'id' | 'harness_session_id' | 'transcript_path'>;
+
+/** `/new` replaces the conversation inside the same process/run. */
+export const conversationKey = (run: ConversationRun): string => JSON.stringify([run.id, run.harness_session_id, run.transcript_path]);
+
+/** Reject a prefetched or delayed page from the previous conversation. */
+export function transcriptMatchesRun(page: TranscriptPage, run: ConversationRun): boolean {
+  return page.run === run.id &&
+    (page.session_id === undefined || page.session_id === run.harness_session_id) &&
+    (page.transcript_path === undefined || page.transcript_path === run.transcript_path);
+}
 
 /** Debounce for event-triggered refetches (events come in bursts: state + turn + usage). */
 export const EVENT_DEBOUNCE_MS = 200;
 /** While the agent works and events flow, a slow poll covers changes no event announces. */
 export const SAFETY_POLL_MS = 15_000;
 
-const AGENT_TYPES = new Set(['agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'agent.session_ended', 'agent.exited', 'agent.rate_limited', 'agent.bg_tasks_changed']);
+const AGENT_TYPES = new Set(['agent.identified', 'agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'agent.session_ended', 'agent.exited', 'agent.rate_limited', 'agent.bg_tasks_changed']);
 
 /** An event that may change what the run's newest turns show. */
 export function isRunEvent(e: AppEvent, run: string, pane: string | null): boolean {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { AppEvent } from '@vibeke/core';
-import { EVENT_DEBOUNCE_MS, LatestFeed, isRunEvent, watchRunEvents, type FeedClock } from '../src/lib/live-transcript';
+import { conversationKey, transcriptMatchesRun, EVENT_DEBOUNCE_MS, LatestFeed, isRunEvent, watchRunEvents, type FeedClock } from '../src/lib/live-transcript';
 
 /** Manual clock: timers fire on `advance`. */
 function fakeClock() {
@@ -46,7 +46,7 @@ const ev = (type: string, subject: Record<string, string>, seq = 1): AppEvent =>
 
 describe('run events', () => {
   test('the run (or its pane) and the types that change its newest turns', () => {
-    for (const type of ['agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'interaction.opened', 'interaction.resolved'])
+    for (const type of ['agent.identified', 'agent.turn_started', 'agent.turn_completed', 'agent.state_changed', 'agent.usage', 'agent.file_changed', 'interaction.opened', 'interaction.resolved'])
       expect(isRunEvent(ev(type, { run: 'r1' }), 'r1', 'p1')).toBe(true);
     expect(isRunEvent(ev('interaction.opened', { pane: 'p1' }), 'r1', 'p1')).toBe(true);
     expect(isRunEvent(ev('agent.turn_started', { run: 'r2', pane: 'p2' }), 'r1', 'p1')).toBe(false);
@@ -78,6 +78,18 @@ describe('run events', () => {
     expect(watchRunEvents(null, 'h1', 'r1', 'p1', () => {})).toBeNull();
     expect(watchRunEvents({} as never, 'h1', 'r1', 'p1', () => {})).toBeNull();
   });
+});
+
+test('a new session in the same run has a fresh view and rejects the previous session page', () => {
+  const old = { id: 'r1', harness_session_id: 's1', transcript_path: '/tmp/s1.jsonl' };
+  const next = { ...old, harness_session_id: 's2', transcript_path: '/tmp/s2.jsonl' };
+  expect(conversationKey(old)).not.toBe(conversationKey(next));
+  expect(conversationKey(next)).not.toBe(conversationKey({ ...next, transcript_path: null }));
+  const page = { run: 'r1', session_id: 's1', transcript_path: '/tmp/s1.jsonl', turns: [] };
+  expect(transcriptMatchesRun(page, old)).toBe(true);
+  expect(transcriptMatchesRun(page, next)).toBe(false);
+  expect(transcriptMatchesRun({ ...page, session_id: 's2' }, next)).toBe(false);
+  expect(transcriptMatchesRun({ run: 'r1', turns: [] }, next)).toBe(true); // older servers
 });
 
 describe('LatestFeed', () => {

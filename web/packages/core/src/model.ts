@@ -528,7 +528,7 @@ export interface TranscriptItem {
   text?: string | null;
   /** `tool_call`: the tool name. */
   tool?: string | null;
-  /** `tool_call` input / `tool_result` output, one line, ≤ 160 chars. */
+  /** `tool_call` input / `tool_result` output preview, one line, ≤ 160 chars. Full detail is in `text` when available. */
   summary?: string | null;
   /** Tool call id (pairs a call with its result). */
   id?: string | null;
@@ -554,7 +554,7 @@ export interface TranscriptTurn {
   n: number;
   ts?: string | number | null;
   items: TranscriptItem[];
-  /** Last item ts − turn start; null when unknown (older servers omit it). */
+  /** Harness elapsed time, else last item ts − turn start; null when unknown (older servers omit it). */
   duration_ms?: number | null;
   /** Tool calls in the turn. */
   tool_count?: number | null;
@@ -572,6 +572,9 @@ export interface TranscriptImage {
 
 export interface TranscriptPage {
   run: string;
+  /** Conversation identity. A run can change sessions without changing its id. Older servers omit these. */
+  session_id?: string | null;
+  transcript_path?: string | null;
   turns: TranscriptTurn[];
   /** Only for a request with `image`. */
   image?: TranscriptImage;

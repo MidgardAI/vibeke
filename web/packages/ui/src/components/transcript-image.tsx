@@ -14,8 +14,11 @@ import { Sheet } from './ui';
 export interface ImageSource {
   host: string;
   target: string;
+  session: string;
 }
 export const ImageSourceContext = createContext<ImageSource | null>(null);
+
+export const transcriptImageKey = (source: ImageSource, imageRef: string): string => JSON.stringify([source.host, source.target, source.session, imageRef]);
 
 /** Largest image the server returns (decoded bytes); bigger ones are not requested. */
 export const IMAGE_MAX_BYTES = 4 * 1024 * 1024;
@@ -31,7 +34,7 @@ function remember(key: string, url: string): void {
 export function TranscriptImage({ mime, imageRef, size }: { mime: string; imageRef: string; size: number | null }) {
   const app = useApp();
   const source = useContext(ImageSourceContext);
-  const key = source ? `${source.host}|${source.target}|${imageRef}` : '';
+  const key = source ? transcriptImageKey(source, imageRef) : '';
   const tooBig = size !== null && size > IMAGE_MAX_BYTES;
   const [url, setUrl] = useState<string | null>(() => cache.get(key) ?? null);
   const [failed, setFailed] = useState(tooBig);
@@ -60,6 +63,10 @@ export function TranscriptImage({ mime, imageRef, size }: { mime: string; imageR
       .then(
         (r) => {
           if (!live) return;
+          if (r.session_id !== undefined && JSON.stringify([r.run, r.session_id, r.transcript_path]) !== source.session) {
+            setFailed(true);
+            return;
+          }
           const data = imageDataUrl(r.image?.mime ?? mime, r.image?.data_b64);
           if (data) {
             remember(key, data);

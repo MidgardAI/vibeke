@@ -110,6 +110,45 @@ fn open_approval(e: &Env, run: &AgentRun, tool_use: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn new_session_drops_the_old_transcript_and_conversation_metadata() {
+    let e = env();
+    let path = e.dir.path().join("old.jsonl");
+    std::fs::write(&path, claude_lines("test-model", 1)).unwrap();
+    let run = add_run(&e, "run-new-session", "pane-new-session", |r| {
+        r.harness_session_id = Some("old-session".into());
+        r.transcript_path = Some(path.display().to_string());
+        r.last_message = Some("Old answer".into());
+        r.last_tool = Some("Old tool".into());
+        r.title = Some("Old title".into());
+    });
+    assert!(tailer::track(&run));
+    identify(
+        &e.server,
+        &run.id,
+        Harness::Claude,
+        &json!({"session_id":"new-session"}),
+    );
+    let current = run_of(&e, &run.id);
+    assert_eq!(current.id, run.id);
+    assert_eq!(current.harness_session_id.as_deref(), Some("new-session"));
+    assert!(current.transcript_path.is_none());
+    assert!(
+        current.last_message.is_none() && current.last_tool.is_none() && current.title.is_none()
+    );
+    assert!(!tailer::tailing().iter().any(|(id, _, _)| id == &run.id));
+    identify(
+        &e.server,
+        &run.id,
+        Harness::Claude,
+        &json!({"session_id":"new-session", "transcript_path":"/tmp/new-session.jsonl"}),
+    );
+    assert_eq!(
+        run_of(&e, &run.id).transcript_path.as_deref(),
+        Some("/tmp/new-session.jsonl")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn tailer_writes_turn_records_items_totals_and_reconciles_approvals() {
     let e = env();
     let path = e.dir.path().join("session.jsonl");

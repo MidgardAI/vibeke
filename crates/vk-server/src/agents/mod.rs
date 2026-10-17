@@ -1681,10 +1681,19 @@ fn identify(server: &Arc<Server>, run: &str, h: Harness, p: &Value) {
         .map(str::to_string);
     let model = p.get("model").and_then(Value::as_str).map(str::to_string);
     let cwd = p.get("cwd").and_then(Value::as_str).map(str::to_string);
+    let changed = std::cell::Cell::new(false);
     update_run(server, run, |r, tx| {
         if let Some(s) = sid
             && r.harness_session_id.as_deref() != Some(s)
         {
+            if r.harness_session_id.is_some() {
+                changed.set(true);
+                // `/new` keeps the process and run, but none of the old conversation's data.
+                r.transcript_path = None;
+                r.last_message = None;
+                r.last_tool = None;
+                r.title = None;
+            }
             r.harness_session_id = Some(s.to_string());
             r.resume_argv = h.resume_argv(s);
             tx.event(
@@ -1702,6 +1711,9 @@ fn identify(server: &Arc<Server>, run: &str, h: Harness, p: &Value) {
         r.model = model.clone().or(r.model.take());
         r.cwd = cwd.clone().or(r.cwd.take());
     });
+    if changed.get() {
+        tailer::untrack(run);
+    }
 }
 
 /// Remember the pane's harness process, then drop transcript tasks older than it (a replay

@@ -46,7 +46,7 @@ import { bgTasksOf, bgToolIds } from '../../lib/bg-tasks';
 import { shortDuration } from '../../lib/format';
 import { toolSummary, type ToolKind } from '../../lib/tool-summary';
 import { takePrefetchedTranscript } from '../../lib/prefetch';
-import { EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
+import { conversationKey, transcriptMatchesRun, EVENT_DEBOUNCE_MS, LatestFeed, SAFETY_POLL_MS, watchRunEvents } from '../../lib/live-transcript';
 import { useGitStatus } from '../../lib/use-git-status';
 import { MAX_HITS, findMatches, locateRange, stepHit, turnSearchText, userJumpTarget } from '../../lib/conv-find';
 import { usePathLinks } from './use-path-links';
@@ -88,7 +88,11 @@ export const runRevision = (run: AgentRun): string =>
 const isUnsupported = (e: unknown): boolean =>
   e instanceof RpcError && (e.kind === 'unsupported' || e.kind === 'not_found' || /no transcript/i.test(e.message));
 
-export function Conversation({
+export function Conversation(props: Parameters<typeof ConversationSession>[0]) {
+  return <ConversationSession key={`${props.hostId}/${conversationKey(props.run)}`} {...props} />;
+}
+
+function ConversationSession({
   hostId,
   pane,
   run,
@@ -130,12 +134,15 @@ export function Conversation({
   const working = run.execution.value === 'working' || run.execution.value === 'starting';
   const runRef = useRef(run.id);
   runRef.current = run.id;
+  const currentRun = useRef(run);
+  currentRun.current = run;
 
   const bgKey = bgTasksOf(run).map((b) => `${b.id}:${b.tool_use_id ?? ''}`).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const bgIds = useMemo(() => bgToolIds(run), [bgKey]);
 
-  const imageSource = useMemo(() => ({ host: hostId, target: run.id }), [hostId, run.id]);
+  const imageSession = conversationKey(run);
+  const imageSource = useMemo(() => ({ host: hostId, target: run.id, session: imageSession }), [hostId, run.id, imageSession]);
 
   /** Scroll to the tool row a background task started (when it is in the loaded, unfolded turns). */
   const jumpToTool = useCallback((id: string) => {
@@ -158,12 +165,14 @@ export function Conversation({
           if (!conn) throw new NotConnectedError(hostId);
           const have = trRef.current.turns.length > 0 && trRef.current.run === target;
           // The first page may already be here: a finger on the row started the fetch (lib/prefetch.ts).
-          const warm = have ? null : takePrefetchedTranscript(hostId, target, app.platform.clock.now());
+          const prefetched = have ? null : takePrefetchedTranscript(hostId, target, app.platform.clock.now());
+          // Legacy pages carry no session identity, so they cannot safely warm a new session.
+          const warm = prefetched && prefetched.session_id !== undefined && transcriptMatchesRun(prefetched, currentRun.current) ? prefetched : null;
           const r = warm ?? (await conn.request('agent.transcript', { target, limit: have ? LIVE_PAGE : FIRST_PAGE }));
           return { r, have };
         },
         apply: (target, { r, have }) => {
-          if (target !== runRef.current) return;
+          if (target !== runRef.current || !transcriptMatchesRun(r, currentRun.current)) return;
           if (nearBottom() || !have) pendingScroll.current = { k: 'bottom' };
           setTr((s) => applyLatest(s.run !== null && s.run !== target ? emptyTranscript() : s, r));
           setPhase('ready');
@@ -194,7 +203,7 @@ export function Conversation({
     setOlderBusy(true);
     try {
       const r = await conn.request('agent.transcript', { target, limit: OLDER_PAGE, before: cur.nextBefore });
-      if (target !== runRef.current) return;
+      if (target !== runRef.current || !transcriptMatchesRun(r, currentRun.current)) return;
       const el = listRef.current;
       if (el) pendingScroll.current = { k: 'keep', height: el.scrollHeight, top: el.scrollTop };
       setTr((s) => (s.run === target ? applyOlder(s, r) : s));
@@ -588,7 +597,7 @@ export function Conversation({
 
 const TurnView = memo(
   function TurnView({ turn, latest, working, cwd, bgIds, adds, dels }: { turn: TranscriptTurn; latest: boolean; working: boolean; cwd: string | null; bgIds: ReadonlySet<string>; adds: number; dels: number }) {
-    const blocks = useMemo(() => turnBlocks(turn), [turn]);
+    const blocks = useMemo(() => turnBlocks(turn, !working), [turn, working]);
     const groups = useMemo(() => groupSteps(blocks), [blocks]);
     const lastStepKey = useMemo(() => {
       for (let i = blocks.length - 1; i >= 0; i--) if (blocks[i]!.k === 'tool') return blocks[i]!.key;
@@ -744,11 +753,12 @@ export function ToolRow({ step, cwd, pending, bgIds }: { step: ToolStep; cwd: st
   const [open, setOpen] = useState(false);
   const call: TranscriptItem | null = step.call;
   const res: TranscriptItem | null = step.result;
-  const s = call ? toolSummary(call.tool, call.summary, cwd) : { kind: 'other' as ToolKind, label: t.conv.result, detail: (res?.summary ?? '').replace(/\s+/g, ' ') };
+  const s = call ? toolSummary(call.tool, call.text ?? call.summary, cwd) : { kind: 'other' as ToolKind, label: t.conv.result, detail: (res?.summary ?? '').replace(/\s+/g, ' ') };
   const Icon = ICONS[s.kind];
   const failed = !!res?.error;
-  const input = call?.summary && call.summary !== 'null' ? call.summary : null;
-  const output = res?.summary || res?.text || null;
+  const rawInput = call?.text ?? call?.summary;
+  const input = rawInput && rawInput !== 'null' ? rawInput : null;
+  const output = res?.text || res?.summary || null;
   const can = !!(input || output);
   const inBg = !!(call?.id && bgIds?.has(call.id));
   return (
@@ -768,7 +778,7 @@ export function ToolRow({ step, cwd, pending, bgIds }: { step: ToolStep; cwd: st
       </button>
       {open && can && (
         <div className="mb-1.5 ml-5.5 space-y-1.5 rounded-md border border-border bg-surface px-2.5 py-2">
-          {input && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-muted">{s.detail && s.kind === 'shell' ? s.detail : input}</pre>}
+          {input && <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-muted">{input}</pre>}
           {output && (
             <pre className={cx('max-h-64 overflow-auto whitespace-pre-wrap break-all border-t border-border pt-1.5 font-mono text-xs', failed ? 'text-del' : 'text-fg/80', !input && 'border-t-0 pt-0')}>
               {output}

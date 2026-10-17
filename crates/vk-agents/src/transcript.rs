@@ -198,6 +198,7 @@ struct CodexAgent {
     id: String,
     runs: u32,
     running: bool,
+    started_ms: Option<i64>,
     /// An end arrived before anything named the agent as started: its start is not reported.
     ended_early: bool,
 }
@@ -1239,11 +1240,9 @@ impl Parser {
         }
     }
 
-    /// A child's final answer to this thread ends its run (rollouts without activity items).
+    /// A child's final answer also ends its run when its completion activity was not written.
     fn codex_agent_message(&mut self, p: &Value, ts: Option<i64>, out: &mut Vec<Event>) {
-        if self.codex_activity
-            || p.get("recipient").and_then(Value::as_str) != Some(self.codex_self.as_str())
-        {
+        if p.get("recipient").and_then(Value::as_str) != Some(self.codex_self.as_str()) {
             return;
         }
         let Some(author) = p
@@ -1258,8 +1257,26 @@ impl Parser {
             .and_then(Value::as_str)
             .unwrap_or("");
         if head.starts_with("Message Type: FINAL_ANSWER") {
+            // The parent may receive a previous task's final answer after starting another.
+            // Current Codex records when the message was created, independently of delivery.
+            let created = p
+                .pointer("/internal_chat_message_metadata_passthrough/create_time")
+                .and_then(Value::as_f64)
+                .filter(|t| t.is_finite())
+                .map(|t| (t * 1000.0).round() as i64);
+            if let Some(a) = self.codex_agents.get(author)
+                && (a
+                    .started_ms
+                    .zip(created)
+                    .is_some_and(|(start, end)| end < start)
+                    || (self.codex_activity
+                        && a.runs > 1
+                        && (created.is_none() || a.started_ms.is_none())))
+            {
+                return;
+            }
             let author = author.to_string();
-            self.codex_agent_end(&author, "completed", ts, out);
+            self.codex_agent_end(&author, "completed", created.or(ts), out);
         }
     }
 
@@ -1291,6 +1308,7 @@ impl Parser {
         }
         a.runs += 1;
         a.running = true;
+        a.started_ms = ts;
         a.id = if a.runs == 1 {
             a.base.clone()
         } else {
@@ -2371,6 +2389,7 @@ mod tests {
         let head = format!("Message Type: {kind}\nTask name: {to}\nSender: {from}\nPayload:\n");
         json!({"timestamp": t, "type": "response_item", "payload": {"type": "agent_message",
             "id": format!("amsg-{t}"), "author": from, "recipient": to,
+            "internal_chat_message_metadata_passthrough": {"create_time": parse_rfc3339_ms(t).unwrap() as f64 / 1000.0},
             "content": [{"type": "input_text", "text": head},
                 {"type": "encrypted_content", "encrypted_content": "gAAAAxyz"}]}})
     }
@@ -2449,6 +2468,147 @@ mod tests {
                 "end t2#2 completed",
                 "end t1 completed",
             ]
+        );
+    }
+
+    #[test]
+    fn codex_final_answers_close_tasks_when_completion_activity_is_missing() {
+        let mut p = Parser::new(Format::CodexRollout);
+        let ev = p.feed(&lines(&[
+            codex_call(
+                "2026-01-01T00:00:01Z",
+                "s1",
+                "spawn_agent",
+                json!({"task_name": "review"}),
+            ),
+            codex_activity(
+                "2026-01-01T00:00:01Z",
+                "s1",
+                "started",
+                "t1",
+                "/root/review",
+            ),
+            codex_out(
+                "2026-01-01T00:00:01Z",
+                "s1",
+                r#"{"task_name":"/root/review"}"#,
+            ),
+            codex_agent_msg("2026-01-01T00:00:02Z", "MESSAGE", "/root/review", "/root"),
+            codex_agent_msg(
+                "2026-01-01T00:00:03Z",
+                "FINAL_ANSWER",
+                "/root/review",
+                "/root",
+            ),
+            // A duplicate or late completion is harmless. A later task still starts normally.
+            codex_activity(
+                "2026-01-01T00:00:04Z",
+                "end1",
+                "completed",
+                "t1",
+                "/root/review",
+            ),
+            codex_agent_msg(
+                "2026-01-01T00:00:04Z",
+                "FINAL_ANSWER",
+                "/root/review",
+                "/root",
+            ),
+            codex_call(
+                "2026-01-01T00:00:05Z",
+                "s2",
+                "followup_task",
+                json!({"target": "review"}),
+            ),
+            codex_activity(
+                "2026-01-01T00:00:05Z",
+                "s2",
+                "interacted",
+                "t1",
+                "/root/review",
+            ),
+            codex_agent_msg(
+                "2026-01-01T00:00:06Z",
+                "FINAL_ANSWER",
+                "/root/review",
+                "/root",
+            ),
+        ]));
+        assert_eq!(
+            bg_brief(&ev),
+            [
+                "start t1 subagent review s1",
+                "end t1 completed",
+                "start t1#2 subagent review s2",
+                "end t1#2 completed",
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_delayed_final_answer_does_not_end_a_newer_task() {
+        let mut p = Parser::new(Format::CodexRollout);
+        p.feed(&lines(&[
+            codex_call(
+                "2026-01-01T00:00:01Z",
+                "s1",
+                "spawn_agent",
+                json!({"task_name":"review"}),
+            ),
+            codex_activity(
+                "2026-01-01T00:00:01Z",
+                "s1",
+                "started",
+                "t1",
+                "/root/review",
+            ),
+            codex_activity(
+                "2026-01-01T00:00:03Z",
+                "e1",
+                "completed",
+                "t1",
+                "/root/review",
+            ),
+            codex_call(
+                "2026-01-01T00:00:05Z",
+                "s2",
+                "followup_task",
+                json!({"target":"review"}),
+            ),
+            codex_activity(
+                "2026-01-01T00:00:05Z",
+                "s2",
+                "interacted",
+                "t1",
+                "/root/review",
+            ),
+        ]));
+        let mut delayed = codex_agent_msg(
+            "2026-01-01T00:00:03Z",
+            "FINAL_ANSWER",
+            "/root/review",
+            "/root",
+        );
+        delayed["timestamp"] = json!("2026-01-01T00:00:06Z");
+        let mut ambiguous = codex_agent_msg(
+            "2026-01-01T00:00:06Z",
+            "FINAL_ANSWER",
+            "/root/review",
+            "/root",
+        );
+        ambiguous["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("internal_chat_message_metadata_passthrough");
+        assert!(bg_brief(&p.feed(&lines(&[delayed, ambiguous]))).is_empty());
+        assert_eq!(
+            bg_brief(&p.feed(&lines(&[codex_agent_msg(
+                "2026-01-01T00:00:07Z",
+                "FINAL_ANSWER",
+                "/root/review",
+                "/root"
+            ),]))),
+            ["end t1#2 completed"]
         );
     }
 

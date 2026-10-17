@@ -115,14 +115,16 @@ test('conversation: transcript turns, tool rows, footer, composer, view toggle, 
   const log = page.getByRole('log', { name: 'Conversation' });
   await expect(log.locator('[data-role="user"]').filter({ hasText: 'Rebuild the homepage hero' })).toBeVisible({ timeout: 30_000 });
   await expect(log.getByText('Ready for review.')).toBeVisible();
+  // Completed turns keep every tool step behind one disclosure per group.
+  const folded = log.locator('[data-turn="2"]').getByRole('button', { name: /^\d+ steps$/ });
+  await expect(folded).toBeVisible();
+  await expect(log.locator('[data-tool="Bash"]')).toHaveCount(0);
+  await folded.click();
   // Tool rows: label + mono summary, relative paths; more than five steps fold.
   const lastBash = log.locator('[data-tool="Bash"]').last();
   await expect(lastBash).toContainText('Shell');
   await expect(lastBash).toContainText('bun test src/hero.test.tsx');
   await expect(log.locator('[data-tool="Edit"]').last()).toContainText('src/hero.tsx');
-  const folded = log.getByRole('button', { name: /^\d+ steps$/ });
-  await expect(folded).toBeVisible();
-  await folded.click();
   await expect(log.locator('[data-tool="Grep"]')).toContainText('tagline in src');
   await expect(log.locator('[data-tool="Task"]')).toContainText('Survey the landing page copy');
   // Tool details expand on click.
@@ -199,6 +201,23 @@ test('conversation: transcript turns, tool rows, footer, composer, view toggle, 
   await expect(log).toHaveCount(0);
   await page.getByRole('button', { name: 'Show conversation' }).click();
   await expect(log).toBeVisible();
+
+  // `/new` changes the native session within the same run. Even with the same number of
+  // turns, no old answer, expanded tool, or older-page cursor may carry across.
+  const newTranscript = join(host.root, 'new-session.jsonl');
+  writeFileSync(newTranscript, ['Fresh first prompt', 'Fresh second prompt', 'A fresh conversation'].map(content => JSON.stringify({ type: 'user', message: { role: 'user', content } })).join('\n') + '\n');
+  const sessionId = `fresh-${hero.pane}`;
+  hookEvent(host, hero.pane, 'SessionStart', hero.cwd, { session_id: sessionId, transcript_path: newTranscript, source: 'clear' });
+  await expect(log.getByText('A fresh conversation', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(log.getByText('Fresh first prompt', { exact: true })).toBeVisible();
+  await expect(log.getByText('What does this repo contain?', { exact: true })).toHaveCount(0);
+  await expect(log.getByText('Ready for review.')).toHaveCount(0);
+  await expect(log.getByText('live without a reload')).toHaveCount(0);
+  await expect(log.locator('[data-turn]')).toHaveCount(3);
+  await expect(log.locator('[data-tool]')).toHaveCount(0);
+  // Restore the original session for the approval and phone-layout captures below.
+  hookEvent(host, hero.pane, 'SessionStart', hero.cwd, { transcript_path: transcript, source: 'resume' });
+  await expect(log.getByText('Ready for review.')).toBeVisible({ timeout: 10_000 });
 
   // Another agent waiting for an approval: the card sits at the end of its stream.
   await sidebar.locator('[data-nav-item]').filter({ hasText: 'api-auth' }).click();

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { TranscriptItem, TranscriptTurn } from '@vibeke/core';
 import { cleanUserText, foldSteps, turnBlocks, turnHasWork, turnStats, turnSteps, turnText, workedFor, FOLD_KEEP } from '../src/lib/conversation';
 import { jsonArrayField, jsonField, patchPaths, shellCommand, toolSummary } from '../src/lib/tool-summary';
+import { transcriptImageKey } from '../src/components/transcript-image';
 
 describe('tool summaries', () => {
   test('Claude tools: command, paths, pattern, url, description', () => {
@@ -23,6 +24,9 @@ describe('tool summaries', () => {
   });
 
   test('Codex shell (argv, bash -lc), exec_command and apply_patch', () => {
+    expect(toolSummary('exec', '// @exec: {}\nconst r = await tools.exec_command({cmd: "git status --short"});\ntext(r);')).toEqual({ kind: 'shell', label: 'Run script', detail: 'git status --short' });
+    expect(toolSummary('exec', 'const r = await tools.exec_command({cmd: \'bun test\'});').detail).toBe('bun test');
+    expect(toolSummary('exec', '// settings\ntext(await tools.web__run({}));').detail).toBe('text(await tools.web__run({}));');
     expect(toolSummary('shell', '{"command":["bash","-lc","sed -n \'1,80p\' docs/release.md"],"workdir":"/repo"}')).toEqual({ kind: 'shell', label: 'Shell', detail: "sed -n '1,80p' docs/release.md" });
     expect(toolSummary('shell', '{"command":["rg","-n","TODO","src"]}').detail).toBe('rg -n TODO src');
     expect(toolSummary('exec_command', '{"cmd":"cargo test -p vk-server"}').detail).toBe('cargo test -p vk-server');
@@ -86,6 +90,17 @@ describe('conversation grouping', () => {
     expect(foldSteps(split).some((b) => b.k === 'steps')).toBe(false);
   });
 
+  test('completed turns fold even short runs and hide legacy empty thinking', () => {
+    const turn: TranscriptTurn = { n: 1, items: [
+      {kind: 'text', role: 'user', text: 'go'},
+      {kind: 'thinking', text: '[]'},
+      call(1), result(1),
+      {kind: 'text', role: 'assistant', text: 'Done'},
+    ] };
+    expect(turnBlocks(turn).map(b => b.k)).toEqual(['user', 'tool', 'text']);
+    expect(turnBlocks(turn, true).map(b => b.k)).toEqual(['user', 'steps', 'text']);
+  });
+
   test('user text: harness wrappers collapse to what was typed', () => {
     expect(cleanUserText('<command-name>/release-beta</command-name><command-args></command-args>')).toBe('/release-beta');
     expect(cleanUserText('<command-message>x</command-message><command-name>/review</command-name><command-args>42</command-args>')).toBe('/review 42');
@@ -102,7 +117,7 @@ describe('turn footer', () => {
     expect(workedFor(45_400)).toBe('45s');
     expect(workedFor(78_000)).toBe('1m 18s');
     expect(workedFor((31 * 60 + 46) * 1000)).toBe('31m 46s');
-    expect(workedFor((2 * 3600 + 5 * 60 + 9) * 1000)).toBe('2h 5m');
+    expect(workedFor((2 * 3600 + 5 * 60 + 9) * 1000)).toBe('2h 5m 9s');
   });
 
   test('stats prefer the server fields, else derive them from the items', () => {
@@ -121,6 +136,12 @@ describe('turn footer', () => {
 });
 
 describe('image items', () => {
+  test('the same line reference in a new conversation cannot reuse the old image cache entry', () => {
+    const source = {host: 'h1', target: 'r1', session: 's1'};
+    const cache = new Map([[transcriptImageKey(source, '2:0'), 'old image']]);
+    expect(cache.get(transcriptImageKey({...source}, '2:0'))).toBe('old image');
+    expect(cache.get(transcriptImageKey({...source, session: 's2'}, '2:0'))).toBeUndefined();
+  });
   test('a usable image is a block in place; unknown or unusable ones are dropped', () => {
     const turn: TranscriptTurn = {
       n: 4,

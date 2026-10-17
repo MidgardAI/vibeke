@@ -213,6 +213,114 @@ fn summarize(v: &Value) -> String {
     one.chars().take(160).collect()
 }
 
+/// Keep expandable tool details bounded without flattening their line breaks.
+fn transcript_detail(text: &str) -> String {
+    const LIMIT: usize = 8192;
+    let mut chars = text.chars();
+    let mut detail: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        detail.push_str("\n…");
+    }
+    detail
+}
+
+fn execution_envelope(v: &Value) -> bool {
+    v.get("output").is_some()
+        && (v.get("chunk_id").is_some()
+            || v.get("exit_code").is_some()
+            || v["wall_time_seconds"].is_number()
+            || v["metadata"].get("exit_code").is_some())
+}
+
+fn transcript_exit_code(v: &Value, depth: usize) -> Option<i64> {
+    if depth >= 4 {
+        return None;
+    }
+    if let Some(s) = v.as_str() {
+        return serde_json::from_str::<Value>(s)
+            .ok()
+            .and_then(|v| transcript_exit_code(&v, depth + 1));
+    }
+    if let Some(a) = v.as_array() {
+        let codes: Vec<i64> = a
+            .iter()
+            .filter_map(|b| b.get("text"))
+            .filter_map(|b| transcript_exit_code(b, depth + 1))
+            .collect();
+        return codes
+            .iter()
+            .copied()
+            .find(|c| *c != 0)
+            .or_else(|| codes.first().copied());
+    }
+    if execution_envelope(v) {
+        return v["exit_code"]
+            .as_i64()
+            .or_else(|| v.pointer("/metadata/exit_code").and_then(Value::as_i64));
+    }
+    None
+}
+
+/// Text blocks and execution envelopes are transport wrappers, not the command's output.
+fn transcript_output(v: &Value, depth: usize) -> String {
+    if depth < 4 {
+        if let Some(s) = v.as_str()
+            && let Ok(parsed) = serde_json::from_str::<Value>(s)
+            && (parsed.is_array() || execution_envelope(&parsed))
+        {
+            return transcript_output(&parsed, depth + 1);
+        }
+        if let Some(a) = v.as_array() {
+            let texts: Vec<String> = a
+                .iter()
+                .filter(|b| {
+                    matches!(
+                        b["type"].as_str(),
+                        Some("text" | "input_text" | "output_text" | "summary_text")
+                    )
+                })
+                .filter_map(|b| b.get("text"))
+                .map(|t| transcript_output(t, depth + 1))
+                .collect();
+            if a.is_empty()
+                || !texts.is_empty()
+                || a.iter()
+                    .any(|b| matches!(b["type"].as_str(), Some("image" | "input_image")))
+            {
+                return texts.join("\n");
+            }
+        }
+        if execution_envelope(v) {
+            // Once the execution wrapper is removed, stdout is opaque. A program may print
+            // JSON with fields such as `output` and `exit_code` as its own domain data.
+            if let Some(text) = v["output"].as_str() {
+                return text.to_string();
+            }
+            return transcript_output(&v["output"], depth + 1);
+        }
+    }
+    match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn transcript_result(output: &Value, id: &Value, error: bool) -> Value {
+    let code = transcript_exit_code(output, 0);
+    let error = error || code.is_some_and(|c| c != 0);
+    let mut text = transcript_detail(&transcript_output(output, 0));
+    if let Some(code) = code.filter(|c| *c != 0) {
+        text.push_str(&format!("\nCommand exited with code {code}."));
+    }
+    json!({"kind": "tool_result", "summary": summarize(&json!(text)), "text": text, "id": id, "error": error})
+}
+
+fn transcript_call(tool: &Value, input: &Value, id: &Value) -> Value {
+    let text = transcript_detail(input.as_str().unwrap_or(&input.to_string()));
+    json!({"kind": "tool_call", "tool": tool, "summary": summarize(&json!(text)), "text": text, "id": id})
+}
+
 /// Largest transcript image `agent.transcript` returns inline (decoded bytes).
 const MAX_TRANSCRIPT_IMAGE: usize = 4 << 20;
 
@@ -340,13 +448,27 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
                         }
                         Some("text") => {
                             user_prompt |= role == "user";
-                            items.push(json!({"kind": "text", "role": role, "text": c.get("text")}));
+                            items
+                                .push(json!({"kind": "text", "role": role, "text": c.get("text")}));
                         }
-                        Some("thinking") => items.push(json!({"kind": "thinking", "text": c.get("thinking")})),
-                        Some("tool_use") => items.push(json!({"kind": "tool_call", "tool": c.get("name"), "summary": summarize(c.get("input").unwrap_or(&Value::Null)), "id": c.get("id")})),
+                        Some("thinking") => {
+                            items.push(json!({"kind": "thinking", "text": c.get("thinking")}))
+                        }
+                        Some("tool_use") => {
+                            items.push(transcript_call(&c["name"], &c["input"], &c["id"]))
+                        }
                         Some("tool_result") => {
-                            items.push(json!({"kind": "tool_result", "summary": summarize(c.get("content").unwrap_or(&Value::Null)), "id": c.get("tool_use_id"), "error": c.get("is_error")}));
-                            for inner in c.get("content").and_then(Value::as_array).into_iter().flatten() {
+                            items.push(transcript_result(
+                                &c["content"],
+                                &c["tool_use_id"],
+                                c["is_error"].as_bool().unwrap_or(false),
+                            ));
+                            for inner in c
+                                .get("content")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                            {
                                 if let Some((mime, data)) = image_of(inner) {
                                     items.push(image_item(images, &mime, data));
                                     images += 1;
@@ -364,7 +486,16 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
         match pl.get("type").and_then(Value::as_str) {
             Some("message") => {
                 let role = pl.get("role").and_then(Value::as_str).unwrap_or("");
-                let text: String = pl.get("content").and_then(Value::as_array).map(|a| a.iter().filter_map(|c| c.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+                let text: String = pl
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.get("text").and_then(Value::as_str))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
                 if !text.is_empty() {
                     user_prompt = role == "user";
                     items.push(json!({"kind": "text", "role": role, "text": text}));
@@ -373,9 +504,24 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
                     items.push(image_item(k, &mime, data));
                 }
             }
-            Some("reasoning") => items.push(json!({"kind": "thinking", "text": pl.get("summary").map(summarize)})),
-            Some("function_call") | Some("local_shell_call") | Some("custom_tool_call") => items.push(json!({"kind": "tool_call", "tool": pl.get("name"), "summary": summarize(pl.get("arguments").or(pl.get("action")).unwrap_or(&Value::Null)), "id": pl.get("call_id")})),
-            Some("function_call_output") | Some("custom_tool_call_output") => items.push(json!({"kind": "tool_result", "summary": summarize(pl.get("output").unwrap_or(&Value::Null)), "id": pl.get("call_id")})),
+            Some("reasoning") => {
+                let text = transcript_output(&pl["summary"], 0);
+                if !text.trim().is_empty() {
+                    items.push(json!({"kind": "thinking", "text": transcript_detail(&text)}));
+                }
+            }
+            Some("function_call") | Some("local_shell_call") | Some("custom_tool_call") => items
+                .push(transcript_call(
+                    &pl["name"],
+                    pl.get("arguments")
+                        .or(pl.get("input"))
+                        .or(pl.get("action"))
+                        .unwrap_or(&Value::Null),
+                    &pl["call_id"],
+                )),
+            Some("function_call_output") | Some("custom_tool_call_output") => {
+                items.push(transcript_result(&pl["output"], &pl["call_id"], false))
+            }
             _ => {}
         }
     }
@@ -402,7 +548,7 @@ fn is_subagent_tool(name: &str) -> bool {
     )
 }
 
-/// Per-turn timing and counts: `duration_ms` (last item ts − turn start, null when unknown),
+/// Per-turn timing and counts: `duration_ms` (harness duration, else last item ts − turn start),
 /// `tool_count` and `subagent_count`.
 fn finish_turn(turn: &mut Value) {
     let items = turn["items"].as_array().cloned().unwrap_or_default();
@@ -412,7 +558,9 @@ fn finish_turn(turn: &mut Value) {
         .and_then(crate::agents::usage::parse_rfc3339_ms)
         .or_else(|| items.first().and_then(|i| i["ts"].as_i64()));
     let end = items.iter().rev().find_map(|i| i["ts"].as_i64());
-    let duration = start.zip(end).map(|(a, b)| (b - a).max(0));
+    let duration = turn["duration_ms"]
+        .as_i64()
+        .or_else(|| start.zip(end).map(|(a, b)| (b - a).max(0)));
     let calls = items.iter().filter(|i| i["kind"] == "tool_call");
     let tool_count = calls.clone().count();
     let subagents = calls
@@ -432,6 +580,17 @@ pub fn transcript_items(text: &str) -> Vec<Value> {
         let Ok(v) = serde_json::from_str::<Value>(l) else {
             continue;
         };
+        // Codex reports the time shown in its terminal, including tool and wait time.
+        if v["type"] == "event_msg"
+            && matches!(
+                v["payload"]["type"].as_str(),
+                Some("task_complete" | "turn_complete")
+            )
+            && let Some(duration) = v["payload"]["duration_ms"].as_u64()
+            && let Some(turn) = turns.last_mut()
+        {
+            turn["duration_ms"] = json!(duration);
+        }
         let (prompt, mut items) = line_items(&v);
         if items.is_empty() {
             continue;
@@ -508,7 +667,9 @@ fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
         std::fs::read_to_string(&path).map_err(|e| err(ErrorKind::Internal, e.to_string()))?;
     if let Some(r) = s(p, "image") {
         let image = transcript_image(&text, r)?;
-        return Ok(json!({"run": run.id, "image": image}));
+        return Ok(
+            json!({"run": run.id, "session_id": run.harness_session_id, "transcript_path": path, "image": image}),
+        );
     }
     let turns = transcript_items(&text);
     let before = u(p, "before").unwrap_or(u64::MAX);
@@ -526,7 +687,9 @@ fn transcript(server: &Server, ctx: &Ctx, p: &Value) -> R {
     let mut page = Value::Array(page);
     // Envelopes lose their preview and nonce (spec 19 §4.1).
     crate::mentions::scrub::scrub_value(&mut page);
-    Ok(json!({"run": run.id, "turns": page, "next_before": next_before}))
+    Ok(
+        json!({"run": run.id, "session_id": run.harness_session_id, "transcript_path": path, "turns": page, "next_before": next_before}),
+    )
 }
 
 // ---- X3: clients ----------------------------------------------------------------------------
@@ -815,6 +978,86 @@ mod tests {
         assert_eq!(turns[0]["items"].as_array().unwrap().len(), 3);
         assert_eq!(turns[0]["tool_count"], 1);
         assert!(turns[0]["duration_ms"].is_null());
+    }
+
+    #[test]
+    fn codex_transcript_displays_text_instead_of_transport_wrappers() {
+        let script =
+            "const result = await tools.exec_command({cmd: \"cargo test\"});\ntext(result);";
+        let output = format!("first line\n{}\nlast line", "x".repeat(220));
+        let records = [
+            json!({"type":"response_item", "payload":{"type":"message", "role":"user", "content":[{"type":"input_text","text":"check"}]}}),
+            json!({"type":"response_item", "payload":{"type":"reasoning", "summary":[]}}),
+            json!({"type":"response_item", "payload":{"type":"reasoning", "summary":[{"type":"summary_text","text":"Check the build"}]}}),
+            json!({"type":"response_item", "payload":{"type":"custom_tool_call", "name":"exec", "input":script, "call_id":"c1"}}),
+            json!({"type":"response_item", "payload":{"type":"custom_tool_call_output", "call_id":"c1", "output":[{"type":"input_text","text":json!({"chunk_id":"c", "wall_time_seconds":0.5, "exit_code":0, "output":output}).to_string()}]}}),
+        ];
+        let text = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let turns = transcript_items(&text);
+        let items = turns[0]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4, "empty reasoning has no row");
+        assert_eq!(items[1]["text"], "Check the build");
+        assert_eq!(items[2]["text"], script);
+        assert_eq!(items[3]["text"], output);
+        assert!(items[3]["summary"].as_str().unwrap().chars().count() <= 160);
+        assert!(!items[3]["summary"].as_str().unwrap().contains("chunk_id"));
+        let detail = transcript_detail(&"🙂".repeat(9000));
+        assert_eq!(detail.chars().count(), 8194);
+        assert!(detail.ends_with("\n…"));
+        assert_eq!(
+            transcript_output(&json!({"output":"domain data"}), 0),
+            r#"{"output":"domain data"}"#
+        );
+        assert_eq!(
+            transcript_output(&json!([{"text":"domain data"}]), 0),
+            r#"[{"text":"domain data"}]"#
+        );
+    }
+
+    #[test]
+    fn codex_transcript_preserves_failure_status_when_unwrapping_output() {
+        for output in [
+            json!({"exit_code":1, "output":""}),
+            json!({"metadata":{"exit_code":2}, "output":"failed"}),
+            json!([{"type":"input_text", "text":json!({"chunk_id":"x", "exit_code":3, "output":""}).to_string()}]),
+        ] {
+            let result = transcript_result(&json!(output.to_string()), &json!("c1"), false);
+            assert_eq!(result["error"], true);
+            assert!(
+                result["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Command exited with code")
+            );
+        }
+        assert_eq!(
+            transcript_result(&json!({"exit_code":0,"output":"ok"}), &json!("c2"), false)["error"],
+            false
+        );
+        let data = json!({"output":"domain data", "metadata":{"source":"example"}});
+        assert_eq!(transcript_output(&data, 0), data.to_string());
+        let stdout = json!({"output":"domain data", "exit_code":12}).to_string();
+        let result = transcript_result(
+            &json!({"exit_code":0, "output":stdout}),
+            &json!("c3"),
+            false,
+        );
+        assert_eq!(result["text"], stdout);
+        assert_eq!(result["error"], false);
+    }
+
+    #[test]
+    fn codex_transcript_uses_the_harness_elapsed_time() {
+        let text = [
+            json!({"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}}),
+            json!({"timestamp":"2026-01-01T00:57:08Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}}),
+            json!({"timestamp":"2026-01-01T01:00:13Z","type":"event_msg","payload":{"type":"task_complete","duration_ms":3613322}}),
+        ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        assert_eq!(transcript_items(&text)[0]["duration_ms"], 3613322);
     }
 
     #[test]

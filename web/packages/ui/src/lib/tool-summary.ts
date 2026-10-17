@@ -108,6 +108,13 @@ export function toolSummary(tool: string | null | undefined, summary: string | n
   };
 
   switch (name) {
+    case 'exec': {
+      // Codex's script tool wraps shell calls in JavaScript. Show their commands in the row.
+      const commands = [...src.matchAll(/\b(?:cmd|command)\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g)]
+        .map((m) => m[1]!.startsWith('"') ? unescape(m[1]!.slice(1, -1)) : m[1]!.slice(1, -1));
+      const detail = commands.length ? commands.join('; ') : src.split('\n').find((line) => line.trim() && !line.trim().startsWith('//')) ?? '';
+      return { kind: 'shell', label: 'Run script', detail: oneLine(detail) };
+    }
     case 'Bash':
     case 'BashOutput':
     case 'Shell':
