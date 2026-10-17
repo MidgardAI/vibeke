@@ -1246,7 +1246,7 @@ export interface AppApi {
   'git.log': { params: { pane: string; base?: string; limit?: number }; result: GitLog };
   'fs.list': { params: { pane: string; path?: string }; result: FsList };
   'fs.read': { params: { pane: string; path: string; as?: 'image' }; result: FsRead };
-  'worktree.list': { params: { pane: string } | { workspace: string }; result: { worktrees: Worktree[] } };
+  'worktree.list': { params: { pane: string } | { workspace: string } | { cwd: string }; result: { worktrees: Worktree[] } };
   /** Host directories for path pickers: `path` absolute or `~`; `prefix` filters names (a leading `.` shows dot-folders). */
   'fs.browse': { params: { path?: string; prefix?: string }; result: BrowseResult };
   /** Clones on the host whose remote is `origin` (workspaces and a shallow scan of ~/code, ~/src, …). */

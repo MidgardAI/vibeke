@@ -124,6 +124,14 @@ describe('start parameters', () => {
     expect(buildStartParams({ harness: 'c', prompt: '', where: w, worktree: { branch: ' agent/x ', base: 'main' } }).worktree).toEqual({ branch: 'agent/x', base: 'main' });
     expect(buildStartParams({ harness: 'c', prompt: '', where: w, worktree: { branch: 'b' } }).worktree).toEqual({ branch: 'b' });
   });
+
+  test('a worktree from a chosen folder uses the source cwd instead of new_workspace', () => {
+    expect(buildStartParams({ harness: 'claude', prompt: '', where: { kind: 'folder', cwd: '/home/test/code/project/' }, worktree: { branch: ' agent/fix ', base: 'main' } })).toEqual({
+      harness: 'claude',
+      cwd: '/home/test/code/project',
+      worktree: { branch: 'agent/fix', base: 'main' },
+    });
+  });
 });
 
 describe('op ids', () => {
