@@ -232,6 +232,27 @@ fn execution_envelope(v: &Value) -> bool {
             || v["metadata"].get("exit_code").is_some())
 }
 
+/// An actual array of transport content blocks, rather than arbitrary JSON data.
+fn transcript_blocks(v: &Value) -> Option<&[Value]> {
+    v.as_array()
+        .filter(|blocks| {
+            blocks.iter().all(|b| {
+                matches!(
+                    b["type"].as_str(),
+                    Some(
+                        "text"
+                            | "input_text"
+                            | "output_text"
+                            | "summary_text"
+                            | "image"
+                            | "input_image"
+                    )
+                )
+            })
+        })
+        .map(Vec::as_slice)
+}
+
 fn transcript_exit_code(v: &Value, depth: usize) -> Option<i64> {
     if depth >= 4 {
         return None;
@@ -241,9 +262,10 @@ fn transcript_exit_code(v: &Value, depth: usize) -> Option<i64> {
             .ok()
             .and_then(|v| transcript_exit_code(&v, depth + 1));
     }
-    if let Some(a) = v.as_array() {
+    if let Some(a) = transcript_blocks(v) {
         let codes: Vec<i64> = a
             .iter()
+            .filter(|b| !matches!(b["type"].as_str(), Some("image" | "input_image")))
             .filter_map(|b| b.get("text"))
             .filter_map(|b| transcript_exit_code(b, depth + 1))
             .collect();
@@ -266,11 +288,12 @@ fn transcript_output(v: &Value, depth: usize) -> String {
     if depth < 4 {
         if let Some(s) = v.as_str()
             && let Ok(parsed) = serde_json::from_str::<Value>(s)
-            && (parsed.is_array() || execution_envelope(&parsed))
+            && (execution_envelope(&parsed)
+                || transcript_blocks(&parsed).is_some_and(|blocks| !blocks.is_empty()))
         {
             return transcript_output(&parsed, depth + 1);
         }
-        if let Some(a) = v.as_array() {
+        if let Some(a) = transcript_blocks(v) {
             let texts: Vec<String> = a
                 .iter()
                 .filter(|b| {
@@ -306,13 +329,31 @@ fn transcript_output(v: &Value, depth: usize) -> String {
     }
 }
 
-fn transcript_result(output: &Value, id: &Value, error: bool) -> Value {
+fn codex_transcript_result(output: &Value, id: &Value) -> Value {
     let code = transcript_exit_code(output, 0);
-    let error = error || code.is_some_and(|c| c != 0);
+    let error = code.is_some_and(|c| c != 0);
     let mut text = transcript_detail(&transcript_output(output, 0));
     if let Some(code) = code.filter(|c| *c != 0) {
         text.push_str(&format!("\nCommand exited with code {code}."));
     }
+    json!({"kind": "tool_result", "summary": summarize(&json!(text)), "text": text, "id": id, "error": error})
+}
+
+/// Claude's content strings are stdout, even when they happen to look like Codex envelopes.
+/// Only its actual content-block array is unwrapped. `is_error` is authoritative.
+fn transcript_result(output: &Value, id: &Value, error: bool) -> Value {
+    let text = match output {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    };
+    let text = transcript_detail(&text);
     json!({"kind": "tool_result", "summary": summarize(&json!(text)), "text": text, "id": id, "error": error})
 }
 
@@ -520,7 +561,7 @@ pub(crate) fn line_items(v: &Value) -> (bool, Vec<Value>) {
                     &pl["call_id"],
                 )),
             Some("function_call_output") | Some("custom_tool_call_output") => {
-                items.push(transcript_result(&pl["output"], &pl["call_id"], false))
+                items.push(codex_transcript_result(&pl["output"], &pl["call_id"]))
             }
             _ => {}
         }
@@ -1025,7 +1066,7 @@ mod tests {
             json!({"metadata":{"exit_code":2}, "output":"failed"}),
             json!([{"type":"input_text", "text":json!({"chunk_id":"x", "exit_code":3, "output":""}).to_string()}]),
         ] {
-            let result = transcript_result(&json!(output.to_string()), &json!("c1"), false);
+            let result = codex_transcript_result(&json!(output.to_string()), &json!("c1"));
             assert_eq!(result["error"], true);
             assert!(
                 result["text"]
@@ -1035,19 +1076,48 @@ mod tests {
             );
         }
         assert_eq!(
-            transcript_result(&json!({"exit_code":0,"output":"ok"}), &json!("c2"), false)["error"],
+            codex_transcript_result(&json!({"exit_code":0,"output":"ok"}), &json!("c2"))["error"],
             false
         );
         let data = json!({"output":"domain data", "metadata":{"source":"example"}});
         assert_eq!(transcript_output(&data, 0), data.to_string());
         let stdout = json!({"output":"domain data", "exit_code":12}).to_string();
-        let result = transcript_result(
-            &json!({"exit_code":0, "output":stdout}),
-            &json!("c3"),
-            false,
-        );
+        let result =
+            codex_transcript_result(&json!({"exit_code":0, "output":stdout}), &json!("c3"));
         assert_eq!(result["text"], stdout);
         assert_eq!(result["error"], false);
+        assert_eq!(
+            codex_transcript_result(&json!("[]"), &json!("c4"))["text"],
+            "[]"
+        );
+        let data = json!([{"text":json!({"output":"data","exit_code":12}).to_string()}]);
+        for output in [data.clone(), json!(data.to_string())] {
+            let result = codex_transcript_result(&output, &json!("c5"));
+            assert_eq!(result["text"], data.to_string());
+            assert_eq!(result["error"], false);
+        }
+    }
+
+    #[test]
+    fn claude_stdout_is_opaque_and_uses_its_explicit_failure_status() {
+        for stdout in [
+            r#"{"output":"data","exit_code":12}"#,
+            r#"{"output":"data","metadata":{"exit_code":1}}"#,
+            "[]",
+            "null",
+            r#"[{"type":"input_text","text":"domain data"}]"#,
+        ] {
+            for content in [json!(stdout), json!([{"type":"text","text":stdout}])] {
+                for failed in [false, true] {
+                    let line = json!({"type":"user","message":{"role":"user","content":[{
+                        "type":"tool_result","tool_use_id":"c1","is_error":failed,"content":content
+                    }]}});
+                    let (_, items) = line_items(&line);
+                    assert_eq!(items[0]["text"], stdout);
+                    assert_eq!(items[0]["error"], failed);
+                }
+            }
+        }
     }
 
     #[test]
